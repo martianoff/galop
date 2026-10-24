@@ -1,0 +1,121 @@
+package atn
+
+import . "martianoff/gala/collection_immutable"
+
+// Interval is the inclusive range Lo..Hi of token types or code points.
+struct Interval(Lo int, Hi int)
+
+// IntervalSet is a set of ints kept as sorted, disjoint, non-adjacent intervals.
+// It holds token types (EOF is -1) in a parser and code points in a lexer.
+struct IntervalSet(Ranges Array[Interval])
+
+// MaxCodePoint is the largest Unicode code point; lexer sets live in 0..MaxCodePoint.
+val MaxCodePoint = 0x10FFFF
+
+// EmptySet is the set with no members.
+func EmptySet() IntervalSet = IntervalSet(EmptyArray[Interval]())
+
+// RangeSet is the set lo..hi, or the empty set when lo > hi.
+func RangeSet(lo int, hi int) IntervalSet =
+    if (lo > hi) EmptySet() else IntervalSet(ArrayOf(Interval(lo, hi)))
+
+// SetOf is the set of the given values.
+func SetOf(values ...int) IntervalSet =
+    normalize(ArrayOf(values...).Map((v) => Interval(v, v)))
+
+// normalize sorts intervals and merges the ones that overlap or touch.
+func normalize(rs Array[Interval]) IntervalSet {
+    val merged = rs.Filter((r) => r.Lo <= r.Hi).SortWith((a, b) => a.Lo < b.Lo).FoldLeft(
+        EmptyArray[Interval](),
+        (acc, r) => acc.LastOption() match {
+            case Some(last) if r.Lo <= last.Hi + 1 => acc.Init().Append(Interval(last.Lo, maxInt(last.Hi, r.Hi)))
+            case _ => acc.Append(r)
+        },
+    )
+    IntervalSet(merged)
+}
+
+func (s IntervalSet) IsEmpty() bool = s.Ranges.IsEmpty()
+
+func (s IntervalSet) NonEmpty() bool = s.Ranges.NonEmpty()
+
+// Size is the number of members.
+func (s IntervalSet) Size() int = s.Ranges.FoldLeft(0, (n, r) => n + r.Hi - r.Lo + 1)
+
+// Contains reports whether v is a member (binary search).
+func (s IntervalSet) Contains(v int) bool {
+    var lo = 0
+    var hi = s.Ranges.Size() - 1
+    var found = false
+    for !found && lo <= hi {
+        val mid = (lo + hi) / 2
+        val r = s.Ranges.Get(mid)
+        if v < r.Lo {
+            hi = mid - 1
+        } else if v > r.Hi {
+            lo = mid + 1
+        } else {
+            found = true
+        }
+    }
+    found
+}
+
+// Union is the set of values in s or o.
+func (s IntervalSet) Union(o IntervalSet) IntervalSet = normalize(s.Ranges.AppendAll(o.Ranges))
+
+// Intersect is the set of values in both s and o.
+func (s IntervalSet) Intersect(o IntervalSet) IntervalSet {
+    var i = 0
+    var j = 0
+    var out = EmptyArray[Interval]()
+    for i < s.Ranges.Size() && j < o.Ranges.Size() {
+        val a = s.Ranges.Get(i)
+        val b = o.Ranges.Get(j)
+        val lo = maxInt(a.Lo, b.Lo)
+        val hi = minInt(a.Hi, b.Hi)
+        if lo <= hi {
+            out = out.Append(Interval(lo, hi))
+        }
+        if a.Hi < b.Hi {
+            i = i + 1
+        } else {
+            j = j + 1
+        }
+    }
+    IntervalSet(out)
+}
+
+// Overlaps reports whether s and o share a member.
+func (s IntervalSet) Overlaps(o IntervalSet) bool = s.Intersect(o).NonEmpty()
+
+// Complement is the set of values in lo..hi that are not in s.
+func (s IntervalSet) Complement(lo int, hi int) IntervalSet {
+    val bounded = s.Intersect(RangeSet(lo, hi))
+    val gaps = bounded.Ranges.FoldLeft(
+        Tuple(EmptyArray[Interval](), lo),
+        (acc, r) => Tuple(acc.V1.Append(Interval(acc.V2, r.Lo - 1)), r.Hi + 1),
+    )
+    normalize(gaps.V1.Append(Interval(gaps.V2, hi)))
+}
+
+// Subtract is the set of values in s and not in o.
+func (s IntervalSet) Subtract(o IntervalSet) IntervalSet = s.Ranges match {
+    case Array() => s
+    case _ => s.Intersect(o.Complement(s.Ranges.Head().Lo, s.Ranges.Last().Hi))
+}
+
+// Min is the smallest member, if any.
+func (s IntervalSet) Min() Option[int] = s.Ranges.HeadOption().Map(_.Lo)
+
+// Values lists every member in order. Only for small sets, such as token sets.
+func (s IntervalSet) Values() Array[int] =
+    s.Ranges.FlatMap((r) => ArrayTabulate(r.Hi - r.Lo + 1, (k) => r.Lo + k))
+
+// String renders s as `{1..3, 7}`.
+func (s IntervalSet) String() string =
+    "{" + s.Ranges.Map((r) => if (r.Lo == r.Hi) s"${r.Lo}" else s"${r.Lo}..${r.Hi}").MkString(", ") + "}"
+
+func maxInt(a int, b int) int = if (a > b) a else b
+
+func minInt(a int, b int) int = if (a < b) a else b

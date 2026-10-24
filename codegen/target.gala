@@ -1,0 +1,49 @@
+package codegen
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+)
+
+// A Target turns an analyzed grammar into source files in one language.
+// Targets are looked up by the `language` option (`-Dlanguage=Go`), the way
+// ANTLR picks its code generator. Adding a language means adding a Target.
+
+// Input is everything a target needs: the grammar, its networks and the
+// decision plans of its parser network.
+struct Input(
+    Grammar g4.Grammar,
+    Compiled atn.Compiled,
+    // Plans is empty for a lexer grammar.
+    Analysis Option[analysis.Analysis],
+)
+
+// Options are the code generation settings of one tool run.
+struct Options(
+    // Package is the package or namespace of the generated code (`-package`).
+    Package string = "",
+    // Listener and Visitor ask for parse-tree listener and visitor files.
+    Listener bool = true,
+    Visitor bool = false,
+    // Defines holds the `-Dname=value` options and grammar `options {}` merged,
+    // command line last. `language` selects the target; targets read their own
+    // keys (Go: `flavor`).
+    Defines Array[g4.OptionEntry] = EmptyArray[g4.OptionEntry](),
+)
+
+// Define is the value of option name, if set.
+func (o Options) Define(name string) Option[string] = o.Defines.FindLast(_.Name == name).Map(_.Value)
+
+// OutputFile is one generated file; Name is relative to the output directory.
+struct OutputFile(Name string, Content string)
+
+// Target is a code generator for one language.
+type Target interface {
+    // Language is the value of the `language` option that selects this target.
+    Language() string
+    // Generate returns the files for in, or error messages.
+    Generate(in Input, opts Options) Either[Array[string], Array[OutputFile]]
+}

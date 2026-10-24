@@ -1,0 +1,123 @@
+package atn
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+    "martianoff/gala/go_builtins"
+
+    "github.com/martianoff/galop/g4"
+)
+
+val vocabGrammar = `grammar V;
+tokens { EXTRA, ID }
+s : 'x' '(' ID ')' 'val' ',' a ;
+a : '(' (A | B)* '=' UNDECLARED ;
+VAL : 'val' ;
+ID : [a-z]+ ;
+fragment F : 'f' ;
+A : 'a' -> skip ;
+B : 'b' | 'c' ;
+`
+
+// compiled compiles a test grammar that must be valid; a problem fails the test with a panic.
+func compiled(t T, src string) Compiled = g4.Parse(src) match {
+    case Right(g) => Compile(g) match {
+        case Right(c) => c
+        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+}
+
+func TestVocabularyFollowsANTLR(t T) T {
+    val v = compiled(t, vocabGrammar).Vocab
+    // Implicit literals first in order of use ('val' is aliased by VAL), then
+    // lexer rules in order (fragments excluded), then tokens{} names not yet
+    // defined, then names only referenced.
+    val want = ArrayOf("<INVALID>", "T__0", "T__1", "T__2", "T__3", "T__4", "VAL", "ID", "A", "B", "EXTRA", "UNDECLARED")
+    val t1 = Eq(t, v.Names, want)
+    val t2 = Eq(t1, v.Literals.Take(6), ArrayOf(None[string](), Some("x"), Some("("), Some(")"), Some(","), Some("=")))
+    val t3 = Eq(t2, v.LiteralType("val"), Some(6))
+    val t4 = Eq(t3, v.Display(2), "'('")
+    val t5 = Eq(t4, v.Display(7), "ID")
+    Eq(t5, v.TypeOf("EOF"), Some(TokenEOF))
+}
+
+func TestIntervalSets(t T) T {
+    val a = SetOf(1, 2, 3, 7)
+    val b = RangeSet(3, 8)
+    val t1 = Eq(t, a.String(), "{1..3, 7}")
+    val t2 = Eq(t1, a.Intersect(b).String(), "{3, 7}")
+    val t3 = Eq(t2, a.Union(b).String(), "{1..8}")
+    val t4 = Eq(t3, a.Complement(0, 9).String(), "{0, 4..6, 8..9}")
+    val t5 = Eq(t4, b.Subtract(a).String(), "{4..6, 8}")
+    val t6 = IsTrue(t5, a.Contains(7) && !a.Contains(5))
+    Eq(t6, SetOf().IsEmpty(), true)
+}
+
+func TestDecodeEscapes(t T) T {
+    val t1 = Eq(t, DecodeLiteral(`a\nA\u{1F600}\\`), Right[string, Array[int]](ArrayOf(97, 10, 65, 0x1F600, 92)))
+    val t2 = Eq(t1, DecodeCharSet(`a-c\]\-x`).Map(_.String()), Right[string, string]("{45, 93, 97..99, 120}"))
+    val t3 = IsTrue(t2, DecodeLiteral(`\q`).IsLeft())
+    IsTrue(t3, DecodeCharSet(`z-a`).IsLeft())
+}
+
+func TestParserDecisions(t T) T {
+    val c = compiled(t, `grammar D;
+s : a? (b | c)* ('+' | '-') d+? EOF ;
+a : X ;
+b : X Y ;
+c : Y ;
+d : 'd' | 'e' e ;
+e : Z ;
+X : 'x' ; Y : 'y' ; Z : 'z' ;
+`)
+    val p = c.Parser.Get()
+    val kinds = p.Decisions.Map((d) => s"${p.RuleNames.Get(d.Rule)}:${decisionKindName(d.Kind)}:${d.AltCount}:${d.Greedy}")
+    // a? is one optional decision; (b|c)* is an inner block decision plus the
+    // loop decision; ('+'|'-') is a set, not a decision; d+? is a non-greedy
+    // loop-back decision; d's two alternatives make a rule-level decision.
+    val t1 = Eq(t, kinds, ArrayOf("s:optional:2:true", "s:block:2:true", "s:star:2:true", "s:plus:2:false", "d:block:2:true"))
+    val s = c.Rules.Get(0)
+    val shape = s.Alts.Head().Steps.Map(stepShape).MkString(" ")
+    Eq(t1, shape, "choose(0,exit=2) loop(*,2,continue=1) set loop(+,3,continue=2) eof")
+}
+
+func decisionKindName(k DecisionKind) string = k match {
+    case AltBlock() => "block"
+    case OptionalBlock() => "optional"
+    case StarEntry() => "star"
+    case PlusBack() => "plus"
+}
+
+func stepShape(s Step) string = s match {
+    case MatchToken(tok, _) if tok == TokenEOF => "eof"
+    case MatchToken(_, _) => "token"
+    case MatchSet(_, _) => "set"
+    case CallRule(_, _, _) => "call"
+    case Choose(d, _, exitAlt) => s"choose($d,exit=${exitAlt.GetOrElse(0)})"
+    case Loop(plus, d, cont, _) => s"loop(${if (plus) "+" else "*"},$d,continue=$cont)"
+    case RunAction(_) => "action"
+    case CheckPredicate(_) => "predicate"
+}
+
+func TestLexerNetwork(t T) T {
+    val c = compiled(t, vocabGrammar)
+    val lx = c.Lexer.Get()
+    // The synthesized literal rules come first, then the grammar's lexer rules.
+    val t1 = Eq(t, lx.RuleNames, ArrayOf("T__0", "T__1", "T__2", "T__3", "T__4", "VAL", "ID", "F", "A", "B"))
+    val t2 = Eq(t1, lx.RuleTokenType.Get(7), None[int]())
+    val t3 = Eq(t2, lx.RuleTokenType.Get(8), Some(8))
+    // The start state has one alternative per non-fragment rule.
+    Eq(t3, lx.State(lx.TokensStart.Get()).Out.Size(), 9)
+}
+
+func TestCompileErrors(t T) T = g4.Parse(`grammar E;
+s : 'q' ;
+A : [z-a] ;
+`) match {
+    case Right(g) => Compile(g) match {
+        case Left(errs) => Eq(t, errs, ArrayOf("rule 'A': invalid set [z-a]: range 122..97 is reversed"))
+        case Right(_) => t.Error("expected compile errors")
+    }
+    case Left(d) => t.Error(s"parse: ${d.String()}")
+}

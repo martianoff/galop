@@ -1,0 +1,104 @@
+package atn
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/g4"
+)
+
+// TokenEOF is the token type of end of input, as in ANTLR.
+val TokenEOF = -1
+
+// Vocabulary maps token types to names, numbered the way ANTLR numbers them,
+// so that generated code agrees with ANTLR-generated lexers and parsers.
+//
+// Index 0 is unused (ANTLR's invalid type). For a combined grammar the order is:
+// the implicit tokens of parser-rule literals that no lexer rule defines
+// (`T__0`, `T__1`, … in order of first use), then every non-fragment lexer rule
+// in file order, then `tokens {}` names, then token names that are only
+// referenced (ANTLR warns about those and defines them).
+struct Vocabulary(
+    // Names holds each type's constant name: `T__3`, `IDENTIFIER`.
+    Names Array[string],
+    // Literals holds each type's literal body (escapes kept), if the type has one:
+    // an implicit token, or a lexer rule that is exactly one literal.
+    Literals Array[Option[string]],
+    // Implicit marks the types created for parser-rule literals.
+    Implicit Array[bool],
+)
+
+// MaxType is the largest token type.
+func (v Vocabulary) MaxType() int = v.Names.Size() - 1
+
+// TypeOf is the type of a token name; EOF is TokenEOF.
+func (v Vocabulary) TypeOf(name string) Option[int] =
+    if (name == "EOF") Some(TokenEOF)
+    else v.Names.Drop(1).Find(_ == name).Map((n) => v.Names.IndexOf(n))
+
+// LiteralType is the type whose literal body is value.
+func (v Vocabulary) LiteralType(value string) Option[int] {
+    val index = v.Literals.IndexOf(Some(value))
+    if (index > 0) Some(index) else None[int]()
+}
+
+// Name is the constant name of type t; EOF is "EOF".
+func (v Vocabulary) Name(t int) string =
+    if (t == TokenEOF) "EOF" else v.Names.GetOption(t).GetOrElse(s"<$t>")
+
+// Display renders type t for messages, as ANTLR does: the literal if it has one
+// (`'('`), otherwise the name; EOF is `<EOF>`.
+func (v Vocabulary) Display(t int) string =
+    if (t == TokenEOF) "<EOF>"
+    else v.Literals.GetOption(t).FlatMap((o) => o).Map((lit) => s"'$lit'").GetOrElse(v.Name(t))
+
+// BuildVocabulary numbers the tokens of g the way ANTLR does.
+func BuildVocabulary(g g4.Grammar) Vocabulary {
+    val aliases = literalAliases(g)
+    val implicitLits = g.Rules.Filter((r) => !r.IsLexer())
+        .FlatMap((r) => r.Alts.FlatMap((a) => a.Elements.FlatMap(Walk)))
+        .Collect({ case g4.Literal(v) => v })
+        .Distinct()
+        .Filter((v) => !aliases.Exists((al) => al.V1 == v))
+    val implicitCount = implicitLits.Size()
+    val lexerNames = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Map(_.Name)
+    val declared = lexerNames.AppendAll(g.Tokens.Filter((t) => !lexerNames.Contains(t)))
+    val referenced = g.Rules.FlatMap((r) => r.Alts.FlatMap((a) => a.Elements.FlatMap(Walk)))
+        .Collect({ case g4.TokenRef(n) if n != "EOF" => n })
+        .Distinct()
+        .Filter((n) => !declared.Contains(n) && !g.Rules.Exists(_.Name == n))
+    val named = declared.AppendAll(referenced)
+    val names = ArrayOf("<INVALID>")
+        .AppendAll(ArrayTabulate(implicitCount, (k) => s"T__$k"))
+        .AppendAll(named)
+    val literals = ArrayOf(None[string]())
+        .AppendAll(implicitLits.Map((v) => Some(v)))
+        .AppendAll(named.Map((n) => aliases.Find(_.V2 == n).Map(_.V1)))
+    val implicit = ArrayTabulate(names.Size(), (t) => t >= 1 && t <= implicitCount)
+    Vocabulary(names, literals, implicit)
+}
+
+// literalAliases pairs a literal with the lexer rule that is exactly that
+// literal (`VAL: 'val';`), as (literal, rule name). A parser-rule literal with
+// an alias uses the rule's type instead of getting an implicit token. A literal
+// claimed by more than one rule keeps the first.
+func literalAliases(g g4.Grammar) Array[Tuple[string, string]] {
+    val pairs = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Collect((r) => r.Alts match {
+        case Array(alt) => alt.Elements match {
+            case Array(g4.Literal(v)) => Some(Tuple(v, r.Name))
+            case _ => None[Tuple[string, string]]()
+        }
+        case _ => None[Tuple[string, string]]()
+    })
+    pairs.FoldLeft(EmptyArray[Tuple[string, string]](), (acc, p) =>
+        if (acc.Exists(_.V1 == p.V1)) acc else acc.Append(p)
+    )
+}
+
+// Walk lists e and every element nested in it, in source order (pre-order).
+func Walk(e g4.Element) Array[g4.Element] = ArrayOf(e).AppendAll(e match {
+    case g4.Not(inner) => Walk(inner)
+    case g4.Block(alts) => alts.FlatMap((a) => a.Elements.FlatMap(Walk))
+    case g4.Repeat(inner, _) => Walk(inner)
+    case g4.Labeled(_, _, inner) => Walk(inner)
+    case _ => EmptyArray[g4.Element]()
+})

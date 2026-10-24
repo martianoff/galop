@@ -1,0 +1,419 @@
+package atn
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/g4"
+)
+
+// Compiled is a grammar turned into networks: a parser ATN with the rule IR of
+// the parser rules, and a lexer ATN for the lexer rules. A combined grammar has
+// both, a lexer or parser grammar only one.
+struct Compiled(
+    Vocab Vocabulary,
+    Parser Option[ATN],
+    Rules Array[RuleIR],
+    Lexer Option[ATN],
+)
+
+// Compile builds the networks of g. g must already pass g4.Check; Compile
+// reports what only it can find (undecodable literals and sets, literals no
+// lexer rule defines, constructs it does not support).
+func Compile(g g4.Grammar) Either[Array[string], Compiled] {
+    val vocab = BuildVocabulary(g)
+    val parserRules = g.Rules.Filter((r) => !r.IsLexer())
+    val lexerRules = implicitLexerRules(vocab).AppendAll(g.Rules.Filter(_.IsLexer()))
+    val parser = newBuilder(false, vocab, parserRules)
+    val ruleIRs = parserRules.ZipWithIndex().Map((ri) => parser.rule(ri.V2, ri.V1))
+    val lexer = newBuilder(true, vocab, lexerRules)
+    val tokensStart = lexer.tokensStart()
+    lexerRules.ZipWithIndex().ForEach((ri) => lexer.rule(ri.V2, ri.V1))
+    val errors = parser.errors.AppendAll(lexer.errors)
+    if errors.NonEmpty() {
+        return Left(errors)
+    }
+    val tokenTypes = lexerRules.Map((r) => if (r.Fragment) None[int]() else vocab.TypeOf(r.Name))
+    Right(Compiled(
+        Vocab = vocab,
+        Parser = When(parserRules.NonEmpty(), parser.finish(ParserATN(), g.Name, None[int](), EmptyArray[Option[int]]())),
+        Rules = ruleIRs,
+        Lexer = When(lexerRules.NonEmpty(), lexer.finish(LexerATN(), g.Name, Some(tokensStart), tokenTypes)),
+    ))
+}
+
+// implicitLexerRules are the lexer rules ANTLR synthesizes for parser-rule
+// literals (`T__0: '=';`). They come before the grammar's own lexer rules, so
+// they win a tie on match length.
+func implicitLexerRules(v Vocabulary) Array[g4.Rule] =
+    ArrayTabulate(v.Names.Size(), (t) => t).Filter((t) => v.Implicit.Get(t)).Map((t) =>
+        g4.Rule(v.Names.Get(t), false, ArrayOf(g4.Alt(ArrayOf(g4.Literal(v.Literals.Get(t).Get())), None[string](), EmptyArray[g4.LexerCommand]())))
+    )
+
+// Frag is the entry and exit state of a compiled piece of grammar.
+struct Frag(Entry int, Exit int)
+
+// Piece is a compiled element or alternative: its states and its IR steps.
+struct Piece(Frag Frag, Steps Array[Step])
+
+type builder struct {
+    var kinds Array[StateKind]
+    var owner Array[int]
+    var outs Array[Array[Transition]]
+    var decisionOf Array[Option[int]]
+    var decisions Array[Decision]
+    var errors Array[string]
+    var ruleStart Array[int]
+    var ruleStop Array[int]
+    lexer bool
+    vocab Vocabulary
+    rules Array[g4.Rule]
+    names Array[string]
+}
+
+// newBuilder allocates the start and stop state of every rule up front, so a
+// rule can be called before it is compiled.
+func newBuilder(lexer bool, vocab Vocabulary, rules Array[g4.Rule]) Ptr[builder] {
+    val b = &builder{
+        kinds: EmptyArray[StateKind](),
+        owner: EmptyArray[int](),
+        outs: EmptyArray[Array[Transition]](),
+        decisionOf: EmptyArray[Option[int]](),
+        decisions: EmptyArray[Decision](),
+        errors: EmptyArray[string](),
+        ruleStart: EmptyArray[int](),
+        ruleStop: EmptyArray[int](),
+        lexer: lexer,
+        vocab: vocab,
+        rules: rules,
+        names: rules.Map(_.Name),
+    }
+    rules.ZipWithIndex().ForEach((ri) => {
+        b.ruleStart = b.ruleStart.Append(b.state(ri.V2, RuleStartState()))
+        b.ruleStop = b.ruleStop.Append(b.state(ri.V2, RuleStopState()))
+    })
+    b
+}
+
+func (b Ptr[builder]) state(rule int, kind StateKind) int {
+    val id = b.kinds.Size()
+    b.kinds = b.kinds.Append(kind)
+    b.owner = b.owner.Append(rule)
+    b.outs = b.outs.Append(EmptyArray[Transition]())
+    b.decisionOf = b.decisionOf.Append(None[int]())
+    id
+}
+
+func (b Ptr[builder]) edge(from int, t Transition) {
+    b.outs = b.outs.Updated(from, b.outs.Get(from).Append(t))
+}
+
+func (b Ptr[builder]) eps(from int, to int) {
+    b.edge(from, Epsilon(to))
+}
+
+// decide registers state as a decision. It is called once the state's
+// transitions are in place, after any decisions nested inside it, which is
+// the order ANTLR numbers decisions in.
+func (b Ptr[builder]) decide(state int, rule int, kind DecisionKind, greedy bool, text string) int {
+    val id = b.decisions.Size()
+    b.decisions = b.decisions.Append(Decision(id, state, rule, kind, greedy, b.outs.Get(state).Size(), text))
+    b.decisionOf = b.decisionOf.Updated(state, Some(id))
+    id
+}
+
+func (b Ptr[builder]) fail(msg string) {
+    b.errors = b.errors.Append(msg)
+}
+
+func (b Ptr[builder]) ruleName(rule int) string = b.names.Get(rule)
+
+func (b Ptr[builder]) finish(kind ATNKind, name string, tokensStart Option[int], tokenTypes Array[Option[int]]) ATN {
+    val states = ArrayTabulate(b.kinds.Size(), (i) => State(i, b.owner.Get(i), b.kinds.Get(i), b.outs.Get(i), b.decisionOf.Get(i)))
+    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes)
+}
+
+// tokensStart creates a lexer's start state: one alternative per token rule,
+// in rule order, which is the priority order for equally long matches.
+func (b Ptr[builder]) tokensStart() int {
+    val start = b.state(-1, TokensStartState())
+    b.rules.ZipWithIndex().Filter((ri) => !ri.V1.Fragment).ForEach((ri) => b.eps(start, b.ruleStart.Get(ri.V2)))
+    b.decide(start, -1, AltBlock(), true, "tokens")
+    start
+}
+
+// rule compiles rule index's body between its start and stop states.
+func (b Ptr[builder]) rule(index int, r g4.Rule) RuleIR {
+    val start = b.ruleStart.Get(index)
+    val stop = b.ruleStop.Get(index)
+    r.Alts match {
+        case Array(only) => {
+            val p = b.alt(index, only)
+            b.eps(start, p.Frag.Entry)
+            b.eps(p.Frag.Exit, stop)
+            RuleIR(index, r.Name, None[int](), ArrayOf(AltIR(only.Label, p.Steps)))
+        }
+        case _ => {
+            val choice = b.choice(index, r.Alts, s"${r.Name} : ${g4.FormatRule(r)}")
+            b.eps(start, choice.Frag.Entry)
+            b.eps(choice.Frag.Exit, stop)
+            choice.Steps match {
+                case Array(Choose(d, alts, _)) => RuleIR(index, r.Name, Some(d), r.Alts.Zip(alts).Map((p) => AltIR(p.V1.Label, p.V2)))
+                case _ => RuleIR(index, r.Name, None[int](), EmptyArray[AltIR]())
+            }
+        }
+    }
+}
+
+// alt compiles one alternative: its elements in sequence, then its lexer commands.
+func (b Ptr[builder]) alt(rule int, a g4.Alt) Piece {
+    val entry = b.state(rule, BasicState())
+    var cur = entry
+    var steps = EmptyArray[Step]()
+    a.Elements.ForEach((e) => {
+        val p = b.element(rule, e, None[LabelRef]())
+        b.eps(cur, p.Frag.Entry)
+        cur = p.Frag.Exit
+        steps = steps.AppendAll(p.Steps)
+    })
+    if a.Commands.NonEmpty() {
+        val after = b.state(rule, BasicState())
+        b.edge(cur, LexerActions(after, a.Commands))
+        cur = after
+    }
+    Piece(Frag(entry, cur), steps)
+}
+
+// block compiles a group of alternatives; a single alternative is inlined.
+func (b Ptr[builder]) block(rule int, alts Array[g4.Alt]) Piece = alts match {
+    case Array(only) => b.alt(rule, only)
+    case _ => b.choice(rule, alts, g4.FormatElement(g4.Block(alts)))
+}
+
+// choice compiles a decision between two or more alternatives.
+func (b Ptr[builder]) choice(rule int, alts Array[g4.Alt], text string) Piece {
+    val start = b.state(rule, BlockStartState())
+    val end = b.state(rule, BlockEndState())
+    val pieces = alts.Map((a) => b.alt(rule, a))
+    pieces.ForEach((p) => {
+        b.eps(start, p.Frag.Entry)
+        b.eps(p.Frag.Exit, end)
+    })
+    val d = b.decide(start, rule, AltBlock(), true, text)
+    Piece(Frag(start, end), ArrayOf(Choose(d, pieces.Map(_.Steps), None[int]())))
+}
+
+func (b Ptr[builder]) element(rule int, e g4.Element, label Option[LabelRef]) Piece = e match {
+    case g4.Labeled(name, appendTo, inner) => b.element(rule, inner, Some(LabelRef(name, appendTo)))
+    case g4.RuleRef(name) => b.ruleCall(rule, name, label)
+    case g4.TokenRef(name) if b.lexer => b.ruleCall(rule, name, label)
+    case g4.TokenRef(name) => b.vocab.TypeOf(name) match {
+        case Some(t) => b.matchSet(rule, SetOf(t), label)
+        case None() => b.empty(rule, s"rule '${b.ruleName(rule)}' references undefined token '$name'")
+    }
+    case g4.Literal(v) if b.lexer => b.chars(rule, v)
+    case g4.Literal(v) => b.vocab.LiteralType(v) match {
+        case Some(t) => b.matchSet(rule, SetOf(t), label)
+        case None() => b.empty(rule, s"rule '${b.ruleName(rule)}': no lexer rule defines literal '$v'")
+    }
+    case g4.Block(alts) => b.setOf(e) match {
+        case Some(set) => b.matchSet(rule, set, label)
+        case None() if label.IsDefined() => b.empty(rule, s"rule '${b.ruleName(rule)}': label '${label.Get().Name}' is on a block that is not a set")
+        case None() => b.block(rule, alts)
+    }
+    case g4.Repeat(inner, q) => b.repeat(rule, inner, q)
+    case g4.Action(body) => b.passThrough(rule, Action(-1, rule, body), RunAction(body))
+    case g4.Predicate(body) => b.passThrough(rule, Predicate(-1, rule, body), CheckPredicate(body))
+    case g4.CharSet(body) if b.lexer => DecodeCharSet(body) match {
+        case Right(set) => b.matchSet(rule, set, label)
+        case Left(msg) => b.empty(rule, s"rule '${b.ruleName(rule)}': $msg")
+    }
+    case _ => b.setOf(e) match {
+        case Some(set) => b.matchSet(rule, set, label)
+        case None() => b.empty(rule, s"rule '${b.ruleName(rule)}': ${describe(e)} is not allowed here")
+    }
+}
+
+// describe names an element kind for messages.
+func describe(e g4.Element) string = e match {
+    case g4.CharSet(body) => s"set [$body]"
+    case g4.Range(from, to) => s"range '$from'..'$to'"
+    case g4.Not(_) => "this ~ operand"
+    case g4.Wildcard() => "wildcard"
+    case _ => "element"
+}
+
+// universe is every symbol: token types 1..MaxType in a parser (EOF excluded,
+// as ANTLR's wildcard and ~ exclude it), all code points in a lexer.
+func (b Ptr[builder]) universe() IntervalSet =
+    if (b.lexer) RangeSet(0, MaxCodePoint) else RangeSet(1, b.vocab.MaxType())
+
+// setOf is the set of symbols e matches when e matches exactly one symbol
+// from a set: a token, a one-character literal, a lexer set or range, a
+// wildcard, a negation, or a block whose every alternative is one such element.
+func (b Ptr[builder]) setOf(e g4.Element) Option[IntervalSet] = e match {
+    case g4.TokenRef(name) if !b.lexer => b.vocab.TypeOf(name).Map((t) => SetOf(t))
+    case g4.Literal(v) if !b.lexer => b.vocab.LiteralType(v).Map((t) => SetOf(t))
+    case g4.Literal(v) => singleChar(v).Map((c) => SetOf(c))
+    case g4.CharSet(body) if b.lexer => DecodeCharSet(body) match {
+        case Right(set) => Some(set)
+        case Left(_) => None[IntervalSet]()
+    }
+    case g4.Range(from, to) if b.lexer => singleChar(from).FlatMap((lo) => singleChar(to).Map((hi) => RangeSet(lo, hi)))
+    case g4.Wildcard() => Some(b.universe())
+    case g4.Not(inner) => b.setOf(inner).Map((set) => set.Complement(b.universe().Min().GetOrElse(0), b.universe().Ranges.Last().Hi))
+    case g4.Block(alts) => {
+        val sets = alts.Map((a) => b.altSet(a))
+        if (sets.ForAll(_.IsDefined())) Some(sets.FoldLeft(EmptySet(), (acc, s) => acc.Union(s.Get()))) else None[IntervalSet]()
+    }
+    case _ => None[IntervalSet]()
+}
+
+// altSet is the set an alternative matches when it is a single unlabeled
+// one-symbol element with no lexer commands.
+func (b Ptr[builder]) altSet(a g4.Alt) Option[IntervalSet] = a.Elements match {
+    case Array(single) if a.Commands.IsEmpty() && a.Label.IsEmpty() => single match {
+        case g4.Labeled(_, _, _) => None[IntervalSet]()
+        case g4.Block(_) => None[IntervalSet]()
+        case _ => b.setOf(single)
+    }
+    case _ => None[IntervalSet]()
+}
+
+// singleChar is the code point of a one-character literal body.
+func singleChar(body string) Option[int] = DecodeLiteral(body) match {
+    case Right(cps) if cps.Size() == 1 => Some(cps.Head())
+    case _ => None[int]()
+}
+
+// repeat compiles `x?`, `x*` and `x+` the way ANTLR does. A block under a
+// quantifier keeps its own alternatives; an optional block's alternatives and
+// its exit share one decision, while a loop's alternatives get a decision of
+// their own inside the loop decision.
+func (b Ptr[builder]) repeat(rule int, inner g4.Element, q g4.Quantifier) Piece {
+    val text = g4.FormatElement(g4.Repeat(inner, q))
+    val alts = inner match {
+        case g4.Block(blockAlts) if b.setOf(inner).IsEmpty() => blockAlts
+        case _ => ArrayOf(g4.Alt(ArrayOf(inner), None[string](), EmptyArray[g4.LexerCommand]()))
+    }
+    q match {
+        case g4.Optional(greedy) => b.optional(rule, alts, greedy, text)
+        case g4.Star(greedy) => b.star(rule, alts, greedy, text)
+        case g4.Plus(greedy) => b.plus(rule, alts, greedy, text)
+    }
+}
+
+func (b Ptr[builder]) optional(rule int, alts Array[g4.Alt], greedy bool, text string) Piece {
+    val start = b.state(rule, BlockStartState())
+    val end = b.state(rule, BlockEndState())
+    val pieces = alts.Map((a) => b.alt(rule, a))
+    if !greedy {
+        b.eps(start, end)
+    }
+    pieces.ForEach((p) => {
+        b.eps(start, p.Frag.Entry)
+        b.eps(p.Frag.Exit, end)
+    })
+    if greedy {
+        b.eps(start, end)
+    }
+    val d = b.decide(start, rule, OptionalBlock(), greedy, text)
+    val exitAlt = if (greedy) pieces.Size() + 1 else 1
+    Piece(Frag(start, end), ArrayOf(Choose(d, pieces.Map(_.Steps), Some(exitAlt))))
+}
+
+func (b Ptr[builder]) star(rule int, alts Array[g4.Alt], greedy bool, text string) Piece {
+    val entry = b.state(rule, StarLoopEntryState())
+    val body = b.block(rule, alts)
+    val loopBack = b.state(rule, StarLoopBackState())
+    val end = b.state(rule, LoopEndState())
+    if greedy {
+        b.eps(entry, body.Frag.Entry)
+        b.eps(entry, end)
+    } else {
+        b.eps(entry, end)
+        b.eps(entry, body.Frag.Entry)
+    }
+    b.eps(body.Frag.Exit, loopBack)
+    b.eps(loopBack, entry)
+    val d = b.decide(entry, rule, StarEntry(), greedy, text)
+    Piece(Frag(entry, end), ArrayOf(Loop(false, d, if (greedy) 1 else 2, body.Steps)))
+}
+
+func (b Ptr[builder]) plus(rule int, alts Array[g4.Alt], greedy bool, text string) Piece {
+    val body = b.block(rule, alts)
+    val loopBack = b.state(rule, PlusLoopBackState())
+    val end = b.state(rule, LoopEndState())
+    b.eps(body.Frag.Exit, loopBack)
+    if greedy {
+        b.eps(loopBack, body.Frag.Entry)
+        b.eps(loopBack, end)
+    } else {
+        b.eps(loopBack, end)
+        b.eps(loopBack, body.Frag.Entry)
+    }
+    val d = b.decide(loopBack, rule, PlusBack(), greedy, text)
+    Piece(Frag(body.Frag.Entry, end), ArrayOf(Loop(true, d, if (greedy) 1 else 2, body.Steps)))
+}
+
+func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Piece {
+    val target = b.names.IndexOf(name)
+    if target < 0 {
+        return b.empty(rule, s"rule '${b.ruleName(rule)}' references undefined rule '$name'")
+    }
+    val from = b.state(rule, BasicState())
+    val follow = b.state(rule, BasicState())
+    b.edge(from, RuleCall(b.ruleStart.Get(target), target, follow))
+    Piece(Frag(from, follow), ArrayOf(CallRule(target, follow, label)))
+}
+
+// matchSet compiles a one-symbol match; a one-member set becomes an atom.
+func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef]) Piece {
+    if set.IsEmpty() {
+        return b.empty(rule, s"rule '${b.ruleName(rule)}' contains a set that matches nothing")
+    }
+    val from = b.state(rule, BasicState())
+    val to = b.state(rule, BasicState())
+    val single = set.Size() == 1
+    if (single) b.edge(from, Atom(to, set.Min().Get())) else b.edge(from, SetMatch(to, set))
+    val step = if (single) MatchToken(set.Min().Get(), label) else MatchSet(set, label)
+    Piece(Frag(from, to), ArrayOf(step))
+}
+
+// chars compiles a lexer literal into one atom per code point.
+func (b Ptr[builder]) chars(rule int, body string) Piece = DecodeLiteral(body) match {
+    case Left(msg) => b.empty(rule, s"rule '${b.ruleName(rule)}': $msg")
+    case Right(cps) if cps.IsEmpty() => b.empty(rule, s"rule '${b.ruleName(rule)}' contains an empty literal")
+    case Right(cps) => {
+        val entry = b.state(rule, BasicState())
+        val exit = cps.FoldLeft(entry, (from, cp) => {
+            val to = b.state(rule, BasicState())
+            b.edge(from, Atom(to, cp))
+            to
+        })
+        Piece(Frag(entry, exit), EmptyArray[Step]())
+    }
+}
+
+// passThrough compiles an action or predicate: an epsilon-like transition
+// (built with a placeholder target, filled in here) plus its IR step.
+func (b Ptr[builder]) passThrough(rule int, t Transition, step Step) Piece {
+    val from = b.state(rule, BasicState())
+    val to = b.state(rule, BasicState())
+    val placed = t match {
+        case Action(_, r, body) => Action(to, r, body)
+        case Predicate(_, r, body) => Predicate(to, r, body)
+        case other => other
+    }
+    b.edge(from, placed)
+    Piece(Frag(from, to), ArrayOf(step))
+}
+
+// empty records msg (when not empty) and returns a piece that matches nothing,
+// so compilation can go on and report every problem.
+func (b Ptr[builder]) empty(rule int, msg string) Piece {
+    if msg != "" {
+        b.fail(msg)
+    }
+    val s = b.state(rule, BasicState())
+    Piece(Frag(s, s), EmptyArray[Step]())
+}

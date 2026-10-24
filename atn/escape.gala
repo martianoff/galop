@@ -1,0 +1,126 @@
+package atn
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/go_interop"
+)
+
+// DecodeLiteral turns a literal body as written in a grammar (escapes kept,
+// quotes removed) into its code points. Escapes are ANTLR's: \n \r \t \b \f
+// \\ \' \" \uXXXX \u{X...}.
+func DecodeLiteral(body string) Either[string, Array[int]] {
+    val rs = ToRunes(body)
+    var i = 0
+    var out = EmptyArray[int]()
+    var err = None[string]()
+    for err.IsEmpty() && i < rs.Size() {
+        if rs[i] == '\\' {
+            decodeEscape(rs, i, false) match {
+                case Right(step) => {
+                    out = out.Append(step.V1)
+                    i = step.V2
+                }
+                case Left(msg) => err = Some(msg)
+            }
+        } else {
+            out = out.Append(int(rs[i]))
+            i = i + 1
+        }
+    }
+    err match {
+        case Some(msg) => Left(s"invalid escape in '$body': $msg")
+        case None() => Right(out)
+    }
+}
+
+// DecodeCharSet turns the body of a lexer set `[...]` into the set it
+// denotes. `a-z` is a range; inside a set `\]`, `\-` and `\\` are escapes too.
+func DecodeCharSet(body string) Either[string, IntervalSet] {
+    val rs = ToRunes(body)
+    var i = 0
+    var acc = EmptyArray[Interval]()
+    var err = None[string]()
+    // next reads one possibly escaped character at i.
+    val next = (at int) => if (rs[at] == '\\') decodeEscape(rs, at, true) else Right[string, Tuple[int, int]](Tuple(int(rs[at]), at + 1))
+    for err.IsEmpty() && i < rs.Size() {
+        next(i) match {
+            case Left(msg) => err = Some(msg)
+            case Right(first) => {
+                val isRange = first.V2 + 1 < rs.Size() && rs[first.V2] == '-'
+                if isRange {
+                    next(first.V2 + 1) match {
+                        case Left(msg) => err = Some(msg)
+                        case Right(last) => {
+                            if last.V1 < first.V1 {
+                                err = Some(s"range ${first.V1}..${last.V1} is reversed")
+                            }
+                            acc = acc.Append(Interval(first.V1, last.V1))
+                            i = last.V2
+                        }
+                    }
+                } else {
+                    acc = acc.Append(Interval(first.V1, first.V1))
+                    i = first.V2
+                }
+            }
+        }
+    }
+    err match {
+        case Some(msg) => Left(s"invalid set [$body]: $msg")
+        case None() => Right(normalize(acc))
+    }
+}
+
+// decodeEscape decodes the escape starting with the backslash at rs[at] and
+// returns (code point, index after the escape).
+func decodeEscape(rs []rune, at int, inSet bool) Either[string, Tuple[int, int]] {
+    if at + 1 >= rs.Size() {
+        return Left("dangling backslash")
+    }
+    val c = rs[at + 1]
+    val simple = c match {
+        case 'n' => Some(10)
+        case 'r' => Some(13)
+        case 't' => Some(9)
+        case 'b' => Some(8)
+        case 'f' => Some(12)
+        case '\\' => Some(92)
+        case '\'' => Some(39)
+        case '"' => Some(34)
+        case ']' if inSet => Some(93)
+        case '-' if inSet => Some(45)
+        case _ => None[int]()
+    }
+    simple match {
+        case Some(cp) => Right(Tuple(cp, at + 2))
+        case None() if c == 'u' => decodeUnicode(rs, at + 2)
+        case None() if c == 'p' || c == 'P' => Left("unicode property escapes (\\p{...}) are not supported yet")
+        case None() => Left(s"unknown escape \\${string(c)}")
+    }
+}
+
+// decodeUnicode decodes the digits of \uXXXX or \u{X...} starting at rs[at].
+func decodeUnicode(rs []rune, at int) Either[string, Tuple[int, int]] {
+    val braced = at < rs.Size() && rs[at] == '{'
+    val start = if (braced) at + 1 else at
+    var end = start
+    var value = 0
+    for end < rs.Size() && hexValue(rs[end]).IsDefined() && (braced || end < start + 4) && end < start + 6 {
+        value = value * 16 + hexValue(rs[end]).Get()
+        end = end + 1
+    }
+    val count = end - start
+    val closeOk = !braced || (end < rs.Size() && rs[end] == '}')
+    val lengthOk = if (braced) count >= 1 else count == 4
+    if (!closeOk || !lengthOk) Left("malformed \\u escape")
+    else if (value > MaxCodePoint) Left("\\u escape is not a code point")
+    else Right(Tuple(value, if (braced) end + 1 else end))
+}
+
+// hexValue is the value of hex digit c.
+func hexValue(c rune) Option[int] = c match {
+    case _ if c >= '0' && c <= '9' => Some(int(c - '0'))
+    case _ if c >= 'a' && c <= 'f' => Some(int(c - 'a') + 10)
+    case _ if c >= 'A' && c <= 'F' => Some(int(c - 'A') + 10)
+    case _ => None[int]()
+}
