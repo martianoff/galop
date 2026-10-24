@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "diff",
+    srcs = ["diff.go"],
+    importpath = "github.com/martianoff/galop/differential/diff",
+    visibility = ["//differential:__subpackages__"],
+    deps = [
+        "//differential/corpus",
+        "//differential/gala",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)
+
+# Parses the GALA corpus with ANTLR under SLL and under LL prediction and
+# requires identical trees; also holds the testing.B benchmarks:
+#   bazel run //differential/diff:diff_test -- -test.run='^$' -test.bench=. -test.benchmem
+go_test(
+    name = "diff_test",
+    size = "medium",
+    srcs = ["corpus_test.go"],
+    args = ["-manifest=$(rlocationpath //differential:corpus)"],
+    data = ["//differential:corpus"],
+    embed = [":diff"],
+    deps = [
+        "//differential/corpus",
+        "//differential/gala",
+    ],
+)

@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+# `bazel run //differential/cmd/difftest` runs over the GALA corpus; pass -dir or
+# files after `--` to run over other input.
+go_binary(
+    name = "difftest",
+    srcs = ["main.go"],
+    args = ["-manifest=$(rlocationpath //differential:corpus)"],
+    data = ["//differential:corpus"],
+    deps = [
+        "//differential/corpus",
+        "//differential/diff",
+        "//differential/gala",
+    ],
+)

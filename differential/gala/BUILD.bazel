@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "gala",
+    srcs = [
+        "newline.go",
+        "parse.go",
+    ],
+    importpath = "github.com/martianoff/galop/differential/gala",
+    visibility = ["//differential:__subpackages__"],
+    deps = [
+        "//differential/antlrgala",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)
+
+go_test(
+    name = "gala_test",
+    srcs = ["parse_test.go"],
+    embed = [":gala"],
+    deps = [
+        "//differential/antlrgala",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)

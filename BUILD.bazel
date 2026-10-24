@@ -5,6 +5,9 @@ load("@rules_gala//gala:defs.bzl", "gala_imports_helper")
 # files. Run `bazel run //:gazelle` after adding or removing a .gala file.
 # gazelle:prefix github.com/martianoff/galop
 # gazelle:gala_prefix github.com/martianoff/galop
+# The differential harness is plain Go wired by hand: it builds on parser
+# sources ANTLR generates at build time, which gazelle cannot see.
+# gazelle:exclude differential
 gazelle_binary(
     name = "gazelle_bin",
     languages = ["@gala_gazelle//gala"],
