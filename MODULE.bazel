@@ -1,0 +1,17 @@
+module(
+    name = "galop",
+    # Tracks the latest tagged galop release. Bump in lockstep with the release
+    # tag so registry consumers see a MODULE.bazel whose version matches the one
+    # they requested.
+    version = "0.0.0",
+)
+
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "gala", version = "0.92.1")
+bazel_dep(name = "rules_gala", version = "0.3.2")
+bazel_dep(name = "rules_go", version = "0.59.0")
+bazel_dep(name = "gazelle", version = "0.47.0")
+bazel_dep(name = "gala_gazelle", version = "0.3.1", dev_dependency = True)
+
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.25.5")

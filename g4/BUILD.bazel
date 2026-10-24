@@ -1,0 +1,40 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "g4",
+    srcs = [
+        "check.gala",
+        "format.gala",
+        "lexer.gala",
+        "model.gala",
+        "parser.gala",
+        "roundtrip.gala",
+    ],
+    importpath = "github.com/martianoff/galop/g4",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@gala//collection_immutable",
+        "@gala//go_interop",
+        "@gala//stream",
+    ],
+)
+
+gala_test(
+    name = "g4_test",
+    srcs = ["g4_test.gala"],
+    importpath = "github.com/martianoff/galop/g4",
+    lib_srcs = [
+        "check.gala",
+        "format.gala",
+        "lexer.gala",
+        "model.gala",
+        "parser.gala",
+        "roundtrip.gala",
+    ],
+    pkg = "g4",
+    deps = [
+        "@gala//collection_immutable",
+        "@gala//go_interop",
+        "@gala//stream",
+    ],
+)

@@ -1,0 +1,116 @@
+package main
+
+import (
+    "os"
+
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/fs"
+
+    "github.com/martianoff/galop/g4"
+)
+
+// version is the galop release this binary was built from.
+val version = "0.0.0-dev"
+
+val usage = `galop - a parser generator for ANTLR-style .g4 grammars, written in GALA
+
+Usage:
+  galop check [--roundtrip] <file.g4>...   parse and validate grammars
+  galop format <file.g4>                   print a grammar in canonical form
+  galop version                            print the version
+
+check reports syntax errors with their position and semantic errors (undefined
+or duplicate rules, references that cross between lexer and parser rules).
+--roundtrip also verifies that formatting the grammar and parsing it again
+gives back the same model.
+`
+
+func main() {
+    val args = ArrayOf(os.Args...).Drop(1)
+    val code = args match {
+        case Array("check", rest...) => check(rest)
+        case Array("format", rest...) => format(rest)
+        case Array("version", _...) | Array("--version", _...) => {
+            Println(s"galop $version")
+            0
+        }
+        case Array("help", _...) | Array("--help", _...) | Array("-h", _...) => {
+            Print(usage)
+            0
+        }
+        case _ => {
+            eprintln(usage)
+            2
+        }
+    }
+    os.Exit(code)
+}
+
+// check validates each file and returns the process exit code.
+func check(args Array[string]) int {
+    val roundTrip = args.Contains("--roundtrip")
+    val files = args.Filter(_ != "--roundtrip")
+    if files.IsEmpty() {
+        eprintln("galop check: no grammar files given")
+        return 2
+    }
+    val failures = files.Map((f) => checkFile(f, roundTrip)).Count((passed) => !passed)
+    if (failures > 0) 1 else 0
+}
+
+// checkFile reports on one grammar and returns whether it passed.
+func checkFile(path string, roundTrip bool) bool = load(path) match {
+    case Left(msg) => {
+        eprintln(msg)
+        false
+    }
+    case Right(g) => {
+        val roundTripProblems =
+            if (roundTrip) g4.RoundTrip(g).Map((m) => ArrayOf("round trip: " + m)).GetOrElse(EmptyArray[string]())
+            else EmptyArray[string]()
+        val problems = g4.Check(g).AppendAll(roundTripProblems)
+        problems match {
+            case Array() => {
+                val lexer = g.Rules.Count(_.IsLexer())
+                Println(s"$path: ok (grammar ${g.Name}: ${g.Rules.Size() - lexer} parser rules, $lexer lexer rules)")
+                true
+            }
+            case _ => {
+                problems.ForEach((p) => eprintln(s"$path: $p"))
+                false
+            }
+        }
+    }
+}
+
+// format prints one grammar in canonical form and returns the process exit code.
+func format(args Array[string]) int = args match {
+    case Array(path) => load(path) match {
+        case Right(g) => {
+            Print(g4.Format(g))
+            0
+        }
+        case Left(msg) => {
+            eprintln(msg)
+            1
+        }
+    }
+    case _ => {
+        eprintln("galop format: expected exactly one grammar file")
+        2
+    }
+}
+
+// load reads and parses a grammar file; an error is rendered as `path:line:col: message`.
+func load(path string) Either[string, g4.Grammar] = fs.ReadFileString(path) match {
+    case Failure(e) => Left(s"$path: ${e.Error()}")
+    case Success(src) => g4.Parse(src) match {
+        case Left(d) => Left(s"$path:${d.String()}")
+        case Right(g) => Right(g)
+    }
+}
+
+// eprintln writes a line to standard error.
+func eprintln(text string) {
+    os.Stderr.WriteString(text + "\n")
+}

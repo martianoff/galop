@@ -1,0 +1,287 @@
+package g4
+
+import (
+    "bytes"
+
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/go_interop"
+    "martianoff/gala/stream"
+)
+
+// TokKind classifies a token of the .g4 language itself.
+sealed type TokKind {
+    // TokId is an identifier: a rule name, token name, label or keyword.
+    case TokId()
+    // TokInt is a decimal integer, as in an option value.
+    case TokInt()
+    // TokString is a quoted literal; the token text is the body without quotes.
+    case TokString()
+    // TokSet is a lexer `[...]` set; the token text is the body without brackets.
+    case TokSet()
+    // TokAction is a `{...}` block; the token text is the body without braces.
+    case TokAction()
+    // TokPredicate is a `{...}?` predicate; the token text is the body.
+    case TokPredicate()
+    // TokPunct is punctuation; the token text is the punctuation itself.
+    case TokPunct()
+    // TokEOF ends the stream.
+    case TokEOF()
+}
+
+// Token is one lexeme of a .g4 source, with its 1-based start position.
+struct Token(Kind TokKind, Text string, Line int, Col int)
+
+// IsPunct reports whether t is the punctuation p.
+func (t Token) IsPunct(p string) bool = t.Kind.isTokPunct() && t.Text == p
+
+// IsId reports whether t is the identifier name.
+func (t Token) IsId(name string) bool = t.Kind.isTokId() && t.Text == name
+
+// Punctuation, longest first so that `..` wins over `.`.
+val punctuation = ArrayOf(
+    "..", "+=", "->", "::",
+    ":", ";", "|", "(", ")", "?", "*", "+", "~", ".", "=", ",", "#", "@", "<", ">", "{", "}",
+)
+
+// Identifiers that open a `{ ... }` holding declarations rather than an action.
+val declarationBlocks = ArrayOf("options", "tokens", "channels")
+
+type lexer struct {
+    var data []byte
+    var pos int
+    var line int
+    var col int
+    // inDecls is set inside an options/tokens/channels block, where `}` is punctuation.
+    var inDecls bool
+    var toks Array[Token]
+    var err Option[Diagnostic]
+}
+
+// Lex splits a .g4 source into tokens. Comments and whitespace are dropped.
+// The stream always ends with a TokEOF token.
+func Lex(src string) Either[Diagnostic, Array[Token]] {
+    val l = &lexer{
+        data: ToBytes(src),
+        pos: 0,
+        line: 1,
+        col: 1,
+        inDecls: false,
+        toks: EmptyArray[Token](),
+        err: None[Diagnostic](),
+    }
+    l.skipTrivia()
+    for l.err.IsEmpty() && l.pos < l.data.Size() {
+        l.next()
+        l.skipTrivia()
+    }
+    l.err match {
+        case Some(d) => Left(d)
+        case None() => Right(l.toks.Append(Token(TokEOF(), "", l.line, l.col)))
+    }
+}
+
+func (l Ptr[lexer]) fail(line int, col int, msg string) {
+    if l.err.IsEmpty() {
+        l.err = Some(Diagnostic(line, col, msg))
+    }
+}
+
+func (l Ptr[lexer]) atEnd() bool = l.pos >= l.data.Size()
+
+func (l Ptr[lexer]) peekAt(off int) byte =
+    if (l.pos + off < l.data.Size()) l.data[l.pos + off] else 0
+
+func (l Ptr[lexer]) advance() {
+    if l.data[l.pos] == '\n' {
+        l.line = l.line + 1
+        l.col = 1
+    } else {
+        l.col = l.col + 1
+    }
+    l.pos = l.pos + 1
+}
+
+// advanceWhile advances past the run of bytes that satisfy p.
+func (l Ptr[lexer]) advanceWhile(p func(byte) bool) {
+    for !l.atEnd() && p(l.data[l.pos]) {
+        l.advance()
+    }
+}
+
+func (l Ptr[lexer]) emit(kind TokKind, text string, line int, col int) {
+    l.toks = l.toks.Append(Token(kind, text, line, col))
+}
+
+func (l Ptr[lexer]) text(from int, to int) string = ToString(Slice(l.data, from, to))
+
+// skipTrivia skips whitespace and comments; an unterminated block comment is an error.
+func (l Ptr[lexer]) skipTrivia() {
+    for !l.atEnd() {
+        val c = l.data[l.pos]
+        if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+            l.advance()
+        } else if c == '/' && l.peekAt(1) == '/' {
+            l.advanceWhile((b) => b != '\n')
+        } else if c == '/' && l.peekAt(1) == '*' {
+            l.blockComment()
+        } else {
+            break
+        }
+    }
+}
+
+func (l Ptr[lexer]) blockComment() {
+    val line = l.line
+    val col = l.col
+    l.advance()
+    l.advance()
+    for !l.atEnd() && !(l.data[l.pos] == '*' && l.peekAt(1) == '/') {
+        l.advance()
+    }
+    if l.atEnd() {
+        l.fail(line, col, "unterminated comment")
+    } else {
+        l.advance()
+        l.advance()
+    }
+}
+
+func (l Ptr[lexer]) next() {
+    val line = l.line
+    val col = l.col
+    val c = l.data[l.pos]
+    c match {
+        case _ if isIdentStart(c) => l.identifier(line, col)
+        case _ if isDigit(c) => l.integer(line, col)
+        case '\'' => l.quoted(line, col)
+        case '[' => l.charSet(line, col)
+        case '{' if !l.inDecls => l.action(line, col)
+        case _ => {
+            if c == '}' {
+                l.inDecls = false
+            }
+            l.punct(line, col)
+        }
+    }
+}
+
+func (l Ptr[lexer]) identifier(line int, col int) {
+    val start = l.pos
+    l.advanceWhile(isIdentPart)
+    val word = l.text(start, l.pos)
+    l.emit(TokId(), word, line, col)
+    if declarationBlocks.Contains(word) {
+        l.skipTrivia()
+        if !l.atEnd() && l.data[l.pos] == '{' {
+            l.emit(TokPunct(), "{", l.line, l.col)
+            l.advance()
+            l.inDecls = true
+        }
+    }
+}
+
+func (l Ptr[lexer]) punct(line int, col int) {
+    punctuation.Find(l.hasPrefix) match {
+        case Some(p) => {
+            l.emit(TokPunct(), p, line, col)
+            stream.Range(0, p.ByteSize()).ForEach((_) => l.advance())
+        }
+        case None() => l.fail(line, col, s"unexpected character '${l.text(l.pos, l.pos + 1)}'")
+    }
+}
+
+func (l Ptr[lexer]) hasPrefix(p string) bool =
+    bytes.HasPrefix(Slice(l.data, l.pos, l.data.Size()), ToBytes(p))
+
+// scanDelimited scans from just after an opening delimiter to the closing
+// byte, keeping backslash escapes as written. It returns the body, or None
+// when the input ends first (or a newline comes, if stopAtNewline).
+func (l Ptr[lexer]) scanDelimited(closing byte, stopAtNewline bool) Option[string] {
+    val start = l.pos
+    for !l.atEnd() && l.data[l.pos] != closing && !(stopAtNewline && l.data[l.pos] == '\n') {
+        if l.data[l.pos] == '\\' && l.pos + 1 < l.data.Size() {
+            l.advance()
+        }
+        l.advance()
+    }
+    if l.atEnd() || l.data[l.pos] != closing {
+        return None()
+    }
+    val body = l.text(start, l.pos)
+    l.advance()
+    Some(body)
+}
+
+// quoted lexes a '...' literal.
+func (l Ptr[lexer]) quoted(line int, col int) {
+    l.advance()
+    l.scanDelimited('\'', true) match {
+        case Some(body) => l.emit(TokString(), body, line, col)
+        case None() => l.fail(line, col, "unterminated string literal")
+    }
+}
+
+// charSet lexes a lexer `[...]` set.
+func (l Ptr[lexer]) charSet(line int, col int) {
+    l.advance()
+    l.scanDelimited(']', false) match {
+        case Some(body) => l.emit(TokSet(), body, line, col)
+        case None() => l.fail(line, col, "unterminated character set")
+    }
+}
+
+// action lexes a `{...}` action or a `{...}?` predicate. Nested braces must
+// balance; braces inside quoted strings, characters and comments do not count,
+// as in ANTLR.
+func (l Ptr[lexer]) action(line int, col int) {
+    l.advance()
+    val start = l.pos
+    var depth = 1
+    for !l.atEnd() && depth > 0 {
+        val c = l.data[l.pos]
+        (c, l.peekAt(1)) match {
+            case ('/', '/') => l.advanceWhile((b) => b != '\n')
+            case ('/', '*') => l.blockComment()
+            case ('"', _) | ('\'', _) => {
+                l.advance()
+                l.scanDelimited(c, true)
+            }
+            case ('{', _) => {
+                depth = depth + 1
+                l.advance()
+            }
+            case ('}', _) => {
+                depth = depth - 1
+                // The closing brace is consumed below, after the body is taken.
+                if depth > 0 {
+                    l.advance()
+                }
+            }
+            case _ => l.advance()
+        }
+    }
+    if depth > 0 {
+        l.fail(line, col, "unterminated action")
+        return
+    }
+    val body = l.text(start, l.pos)
+    l.advance()
+    if !l.atEnd() && l.data[l.pos] == '?' {
+        l.advance()
+        l.emit(TokPredicate(), body, line, col)
+    } else {
+        l.emit(TokAction(), body, line, col)
+    }
+}
+
+func (l Ptr[lexer]) integer(line int, col int) {
+    val start = l.pos
+    l.advanceWhile(isDigit)
+    l.emit(TokInt(), l.text(start, l.pos), line, col)
+}
+
+func isDigit(c byte) bool = c >= '0' && c <= '9'
+
+func isIdentStart(c byte) bool = c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+
+func isIdentPart(c byte) bool = isIdentStart(c) || isDigit(c)

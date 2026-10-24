@@ -1,0 +1,20 @@
+common --enable_bzlmod
+common --noenable_workspace
+build --enable_runfiles
+
+# Resolve the rules_gala module and the gala language module from the registry
+# hosted in github.com/martianoff/rules-gala. Order matters: list it first so it
+# wins for both module names.
+common --registry=https://raw.githubusercontent.com/martianoff/rules-gala/main/
+common --registry=https://bcr.bazel.build
+
+# Cross-language type inference: pass GOROOT and PATH through to the transpile
+# actions so the transpiler can use go/importer for Go types.
+build --action_env=GOROOT
+build --action_env=PATH
+
+# Recycle persistent workers between builds to avoid Windows file locks on
+# gala_worker.exe.
+build --worker_quit_after_build
+
+test --test_output=errors

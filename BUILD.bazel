@@ -1,0 +1,20 @@
+load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
+load("@rules_gala//gala:defs.bzl", "gala_imports_helper")
+
+# One composite gazelle binary manages GALA, mixed GALA/Go and pure-Go BUILD
+# files. Run `bazel run //:gazelle` after adding or removing a .gala file.
+# gazelle:prefix github.com/martianoff/galop
+# gazelle:gala_prefix github.com/martianoff/galop
+gazelle_binary(
+    name = "gazelle_bin",
+    languages = ["@gala_gazelle//gala"],
+)
+
+gala_imports_helper(name = "gala_imports")
+
+gazelle(
+    name = "gazelle",
+    data = [":gala_imports"],
+    extra_args = ["-gala_helper=$(execpath :gala_imports)"],
+    gazelle = ":gazelle_bin",
+)

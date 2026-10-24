@@ -1,0 +1,11 @@
+load("@rules_gala//gala:defs.bzl", "gala_binary")
+
+gala_binary(
+    name = "galop",
+    srcs = ["main.gala"],
+    deps = [
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//fs",
+    ],
+)

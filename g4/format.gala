@@ -1,0 +1,106 @@
+package g4
+
+import . "martianoff/gala/collection_immutable"
+
+// Format renders g as canonical .g4 text. Parsing the result gives back a
+// grammar equal to g. Comments are not part of the model, so they are not printed.
+func Format(g Grammar) string {
+    val header = s"${kindPrefix(g.Kind)}grammar ${g.Name};\n"
+    val sections = ArrayOf(
+        printOptions(g.Options),
+        printNameList("tokens", g.Tokens),
+        printNameList("channels", g.Channels),
+        g.Actions.Map(printNamedAction).MkString(""),
+    ).Filter(_ != "")
+    val prequel = if (sections.IsEmpty()) "" else "\n" + sections.MkString("")
+    val rules = g.Rules.Map((r) => "\n" + FormatRule(r)).MkString("")
+    header + prequel + rules
+}
+
+func kindPrefix(k GrammarKind) string = k match {
+    case Combined() => ""
+    case LexerOnly() => "lexer "
+    case ParserOnly() => "parser "
+}
+
+func printOptions(options Array[OptionEntry]) string =
+    if (options.IsEmpty()) ""
+    else "options {\n" + options.Map((o) => s"    ${o.Name} = ${o.Value};\n").MkString("") + "}\n"
+
+func printNameList(keyword string, names Array[string]) string =
+    if (names.IsEmpty()) "" else s"$keyword { ${names.MkString(", ")} }\n"
+
+func printNamedAction(a NamedAction) string {
+    val scope = a.Scope.Map(_ + "::").GetOrElse("")
+    s"@$scope${a.Name} {${a.Body}}\n"
+}
+
+// FormatRule renders one rule. A rule with one alternative goes on one line;
+// otherwise each alternative gets its own line.
+func FormatRule(r Rule) string {
+    val prefix = if (r.Fragment) "fragment " else ""
+    r.Alts match {
+        case Array(only) => s"$prefix${r.Name}: ${printAlt(only)};\n"
+        case _ => {
+            val body = r.Alts.ZipWithIndex().Map((pair) => {
+                val (alt, i) = pair
+                val lead = if (i == 0) ":" else "|"
+                s"    $lead ${printAlt(alt)}\n"
+            }).MkString("")
+            s"$prefix${r.Name}\n$body    ;\n"
+        }
+    }
+}
+
+func printAlt(a Alt) string {
+    val parts = a.Elements.Map(FormatElement)
+    val withLabel = a.Label match {
+        case Some(l) => parts.Append("# " + l)
+        case None() => parts
+    }
+    val withCommands =
+        if (a.Commands.IsEmpty()) withLabel
+        else withLabel.Append("-> " + a.Commands.Map(printCommand).MkString(", "))
+    withCommands.MkString(" ")
+}
+
+func printCommand(c LexerCommand) string = c.Arg match {
+    case Some(arg) => s"${c.Name}($arg)"
+    case None() => c.Name
+}
+
+// FormatElement renders one element in .g4 syntax.
+func FormatElement(e Element) string = e match {
+    case RuleRef(name) => name
+    case TokenRef(name) => name
+    case Literal(v) => s"'$v'"
+    case CharSet(body) => s"[$body]"
+    case Range(from, to) => s"'$from'..'$to'"
+    case Wildcard() => "."
+    case Not(inner) => "~" + formatOperand(inner)
+    case Block(alts) => "(" + alts.Map(printAlt).MkString(" | ") + ")"
+    case Repeat(inner, q) if inner.isRepeat() => "(" + FormatElement(inner) + ")" + quantifierText(q)
+    case Repeat(inner, q) => FormatElement(inner) + quantifierText(q)
+    case Labeled(label, appendTo, inner) => label + (if (appendTo) "+=" else "=") + formatOperand(inner)
+    case Action(body) => s"{$body}"
+    case Predicate(body) => s"{$body}?"
+}
+
+// formatOperand renders the operand of `~` or a label. A quantified or labeled
+// operand is parenthesized, since `~b*` and `x=b*` read back with the
+// quantifier outside. (A quantifier around a quantifier is parenthesized in
+// FormatElement: written bare, `b*` under `?` would read back as the
+// non-greedy `b*?`.) The parser never builds these nestings, so this only
+// matters for models built in code.
+func formatOperand(e Element) string = e match {
+    case Repeat(_, _) | Labeled(_, _, _) => "(" + FormatElement(e) + ")"
+    case _ => FormatElement(e)
+}
+
+func quantifierText(q Quantifier) string = q match {
+    case Optional(g) => "?" + lazySuffix(g)
+    case Star(g) => "*" + lazySuffix(g)
+    case Plus(g) => "+" + lazySuffix(g)
+}
+
+func lazySuffix(greedy bool) string = if (greedy) "" else "?"

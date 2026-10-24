@@ -1,0 +1,81 @@
+name: Release
+
+# Push a bare semver tag (`0.1.0`, no `v` prefix) to publish binaries.
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: write
+
+env:
+  GALA_VERSION: "0.92.1"
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            gala: gala-linux-amd64
+            target: galop-linux-amd64
+          - os: macos-latest
+            gala: gala-darwin-arm64
+            target: galop-darwin-arm64
+          - os: windows-latest
+            gala: gala-windows-amd64.exe
+            target: galop-windows-amd64.exe
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install GALA CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          curl -fsSL -o "$RUNNER_TEMP/bin/gala$exe" \
+            "https://github.com/martianoff/gala/releases/download/${GALA_VERSION}/${{ matrix.gala }}"
+          chmod +x "$RUNNER_TEMP/bin/gala$exe"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Stamp version
+        run: sed -i.bak "s/^val version = \".*\"/val version = \"${GITHUB_REF_NAME}\"/" cmd/galop/main.gala
+
+      - name: Test
+        run: gala test
+
+      - name: Build
+        run: |
+          gala build -o "${{ matrix.target }}" ./cmd/galop
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ matrix.target }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum * > checksums-sha256.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "galop $GITHUB_REF_NAME" --generate-notes

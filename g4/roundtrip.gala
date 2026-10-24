@@ -1,0 +1,25 @@
+package g4
+
+// RoundTrip checks that g survives formatting: Format(g) parses back to a
+// grammar equal to g, and formatting that grammar gives the same text again.
+// It returns a description of the first difference, or None when g round-trips.
+func RoundTrip(g Grammar) Option[string] {
+    val printed = Format(g)
+    Parse(printed) match {
+        case Left(d) => Some(s"formatted grammar does not parse: ${d.String()}")
+        case Right(again) => firstRuleDifference(g, again).OrElse(
+            if (Format(again) != printed) Some("formatting is not stable: a second pass changes the text")
+            else if (!std.Equal(again, g)) Some("formatted grammar differs from the original outside its rules")
+            else None()
+        )
+    }
+}
+
+// firstRuleDifference names the first rule whose model changed in the round trip.
+func firstRuleDifference(before Grammar, after Grammar) Option[string] =
+    if (before.Rules.Size() != after.Rules.Size())
+        Some(s"rule count changed from ${before.Rules.Size()} to ${after.Rules.Size()}")
+    else
+        before.Rules.Zip(after.Rules).Find((pair) => !std.Equal(pair.V1, pair.V2)).Map((pair) =>
+            s"rule '${pair.V1.Name}' changed: ${FormatRule(pair.V1)} became ${FormatRule(pair.V2)}"
+        )

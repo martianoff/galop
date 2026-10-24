@@ -1,0 +1,9 @@
+# Keep generated and build files LF on every platform, so an autocrlf=true
+# checkout on Windows does not churn gazelle output.
+*.bazel    text eol=lf
+*.bzl      text eol=lf
+gala.mod   text eol=lf
+*.gala     text eol=lf
+*.g4       text eol=lf
+*.yml      text eol=lf
+*.sh       text eol=lf

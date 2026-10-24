@@ -1,0 +1,60 @@
+package g4
+
+import . "martianoff/gala/collection_immutable"
+
+// Check reports semantic errors that parsing alone does not catch: duplicate
+// rules, references to undefined rules or tokens, parser rules in a lexer
+// grammar (and the reverse), lexer rules that reference parser rules, and
+// parser rules that reference fragments. The result is empty for a valid
+// grammar. Diagnostics carry no position (line and column are 0); the message
+// names the rule.
+func Check(g Grammar) Array[string] {
+    val names = g.Rules.Map(_.Name)
+    val duplicates = names.Distinct().Collect({ case n if names.Count(_ == n) > 1 => s"rule '$n' is defined more than once" })
+    val kindErrors = g.Rules.Collect((r) => ruleKindError(g.Kind, r))
+    val refErrors = g.Rules.FlatMap((r) => r.Alts.FlatMap(altRefs).Distinct().Collect((ref) => refError(g, r, ref)))
+    duplicates.AppendAll(kindErrors).AppendAll(refErrors)
+}
+
+func ruleKindError(kind GrammarKind, r Rule) Option[string] = kind match {
+    case LexerOnly() if !r.IsLexer() => Some(s"parser rule '${r.Name}' in a lexer grammar")
+    case ParserOnly() if r.IsLexer() => Some(s"lexer rule '${r.Name}' in a parser grammar")
+    case _ => None()
+}
+
+// refError checks one rule or token name referenced from rule r.
+func refError(g Grammar, r Rule, ref string) Option[string] {
+    val target = g.Rules.Find(_.Name == ref)
+    if IsTokenName(ref) {
+        val declared = target.IsDefined() || g.Tokens.Contains(ref) || ref == "EOF"
+        // A parser grammar gets its tokens from a separate lexer grammar.
+        if !declared && !g.Kind.isParserOnly() {
+            return Some(s"rule '${r.Name}' references undefined token '$ref'")
+        }
+        val toFragment = target.Filter(_.Fragment).IsDefined()
+        if toFragment && !r.IsLexer() {
+            return Some(s"parser rule '${r.Name}' references fragment '$ref'")
+        }
+        return None()
+    }
+    if r.IsLexer() {
+        return Some(s"lexer rule '${r.Name}' references parser rule '$ref'")
+    }
+    if target.IsEmpty() {
+        return Some(s"rule '${r.Name}' references undefined rule '$ref'")
+    }
+    None()
+}
+
+// altRefs lists the rule and token names an alternative references, in order.
+func altRefs(a Alt) Array[string] = a.Elements.FlatMap(elementRefs)
+
+func elementRefs(e Element) Array[string] = e match {
+    case RuleRef(name) => ArrayOf(name)
+    case TokenRef(name) => ArrayOf(name)
+    case Not(inner) => elementRefs(inner)
+    case Block(alts) => alts.FlatMap(altRefs)
+    case Repeat(inner, _) => elementRefs(inner)
+    case Labeled(_, _, inner) => elementRefs(inner)
+    case _ => EmptyArray[string]()
+}

@@ -1,0 +1,97 @@
+package g4
+
+import . "martianoff/gala/collection_immutable"
+
+// GrammarKind is the header form a grammar declares: `grammar X;`,
+// `lexer grammar X;` or `parser grammar X;`.
+sealed type GrammarKind {
+    case Combined()
+    case LexerOnly()
+    case ParserOnly()
+}
+
+// Grammar is a parsed .g4 file. Comments are not part of the model.
+struct Grammar(
+    Kind GrammarKind,
+    Name string,
+    Options Array[OptionEntry] = EmptyArray[OptionEntry](),
+    Tokens Array[string] = EmptyArray[string](),
+    Channels Array[string] = EmptyArray[string](),
+    Actions Array[NamedAction] = EmptyArray[NamedAction](),
+    Rules Array[Rule] = EmptyArray[Rule](),
+)
+
+// OptionEntry is one `name = value;` inside an `options { ... }` block.
+// Value keeps its source spelling (an identifier, a quoted string or a number).
+struct OptionEntry(Name string, Value string)
+
+// NamedAction is a top-level `@name { ... }` or `@scope::name { ... }` block.
+// Body is the text between the braces, unchanged.
+struct NamedAction(Scope Option[string], Name string, Body string)
+
+// Rule is a parser rule (lowercase name) or a lexer rule (uppercase name).
+struct Rule(
+    Name string,
+    Fragment bool,
+    Alts Array[Alt],
+)
+
+// IsLexer reports whether r is a lexer rule: its name starts with an uppercase letter.
+func (r Rule) IsLexer() bool = IsTokenName(r.Name)
+
+// Alt is one alternative of a rule or a block: a sequence of elements, an
+// optional `# Label`, and the lexer commands after `->`.
+struct Alt(
+    Elements Array[Element],
+    Label Option[string],
+    Commands Array[LexerCommand],
+)
+
+// LexerCommand is one command after `->`: `skip`, `channel(HIDDEN)`, `pushMode(X)`.
+struct LexerCommand(Name string, Arg Option[string])
+
+// Quantifier is the suffix of an element: `?`, `*` or `+`, greedy unless followed by `?`.
+sealed type Quantifier {
+    case Optional(Greedy bool)
+    case Star(Greedy bool)
+    case Plus(Greedy bool)
+}
+
+// Element is one item of an alternative.
+sealed type Element {
+    // RuleRef names a parser rule.
+    case RuleRef(Name string)
+    // TokenRef names a lexer rule, a `tokens {}` entry or EOF.
+    case TokenRef(Name string)
+    // Literal is a quoted string; Value is the text between the quotes with escapes kept.
+    case Literal(Value string)
+    // CharSet is a lexer `[...]` set; Body is the text between the brackets with escapes kept.
+    case CharSet(Body string)
+    // Range is a lexer `'a'..'z'` range; From and To are literal bodies.
+    case Range(From string, To string)
+    // Wildcard is `.`.
+    case Wildcard()
+    // Not is `~x`: any single symbol except those x matches.
+    case Not(Inner Element)
+    // Block is a parenthesized group of alternatives.
+    case Block(Alts Array[Alt])
+    // Repeat applies a quantifier to an element.
+    case Repeat(Inner Element, Quant Quantifier)
+    // Labeled is `name=x` (Append false) or `name+=x` (Append true).
+    case Labeled(Label string, Append bool, Inner Element)
+    // Action is an embedded `{ ... }` action; Body is kept unchanged.
+    case Action(Body string)
+    // Predicate is a semantic predicate `{ ... }?`; Body is kept unchanged.
+    case Predicate(Body string)
+}
+
+// IsTokenName reports whether name refers to a token (lexer rule): it starts
+// with an uppercase ASCII letter.
+func IsTokenName(name string) bool =
+    name.ByteSize() > 0 && name[0] >= 'A' && name[0] <= 'Z'
+
+// Diagnostic is an error at a source position (1-based line and column).
+struct Diagnostic(Line int, Col int, Message string)
+
+// String renders d as `line:col: message`.
+func (d Diagnostic) String() string = s"${d.Line}:${d.Col}: ${d.Message}"

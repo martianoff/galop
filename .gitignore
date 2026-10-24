@@ -1,0 +1,26 @@
+# Build outputs
+/galop
+/galop.exe
+/galop-*
+*.test
+
+# GALA build workspace (managed by `gala`)
+.gala/
+.gala-cache/
+*.gen.go
+
+# Bazel
+bazel-*
+MODULE.bazel.lock
+.bazelbsp/
+
+# Agents and editors
+.claude/*
+!.claude/settings.json
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db

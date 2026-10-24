@@ -1,0 +1,189 @@
+package g4
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+)
+
+// parseOrFail parses src and fails the test on a diagnostic.
+func parseOrFail(t T, src string) Tuple[T, Grammar] = Parse(src) match {
+    case Right(g) => (t, g)
+    case Left(d) => (Fail(t, s"unexpected parse error: ${d.String()}"), Grammar(Combined(), ""))
+}
+
+// errorOf returns the diagnostic text Parse gives for src, or "" when it parses.
+func errorOf(src string) string = Parse(src) match {
+    case Left(d) => d.String()
+    case Right(_) => ""
+}
+
+// ruleText parses `grammar t;` plus src and prints the rules back.
+func ruleText(src string) string = Parse("grammar t;\n" + src) match {
+    case Right(g) => g.Rules.Map(FormatRule).MkString("")
+    case Left(d) => "error: " + d.String()
+}
+
+func kinds(src string) string = Lex(src) match {
+    case Right(toks) => toks.Map((tok) => tok.Kind match {
+        case TokId() => "id:" + tok.Text
+        case TokInt() => "int:" + tok.Text
+        case TokString() => "str:" + tok.Text
+        case TokSet() => "set:" + tok.Text
+        case TokAction() => "act:" + tok.Text
+        case TokPredicate() => "pred:" + tok.Text
+        case TokPunct() => tok.Text
+        case TokEOF() => "EOF"
+    }).MkString(" ")
+    case Left(d) => "error: " + d.String()
+}
+
+func TestLexTokens(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, kinds(in), want),
+    Case[string, string](Name = "rule", Input = "a : B 'x' ;", Expected = "id:a : id:B str:x ; EOF"),
+    Case[string, string](Name = "comments dropped", Input = "a // c\n /* d */ b", Expected = "id:a id:b EOF"),
+    Case[string, string](Name = "escapes kept", Input = "'\\'' [\\]a]", Expected = "str:\\' set:\\]a EOF"),
+    Case[string, string](Name = "range and punct", Input = "'a'..'z' += -> :: ~", Expected = "str:a .. str:z += -> :: ~ EOF"),
+    Case[string, string](Name = "action nests", Input = "{ a { b } \"}\" }", Expected = "act: a { b } \"}\"  EOF"),
+    Case[string, string](Name = "block comment in action", Input = "{ /* } */ } B", Expected = "act: /* } */  id:B EOF"),
+    Case[string, string](Name = "line comment in action", Input = "{ // a }\n} B", Expected = "act: // a }\n id:B EOF"),
+    Case[string, string](Name = "predicate", Input = "{x > 1}? A", Expected = "pred:x > 1 id:A EOF"),
+    Case[string, string](Name = "tokens block is punctuation", Input = "tokens { A, B }", Expected = "id:tokens { id:A , id:B } EOF"),
+    Case[string, string](Name = "options block", Input = "options { k = 2; }", Expected = "id:options { id:k = int:2 ; } EOF"),
+)
+
+func TestLexErrors(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, kinds(in), want),
+    Case[string, string](Name = "string", Input = "a 'b", Expected = "error: 1:3: unterminated string literal"),
+    Case[string, string](Name = "string newline", Input = "'b\n'", Expected = "error: 1:1: unterminated string literal"),
+    Case[string, string](Name = "comment", Input = "\n  /* x", Expected = "error: 2:3: unterminated comment"),
+    Case[string, string](Name = "set", Input = "[abc", Expected = "error: 1:1: unterminated character set"),
+    Case[string, string](Name = "action", Input = "{ { }", Expected = "error: 1:1: unterminated action"),
+    Case[string, string](Name = "comment in action", Input = "{ a /* }", Expected = "error: 1:5: unterminated comment"),
+    Case[string, string](Name = "character", Input = "a $", Expected = "error: 1:3: unexpected character '$'"),
+)
+
+func TestParseModel(t T) T {
+    val src = "lexer grammar L;\noptions { superClass = Base; }\nchannels { EXTRA }\n@header {package x}\nID: [a-z]+ -> channel(EXTRA);\nfragment D: '0'..'9';\n"
+    val (t1, g) = parseOrFail(t, src)
+    val want = Grammar(
+        Kind = LexerOnly(),
+        Name = "L",
+        Options = ArrayOf(OptionEntry("superClass", "Base")),
+        Channels = ArrayOf("EXTRA"),
+        Actions = ArrayOf(NamedAction(None(), "header", "package x")),
+        Rules = ArrayOf(
+            Rule("ID", false, ArrayOf(Alt(
+                ArrayOf[Element](Repeat(CharSet("a-z"), Plus(true))),
+                None(),
+                ArrayOf(LexerCommand("channel", Some("EXTRA"))),
+            ))),
+            Rule("D", true, ArrayOf(Alt(ArrayOf[Element](Range("0", "9")), None(), EmptyArray[LexerCommand]()))),
+        ),
+    )
+    Eq(t1, g, want)
+}
+
+func TestParsePrintsElements(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, ruleText(in), want),
+    Case[string, string](Name = "sequence", Input = "a : b C 'd' ;", Expected = "a: b C 'd';\n"),
+    Case[string, string](Name = "alternatives", Input = "a: b | c # Lc | ;", Expected = "a\n    : b\n    | c # Lc\n    | \n    ;\n"),
+    Case[string, string](Name = "quantifiers", Input = "a: b? c* d+ e?? f*? g+?;", Expected = "a: b? c* d+ e?? f*? g+?;\n"),
+    Case[string, string](Name = "labels", Input = "a: x=b ys+=c* z=(d|e);", Expected = "a: x=b ys+=c* z=(d | e);\n"),
+    Case[string, string](Name = "not and wildcard", Input = "A: ~[\\r\\n]* . ~('a'|'b');", Expected = "A: ~[\\r\\n]* . ~('a' | 'b');\n"),
+    Case[string, string](Name = "non-greedy comment", Input = "C: '/*' .*? '*/' -> channel(HIDDEN);", Expected = "C: '/*' .*? '*/' -> channel(HIDDEN);\n"),
+    Case[string, string](Name = "commands", Input = "WS: [ \\t]+ -> skip, pushMode(X);", Expected = "WS: [ \\t]+ -> skip, pushMode(X);\n"),
+    Case[string, string](Name = "actions and predicates", Input = "a: {p()}? b {act();};", Expected = "a: {p()}? b {act();};\n"),
+    Case[string, string](Name = "fragment", Input = "fragment F: 'f';", Expected = "fragment F: 'f';\n"),
+    Case[string, string](Name = "nested blocks", Input = "a: (b (c | d)+)?;", Expected = "a: (b (c | d)+)?;\n"),
+)
+
+func TestParseErrors(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, errorOf(in), want),
+    Case[string, string](Name = "no header", Input = "a: b;", Expected = "1:1: expected 'grammar', found 'a'"),
+    Case[string, string](Name = "missing semicolon", Input = "grammar g;\na: b\nc: d;", Expected = "3:2: expected ';', found ':'"),
+    Case[string, string](Name = "unbalanced paren", Input = "grammar g;\na: (b;", Expected = "2:6: expected ')', found ';'"),
+    Case[string, string](Name = "lowercase fragment", Input = "grammar g;\nfragment a: 'x';", Expected = "2:10: fragment rule 'a' must be a lexer rule (uppercase name)"),
+    Case[string, string](Name = "rule arguments", Input = "grammar g;\na[int x]: b;", Expected = "2:2: rule 'a': rule arguments are not supported yet"),
+    Case[string, string](Name = "returns", Input = "grammar g;\na returns [int x]: b;", Expected = "2:3: rule 'a': 'returns' is not supported yet"),
+    Case[string, string](Name = "element options", Input = "grammar g;\na: <assoc=right> b;", Expected = "2:4: element options are not supported yet"),
+    Case[string, string](Name = "imports", Input = "grammar g;\nimport Other;", Expected = "2:1: grammar imports are not supported yet"),
+    Case[string, string](Name = "bad range", Input = "grammar g;\nA: 'a'..B;", Expected = "2:9: expected a literal after '..', found 'B'"),
+    Case[string, string](Name = "lex error surfaces", Input = "grammar g;\nA: 'a", Expected = "2:4: unterminated string literal"),
+)
+
+func TestCheck(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, Parse(in) match {
+        case Right(g) => Check(g).MkString("; ")
+        case Left(d) => "parse error: " + d.String()
+    }, want),
+    Case[string, string](Name = "valid", Input = "grammar g;\ntokens { T }\na: B T EOF 'x';\nB: F;\nfragment F: 'f';", Expected = ""),
+    Case[string, string](Name = "undefined rule", Input = "grammar g;\na: b;", Expected = "rule 'a' references undefined rule 'b'"),
+    Case[string, string](Name = "undefined token", Input = "grammar g;\na: B;", Expected = "rule 'a' references undefined token 'B'"),
+    Case[string, string](Name = "duplicate", Input = "grammar g;\na: 'x';\na: 'y';", Expected = "rule 'a' is defined more than once"),
+    Case[string, string](Name = "lexer refs parser", Input = "grammar g;\na: 'x';\nB: a;", Expected = "lexer rule 'B' references parser rule 'a'"),
+    Case[string, string](Name = "parser refs fragment", Input = "grammar g;\na: F;\nfragment F: 'f';", Expected = "parser rule 'a' references fragment 'F'"),
+    Case[string, string](Name = "parser rule in lexer grammar", Input = "lexer grammar g;\na: 'x';", Expected = "parser rule 'a' in a lexer grammar"),
+    Case[string, string](Name = "parser grammar tokens come from elsewhere", Input = "parser grammar g;\na: B;", Expected = ""),
+)
+
+
+// featureGrammar uses every construct the reader supports.
+val featureGrammar = `/** doc */
+grammar Features;
+
+options { language = Go; tokenVocab = 'Lex'; k = 2; }
+tokens { EXTRA, MORE, }
+channels { COMMENTS }
+@header { package x }
+@parser::members { func f() { if a { b() } } }
+
+start : stmt* EOF ;
+stmt
+    : 'let' name=ID '=' expr ';'      # Let
+    | exprs+=expr (',' exprs+=expr)*  # Exprs
+    | {p.ok()}? ID {act()}            # Guarded
+    |                                 # Empty
+    ;
+expr: atom (('+' | '-') atom)*? ;
+atom: ID | INT | '(' expr ')' | ~(';' | ',') ;
+ID : [a-zA-Z_] [a-zA-Z_0-9]* ;
+INT: DIGIT+ ;
+fragment DIGIT: '0'..'9' ;
+STR: '"' (~["\\\r\n] | '\\' .)* '"' ;
+WS : [ \t\r\n]+ -> skip ;
+LINE_COMMENT: '//' ~[\r\n]* -> channel(COMMENTS) ;
+BLOCK_COMMENT: '/*' .*? '*/' -> channel(HIDDEN), type(EXTRA) ;
+`
+
+func TestFeatureGrammarRoundTrips(t T) T {
+    val (t1, g) = parseOrFail(t, featureGrammar)
+    val t2 = Eq(t1, RoundTrip(g), None[string]())
+    val t3 = Eq(t2, Check(g).MkString("; "), "")
+    val t4 = Eq(t3, g.Tokens, ArrayOf("EXTRA", "MORE"))
+    val t5 = Eq(t4, g.Options.Map((o) => o.Name + "=" + o.Value).MkString(" "), "language=Go tokenVocab='Lex' k=2")
+    val t6 = Eq(t5, g.Actions.Map((a) => a.Scope.GetOrElse("") + ":" + a.Name).MkString(" "), ":header parser:members")
+    Eq(t6, g.Rules.Size(), 11)
+}
+
+func TestFormatIsCanonical(t T) T {
+    val (t1, g) = parseOrFail(t, "grammar g;\na : b | c ;\nb:'x';c:'y';")
+    Eq(t1, Format(g), "grammar g;\n\na\n    : b\n    | c\n    ;\n\nb: 'x';\n\nc: 'y';\n")
+}
+
+func TestRoundTripReportsDifferences(t T) T {
+    // A model the parser cannot produce: a quantifier on a quantifier prints as
+    // (b*)?, which reads back with an extra block around b*.
+    val odd = Grammar(
+        Kind = Combined(),
+        Name = "g",
+        Rules = ArrayOf(Rule("a", false, ArrayOf(Alt(
+            ArrayOf[Element](Repeat(Repeat(RuleRef("b"), Star(true)), Optional(true))),
+            None(),
+            EmptyArray[LexerCommand](),
+        )))),
+    )
+    RoundTrip(odd) match {
+        case Some(msg) => Contains(t, msg, "rule 'a' changed")
+        case None() => Fail(t, "expected the round trip to report a difference")
+    }
+}

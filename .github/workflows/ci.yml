@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# galop is built with a pinned GALA release. Bump GALA_VERSION together with
+# `gala` in gala.mod and the `gala` bazel_dep in MODULE.bazel.
+env:
+  GALA_VERSION: "0.92.1"
+
+jobs:
+  cli:
+    name: gala test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: gala-linux-amd64
+          - os: macos-latest
+            asset: gala-darwin-arm64
+          - os: windows-latest
+            asset: gala-windows-amd64.exe
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install GALA CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          curl -fsSL -o "$RUNNER_TEMP/bin/gala$exe" \
+            "https://github.com/martianoff/gala/releases/download/${GALA_VERSION}/${{ matrix.asset }}"
+          chmod +x "$RUNNER_TEMP/bin/gala$exe"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: GALA version
+        run: gala version
+
+      - name: Unit tests
+        run: gala test
+
+      - name: Build CLI
+        run: |
+          bin=galop
+          if [ "$RUNNER_OS" = "Windows" ]; then bin=galop.exe; fi
+          gala build -o "$bin" ./cmd/galop
+          echo "GALOP=./$bin" >> "$GITHUB_ENV"
+
+      # The corpus check: every grammar under testdata/grammars parses, passes
+      # the semantic checks, and round-trips through the formatter.
+      - name: Check grammar corpus
+        run: '"$GALOP" check --roundtrip testdata/grammars/*.g4'
+
+  bazel:
+    name: bazel test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      - name: Build and test
+        run: bazel test //...
+
+      # BUILD files are generated; a stale one means someone added or removed a
+      # .gala file without running gazelle.
+      - name: BUILD files are up to date
+        run: |
+          bazel run //:gazelle
+          git diff --exit-code -- '*.bazel'
