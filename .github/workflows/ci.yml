@@ -37,11 +37,12 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
+          cache: false
 
       - name: Install GALA CLI
         run: |
@@ -75,7 +76,7 @@ jobs:
     name: bazel test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
