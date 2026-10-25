@@ -12,6 +12,7 @@ go_test(
     deps = [
         "//differential/antlrgala",
         "//differential/corpus",
+        "//differential/nativegala",
         "@com_github_antlr4_go_antlr_v4//:antlr",
     ],
 )

@@ -72,10 +72,13 @@ func tables(e env) string {
         goSlice(s"${x}ClosKind", "uint8", closAll.Map((c) => s"${c.Kind}")),
         goSlice(s"${x}ClosState", "int32", closAll.Map((c) => s"${c.State}")),
         goSlice(s"${x}ClosArg", "int32", closAll.Map((c) => s"${c.Arg}")),
-        s"var ${x}Sets = [][]int32{",
-    ).AppendAll(sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},"))
-        .Append("}")
-        .MkString("\n") + "\n"
+    ).AppendAll(sets match {
+        // gofmt writes an empty composite literal on one line.
+        case Array() => ArrayOf(s"var ${x}Sets = [][]int32{}")
+        case _ => ArrayOf(s"var ${x}Sets = [][]int32{")
+            .AppendAll(sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},"))
+            .Append("}")
+    }).MkString("\n") + "\n"
 }
 
 // goSlice renders `var name = []typ{...}` with a bounded number of values per line.

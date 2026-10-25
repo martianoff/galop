@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# galop's lexer and parser for gala.g4 in the Go target's default, native
+# flavor, generated at build time by the galop CLI built from this repository.
+# The library does not depend on ANTLR. galop is a source, not a tool, so it
+# is built once, for the target configuration (see testdata/grammars).
+genrule(
+    name = "galop_native_go",
+    srcs = [
+        "//cmd/galop",
+        "//testdata/grammars:gala.g4",
+    ],
+    outs = [
+        "gala_lexer.go",
+        "gala_parser.go",
+    ],
+    cmd = "$(location //cmd/galop) -package nativegala -Xexact-output-dir -o $(RULEDIR) $(location //testdata/grammars:gala.g4)",
+)
+
+go_library(
+    name = "nativegala",
+    srcs = [
+        "newline.go",
+        "tokens.go",
+        ":galop_native_go",
+    ],
+    importpath = "github.com/martianoff/galop/differential/nativegala",
+    visibility = ["//differential:__subpackages__"],
+)

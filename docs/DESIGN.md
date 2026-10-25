@@ -73,8 +73,10 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
        configuration sets, conflict subsets and DFA states are exactly ANTLR's.
        Tracking each stack separately is not just slower: with global FOLLOW the
        number of distinct stacks grows combinatorially.
-- **Trees.** The default Go flavor (below) builds ANTLR's own context objects, so
-  trees print identically with `antlr.TreesStringTree`.
+- **Trees.** The Go target's `antlr` flavor (below) builds ANTLR's own context
+  objects, so trees print identically with `antlr.TreesStringTree`. The default,
+  `native` flavor builds the same tree in galop's own layout, and its
+  `ToStringTree` prints what ANTLR's does.
 - **Lexing** follows ANTLR's lexer: longest match, the earlier rule wins a tie,
   non-greedy loops stop at the first exit, recursive fragments work, `skip`, `more`,
   `type(...)`, `channel(...)` (lexer modes are not supported yet, see [Lexer](#lexer-lexgen)).
@@ -217,7 +219,7 @@ ANTLR's Go runtime compares two lexer configurations with no actions as equal
 whenever their hashes collide, whatever their states; galop compares them in full.
 This only matters on a 32-bit hash collision inside one configuration set.
 
-### The Go lexer (companion flavor)
+### The Go lexer, `antlr` flavor
 
 `lexgen.GoLexerFile` writes `<grammar>_galop_lexer.go` into the package of ANTLR's
 generated code. The type embeds `*antlr.BaseLexer` and implements `antlr.Lexer`, so
@@ -241,22 +243,92 @@ The lexer scans the input's text directly with tables indexed by class (an ASCII
 table, binary search above it). All tables are immutable package-level data, so
 lexers on different goroutines share no state and need no cache isolation.
 
+### The Go lexer, `native` flavor
+
+`lexgen.NativeGoLexerFile` writes `<grammar>_lexer.go`, which imports only the
+standard library. Its exported names start with the grammar's base name (`Gala`),
+so several grammars can share a package:
+
+- `GalaLex(src)` and `GalaLexAt(src, line, column)` (for text cut from a larger
+  input, as GALA lexes interpolations) return a `*GalaTokens`, scanning with the
+  same DFA tables as the `antlr` flavor (`goMatchTemplate` is shared).
+- `GalaTokens.Tokens` holds the default-channel tokens, ending with EOF. A
+  `GalaToken` is 20 bytes: type, the byte span `[Start, End)` of its text, and the
+  line and column ANTLR gives it (columns count code points). Its text is a slice
+  of the source, so lexing allocates almost nothing.
+- Off-channel tokens (comments on `HIDDEN`, or a `channels {}` channel) go to
+  `Hidden`, each with its channel and `Next`, the index of the default-channel
+  token after it. `HiddenBefore(i)` is the comments in front of token `i` by
+  binary search: a doc comment costs nothing until it is asked for, and the
+  parser never sees it.
+- Token recognition errors go to `Errors` with ANTLR's message, line and column,
+  and lexing goes on past them exactly as ANTLR's lexer does, so it always
+  reaches EOF. Skipped tokens are dropped; `more` and `type(...)` behave as in ANTLR.
+- The token types are `GalaIDENTIFIER`-style constants, numbered as ANTLR numbers
+  them, with `GalaLiteralNames`, `GalaSymbolicNames` and `GalaTokenName(t)`.
+
+A program may change token types before parsing, as GALA's line-break rule does.
+
 ## Code generation (`codegen`, `golang`)
 
 `codegen.Target` (in `codegen/target.gala`) is the extension point for languages:
 `Language()` matches `-Dlanguage=…` and `Generate(Input, Options)` returns
-`OutputFile`s. The Go target has **flavors**, chosen with `-Dflavor=…`:
+`OutputFile`s; `Flavors()` lists the values its `flavor` option takes, and the
+tool rejects any other with error 508 before generating. The Go target has two
+**flavors**, chosen with `-Dflavor=…`:
 
-- **`companion`** (first): generates `<grammar>_galop_parser.go` and
-  `<grammar>_galop_lexer.go` into the same Go package as ANTLR's own output for the
-  grammar. The fast parser constructs ANTLR's generated context types
-  (`NewXxxContext`, labeled-alternative subtypes, label setters) and consumes an
-  `antlr.TokenStream`; the fast lexer produces `antlr.CommonToken`s. Existing code
-  that walks ANTLR trees keeps working unchanged, and ANTLR's parser remains
-  available as a fallback (for example for error recovery). This is how the GALA
-  compiler adopts galop.
-- **`standalone`** (later): generates the context types, listener and visitor too,
-  on a small galop runtime with ANTLR-shaped accessors and no ANTLR dependency.
+- **`native`** (the default): generates `<grammar>_parser.go` and
+  `<grammar>_lexer.go` with galop's own tokens (above) and tree, and no
+  dependency. This is the fast one, and the one GALA moves to.
+- **`antlr`**: generates `<grammar>_galop_parser.go` and `<grammar>_galop_lexer.go`
+  into the same Go package as ANTLR's own output for the grammar. The parser
+  constructs ANTLR's generated context types (`NewXxxContext`, labeled-alternative
+  subtypes, label setters) and consumes an `antlr.TokenStream`; the lexer produces
+  `antlr.CommonToken`s. Code that walks ANTLR trees keeps working unchanged, and
+  ANTLR's parser remains available as a fallback (for example for error recovery).
+
+Both flavors run the same decision functions and runtime predictor (SLL first,
+LL from the start on a syntax error), so they choose the same alternatives.
+Neither recovers from a syntax error yet: a parse stops at the first one and
+reports it with ANTLR's message (`mismatched input 'x'`, `no viable alternative
+at input 'x'`), line and column.
+
+### The native tree
+
+A parse produces one `GalaTree`: the tokens, a flat array of nodes and an array
+of child references. A node (`GalaNodeData`, 20 bytes) holds its rule, which
+labeled alternative it is, the label it is stored under in its parent, its range
+of child references and its first and last token. A child reference is an
+`int32`: a node index, or a negated token index. Children are finished before
+their parent, so the root is the last node, and a parse allocates a handful of
+arrays rather than an object per node.
+
+The API is typed handles over that array, generated per rule as ANTLR generates
+its context types, so code written against ANTLR's trees ports by renaming:
+
+| ANTLR | native |
+|---|---|
+| `p.SourceFile()` on a parser over a token stream | `ParseSourceFile(toks)` |
+| `ctx.(*ExpressionContext)`, `IExpressionContext` | `ExpressionNode` |
+| `ctx.Expression()`, `ctx.AllExpression()`, `ctx.Expression(i)` | the same |
+| `ctx.IDENTIFIER()`, `ctx.AllIDENTIFIER()` | the same, a `GalaTerminal` |
+| `ctx.GetGuard()` (a label) | the same |
+| `switch c := ctx.(type) { case *TypedPatternContext: ... }` | `if c, ok := n.AsTypedPattern(); ok { ... }` |
+| `ctx.GetText()`, `ctx.GetStart().GetLine()`, `ctx.GetStop()` | `n.GetText()`, `n.Start().Line`, `n.Stop()` |
+| `ctx.GetChildCount()`, `ctx.GetChild(i)`, `ctx.GetParent()` | `n.ChildCount()`, `n.Child(i)`, `n.Parent()` |
+| `ctx.GetToken(ttype, 0)` | `n.Token(ttype)` |
+| `antlr.TreesStringTree(ctx, ...)` | `n.ToStringTree()` |
+
+A missing child is a handle whose `Ok()` is false, not nil. Every handle embeds
+`GalaNodeRef`, which also has `Walk`, `SourceText` (the source between a node's
+first and last token) and `HiddenBefore` (the comments in front of a node).
+Token positions are byte offsets where ANTLR's are code-point indexes; lines and
+columns are ANTLR's. `GalaRuleNames` and `GalaAltNames` name rules and labeled
+alternatives.
+
+The layout leaves room to grow without breaking callers: error recovery can add
+error nodes as another kind of child reference and a list of errors to the tree;
+listeners and visitors are a generated walk over the same handles.
 
 Generated parsers are safe to use from many goroutines at once: all tables are
 immutable package-level data and all parse state lives in the parser instance.
@@ -274,7 +346,7 @@ galop [options] grammar1.g4 grammar2.g4 ...
   -lib <dir>            where to find imported grammars and .tokens files
   -package <name>       package of the generated code
   -listener / -no-listener, -visitor / -no-visitor
-  -D<option>=<value>    set a grammar option, e.g. -Dlanguage=Go, -Dflavor=companion
+  -D<option>=<value>    set a grammar option, e.g. -Dlanguage=Go, -Dflavor=antlr
   -Xexact-output-dir    write all output to -o, ignoring the grammar's directory
   -depend               print the files that would be generated
   -message-format antlr|gnu|vs2005
@@ -312,6 +384,7 @@ problems only galop has use codes from 500 up:
 | 505 | the target rejected the grammar |
 | 506 | a command line galop cannot act on (missing value, conflicting actions, no files) |
 | 507 | a reversed range in a lexer set (`[z-a]`) |
+| 508 | a `flavor` option the target does not have |
 
 Two places follow ANTLR where galop used to be stricter: a token a parser rule
 uses but nothing defines is warning 125 (ANTLR then defines it, and so does
@@ -349,6 +422,36 @@ the GALA compiler, which needs its parser: a cycle. A prebuilt binary breaks it,
 and users who only want Go parsers need neither Go nor GALA toolchains for the
 generator. galop's own repository (or anyone else) can still register a
 `galop_toolchain` pointing at a from-source build.
+
+## Performance
+
+On the GALA corpus (723 files, 1.8 MB), Go 1.25 on Windows, one machine with 32
+hardware threads, from `bazel run -c opt //differential/cmd/bench` (lexing
+included; ANTLR driven as the GALA compiler drives it, SLL then LL):
+
+| | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` flavor |
+|---|---:|---:|---:|
+| Warm, 1 goroutine | 488 ms | 178 ms (2.7×) | 65 ms (7.5×) |
+| Warm, 32 goroutines | 349 ms | 35 ms (10×) | 14 ms (25×) |
+| Fresh process, 1 goroutine | 1.58 s | 0.40 s (3.9×) | 0.28 s (5.7×) |
+| Fresh process, 32 goroutines | 0.85 s | 0.29 s (2.9×) | 0.25 s (3.4×) |
+| Allocations per warm pass | 6.84 M, 526 MB | 3.67 M, 293 MB | 19 k, 74 MB |
+| Lexer only, warm, 1 goroutine | 62 ms | 37 ms | 17 ms |
+| Lexer only, warm, 32 goroutines | 92 ms | 6.6 ms | 2.2 ms |
+
+Where the `antlr` flavor's warm time goes (profiled on one goroutine): about
+half builds ANTLR's context objects, their child slices and terminal nodes, and
+about a fifth creates `CommonToken`s and fills the `CommonTokenStream`. Those
+are the costs the `native` flavor drops. What is left in it is the lexer and
+the line-break rule (about a quarter), the 14 corpus files where galop's SLL pass reports a false
+syntax error and the whole file is parsed again with LL (about a fifth, for 3%
+of the input), the cached prediction walks and the static decisions; building
+the tree is under a sixth.
+
+A fresh process pays for the runtime prediction cache: about 13,500 DFA states
+over 21,000 edges for the corpus, mostly for decisions that scan whole
+operands. Both flavors share that cost, which is why their fresh-process times
+are close.
 
 ## Concurrency
 

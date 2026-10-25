@@ -6,6 +6,7 @@ gala_library(
         "dfa.gala",
         "emit_go.gala",
         "model.gala",
+        "native_go.gala",
         "tokenize.gala",
     ],
     importpath = "github.com/martianoff/galop/lexgen",
@@ -28,6 +29,7 @@ gala_test(
     lib_srcs = [
         "dfa.gala",
         "emit_go.gala",
+        "native_go.gala",
         "model.gala",
         "tokenize.gala",
     ],

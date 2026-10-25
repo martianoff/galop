@@ -8,6 +8,7 @@ import (
 
     "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/lexgen"
 )
 
 // env is what emitting one grammar's parser needs.
@@ -20,10 +21,32 @@ struct env(
     rules Array[atn.RuleIR],
     plans Array[analysis.DecisionPlan],
     adaptive bool,
+    flavor Flavor = ANTLRFlavor(),
+    // tokenLabels says whether some rule labels a token (`op=('+'|'-')`).
+    tokenLabels bool = false,
 )
 
-// tokenRef is the Go constant for token type t.
-func (e env) tokenRef(t int) string = if (t == atn.TokenEOF) "antlr.TokenEOF" else e.names.TokenConst(e.vocab.Name(t))
+// Flavor is the output style of the Go target (see GoFlavors).
+sealed type Flavor {
+    // ANTLRFlavor builds ANTLR's context types from ANTLR's tokens.
+    case ANTLRFlavor()
+    // NativeFlavor builds galop's own tokens and tree; Exported starts every
+    // exported name (`Gala`).
+    case NativeFlavor(Exported string)
+}
+
+// exported is the native flavor's prefix of exported names.
+func (e env) exported() string = e.flavor match {
+    case NativeFlavor(x) => x
+    case ANTLRFlavor() => ""
+}
+
+// tokenRef is the Go constant for token type t: ANTLR's (`galaParserIDENTIFIER`,
+// antlr.TokenEOF), or the native flavor's own (`GalaIDENTIFIER`, `GalaEOF`).
+func (e env) tokenRef(t int) string = e.flavor match {
+    case NativeFlavor(x) => if (t == atn.TokenEOF) x + "EOF" else x + lexgen.NativeTokenName(e.vocab.Name(t))
+    case ANTLRFlavor() => if (t == atn.TokenEOF) "antlr.TokenEOF" else e.names.TokenConst(e.vocab.Name(t))
+}
 
 // tokenList renders a token set as a Go case list.
 func (e env) tokenList(set atn.IntervalSet) string = set.Values().Map((t) => e.tokenRef(t)).MkString(", ")
@@ -32,8 +55,8 @@ func (e env) ruleName(index int) string = e.rules.Get(index).Name
 
 func (e env) ruleFunc(index int) string = "rule" + capitalize(e.ruleName(index))
 
-// companionParser emits `<grammar>_galop_parser.go`.
-func companionParser(e env, pkg string, version string, grammarFile string) string {
+// antlrParser emits the antlr flavor's `<grammar>_galop_parser.go`.
+func antlrParser(e env, pkg string, version string, grammarFile string) string {
     val ruleCode = e.rules.Map((r) => Future(emitRule(e, r))).Map(_.Get())
     val decisionCode = e.plans.Map((plan) => Future(emitDecision(e, plan))).Map(_.Get())
     val imports = if (e.adaptive) ArrayOf("\"encoding/binary\"", "\"fmt\"", "\"slices\"", "\"sync\"", "\"sync/atomic\"", "", "\"github.com/antlr4-go/antlr/v4\"") else ArrayOf("\"fmt\"", "", "\"github.com/antlr4-go/antlr/v4\"")
@@ -47,9 +70,13 @@ func companionParser(e env, pkg string, version string, grammarFile string) stri
         ruleCode.MkString("\n"),
         decisionCode.MkString("\n"),
     )
-    val runtime = if (e.adaptive) ArrayOf(tables(e), fill(predictorSource, "PARSER", e.parserType, "PFX", e.pfx)) else EmptyArray[string]()
+    val runtime = if (e.adaptive) ArrayOf(tables(e), predictor(e)) else EmptyArray[string]()
     parts.AppendAll(runtime).MkString("\n")
 }
+
+// predictor is the runtime predictor's Go code for e's parser, without the
+// template's leading newline (the parts of a file are joined with one).
+func predictor(e env) string = strings.TrimPrefix(fill(predictorSource, "PARSER", e.parserType, "PFX", e.pfx), "\n")
 
 // tokenAssertions makes the generated file fail to compile when galop's token
 // numbering and ANTLR's disagree.
@@ -209,7 +236,7 @@ func (p *PARSER) METHOD() (IFACE, error) {
 `, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name)
 }
 
-// emitRule emits the function that parses one rule.
+// emitRule emits the antlr flavor's function that parses one rule.
 func emitRule(e env, r atn.RuleIR) string {
     val ctxType = e.names.Context(r.Name)
     val header = ArrayOf(
@@ -217,68 +244,99 @@ func emitRule(e env, r atn.RuleIR) string {
         s"\tvar localctx antlr.ParserRuleContext = New$ctxType(nil, parent, invokingState)",
         "\tp.enter(localctx)",
     )
-    val body = r.Decision match {
-        case Some(d) => ArrayOf(s"\tswitch p.decide$d() {").AppendAll(r.Alts.ZipWithIndex().FlatMap((ai) =>
-            ArrayOf(s"\tcase ${ai.V2 + 1}:").AppendAll(emitAlt(e, ai.V1, "\t\t", ctxType))
-        )).Append("\t}")
-        case None() => r.Alts.FlatMap((alt) => emitAlt(e, alt, "\t", ctxType))
-    }
+    // A labeled alternative first turns localctx into the label's context
+    // (`# Only` makes an OnlyContext), as ANTLR does, whether or not the rule
+    // has other alternatives.
+    val body = ruleBody(e, r, (alt, ind) => alt.Label match {
+        case Some(l) => ArrayOf(s"${ind}localctx = New${e.names.Context(l)}(nil, localctx)")
+            .AppendAll(emitSteps(e, alt.Steps, ind, scope(CtxType = e.names.Context(l))))
+        case None() => emitSteps(e, alt.Steps, ind, scope(CtxType = ctxType))
+    })
     header.AppendAll(body).AppendAll(ArrayOf("\tp.exit(localctx)", "\treturn localctx", "}")).MkString("\n") + "\n"
 }
 
-// emitAlt emits one alternative of a rule. A labeled alternative first turns
-// localctx into the label's context (`# Only` makes an OnlyContext), as ANTLR
-// does, whether or not the rule has other alternatives.
-func emitAlt(e env, alt atn.AltIR, ind string, ruleCtx string) Array[string] = alt.Label match {
-    case Some(l) => ArrayOf(s"${ind}localctx = New${e.names.Context(l)}(nil, localctx)")
-        .AppendAll(emitSteps(e, alt.Steps, ind, e.names.Context(l)))
-    case None() => emitSteps(e, alt.Steps, ind, ruleCtx)
+// ruleBody emits a rule's alternatives with alt: a switch on the rule's
+// decision when it has several.
+func ruleBody(e env, r atn.RuleIR, alt func(atn.AltIR, string) Array[string]) Array[string] = r.Decision match {
+    case Some(d) => ArrayOf(s"\tswitch p.decide$d() {").AppendAll(r.Alts.ZipWithIndex().FlatMap((ai) =>
+        ArrayOf(s"\tcase ${ai.V2 + 1}:").AppendAll(alt(ai.V1, "\t\t"))
+    )).Append("\t}")
+    case None() => r.Alts.FlatMap((a) => alt(a, "\t"))
 }
 
-func emitSteps(e env, steps Array[atn.Step], ind string, ctxType string) Array[string] =
-    steps.FlatMap((s) => emitStep(e, s, ind, ctxType))
+// scope is what emitting a step needs to know about its rule: the antlr
+// flavor's context type, whose fields hold labels, or the native flavor's
+// label numbering (a label's number is its position in Labels plus one).
+struct scope(CtxType string = "", Labels Array[string] = EmptyArray[string]())
 
-func emitStep(e env, s atn.Step, ind string, ctxType string) Array[string] = s match {
-    case atn.MatchToken(t, label) => tokenStep(ind, s"p.match(localctx, ${e.tokenRef(t)})", label, ctxType)
-    case atn.MatchSet(set, label) => tokenStep(ind, s"p.matchIf(localctx, ${setTest(e, set, "p.types[p.pos]")})", label, ctxType)
+func emitSteps(e env, steps Array[atn.Step], ind string, sc scope) Array[string] =
+    steps.FlatMap((s) => emitStep(e, s, ind, sc))
+
+// emitStep emits one step. The flavors differ only in how a token is matched
+// and how a rule's result is attached and labeled; the decisions are the same.
+func emitStep(e env, s atn.Step, ind string, sc scope) Array[string] = s match {
+    case atn.MatchToken(t, label) => tokenStep(e, ind, "match", e.tokenRef(t), label, sc)
+    case atn.MatchSet(set, label, _) => tokenStep(e, ind, "matchIf", setTest(e, set, "p.types[p.pos]"), label, sc)
     case atn.CallRule(rule, follow, label) => {
         val push = if (e.adaptive) ArrayOf(s"$ind\tp.stack = append(p.stack, $follow)") else EmptyArray[string]()
         val pop = if (e.adaptive) ArrayOf(s"$ind\tp.stack = p.stack[:len(p.stack)-1]") else EmptyArray[string]()
-        val store = label.Map((l) => {
-            val field = s"localctx.(*$ctxType).${e.names.LabelField(l.Name)}"
-            val value = s"child.(${e.names.ContextInterface(e.ruleName(rule))})"
-            if (l.Append) s"$ind\t$field = append($field, $value)" else s"$ind\t$field = $value"
-        })
+        val (call, attach) = e.flavor match {
+            case ANTLRFlavor() => (s"p.${e.ruleFunc(rule)}(localctx, ${follow - 1})", "localctx.AddChild(child)")
+            case NativeFlavor(_) => (s"p.${e.ruleFunc(rule)}()", "p.kids = append(p.kids, child)")
+        }
+        val store = label match {
+            case Some(l) => ArrayOf(ind + "\t" + ruleLabelStore(e, rule, l, sc))
+            case None() => EmptyArray[string]()
+        }
         ArrayOf(s"$ind{")
             .AppendAll(push)
-            .Append(s"$ind\tchild := p.${e.ruleFunc(rule)}(localctx, ${follow - 1})")
+            .Append(s"$ind\tchild := $call")
             .AppendAll(pop)
-            .Append(s"$ind\tlocalctx.AddChild(child)")
-            .AppendAll(store.Map((line) => ArrayOf(line)).GetOrElse(EmptyArray[string]()))
+            .Append(s"$ind\t$attach")
+            .AppendAll(store)
             .Append(s"$ind}")
     }
     case atn.Choose(d, alts, exitAlt) => ArrayOf(s"${ind}switch p.decide$d() {")
         .AppendAll(alts.ZipWithIndex().FlatMap((ai) =>
-            ArrayOf(s"${ind}case ${atn.AltNumber(exitAlt, ai.V2)}:").AppendAll(emitSteps(e, ai.V1, ind + "\t", ctxType))
+            ArrayOf(s"${ind}case ${atn.AltNumber(exitAlt, ai.V2)}:").AppendAll(emitSteps(e, ai.V1, ind + "\t", sc))
         ))
         .Append(s"$ind}")
     case atn.Loop(plus, d, cont, body) if plus => ArrayOf(s"${ind}for {")
-        .AppendAll(emitSteps(e, body, ind + "\t", ctxType))
+        .AppendAll(emitSteps(e, body, ind + "\t", sc))
         .AppendAll(ArrayOf(s"$ind\tif p.decide$d() != $cont {", s"$ind\t\tbreak", s"$ind\t}", s"$ind}"))
     case atn.Loop(_, d, cont, body) => ArrayOf(s"${ind}for p.decide$d() == $cont {")
-        .AppendAll(emitSteps(e, body, ind + "\t", ctxType))
+        .AppendAll(emitSteps(e, body, ind + "\t", sc))
         .Append(s"$ind}")
     case atn.RunAction(body) => ArrayOf(ind + strings.TrimSpace(body))
     case atn.CheckPredicate(body) => ArrayOf(s"${ind}if !(${strings.TrimSpace(body)}) {", s"$ind\tp.noViableAlt(-1)", s"$ind}")
 }
 
-// tokenStep matches one token and stores it in a label field, if any.
-func tokenStep(ind string, call string, label Option[atn.LabelRef], ctxType string) Array[string] = label match {
-    case None() => ArrayOf(ind + call)
-    case Some(l) => {
-        val field = s"localctx.(*$ctxType).${escape(l.Name)}"
-        val store = if (l.Append) s"$field = append($field, tok)" else s"$field = tok"
-        ArrayOf(s"$ind{", s"$ind\ttok := $call", s"$ind\t$store", s"$ind}")
+// ruleLabelStore stores the rule's result child under label l: in the antlr
+// flavor's context field, or as the native node's label number.
+func ruleLabelStore(e env, rule int, l atn.LabelRef, sc scope) string = e.flavor match {
+    case ANTLRFlavor() => {
+        val field = s"localctx.(*${sc.CtxType}).${e.names.LabelField(l.Name)}"
+        val value = s"child.(${e.names.ContextInterface(e.ruleName(rule))})"
+        if (l.Append) s"$field = append($field, $value)" else s"$field = $value"
+    }
+    case NativeFlavor(_) => s"p.tree.Nodes[child].Label = ${sc.Labels.IndexOf(l.Name) + 1}"
+}
+
+// tokenStep matches one token with p.match or p.matchIf (fn) and stores it
+// under its label, if any: in the antlr flavor's context field, or in the
+// native tree's token labels.
+func tokenStep(e env, ind string, fn string, arg string, label Option[atn.LabelRef], sc scope) Array[string] = e.flavor match {
+    case ANTLRFlavor() => label match {
+        case None() => ArrayOf(s"${ind}p.$fn(localctx, $arg)")
+        case Some(l) => {
+            val field = s"localctx.(*${sc.CtxType}).${escape(l.Name)}"
+            val store = if (l.Append) s"$field = append($field, tok)" else s"$field = tok"
+            ArrayOf(s"$ind{", s"$ind\ttok := p.$fn(localctx, $arg)", s"$ind\t$store", s"$ind}")
+        }
+    }
+    case NativeFlavor(_) => label match {
+        case None() => ArrayOf(s"${ind}p.$fn($arg)")
+        case Some(l) => ArrayOf(s"${ind}p.labelToken(${sc.Labels.IndexOf(l.Name) + 1}, p.$fn($arg))")
     }
 }
 

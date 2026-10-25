@@ -20,13 +20,31 @@ func Target(version string) codegen.Target = goTarget(version)
 
 func (t goTarget) Language() string = "Go"
 
-// Generate returns the Go files for in. The `flavor` option picks the shape:
-// `companion` (the default) builds ANTLR's own context types and lives in the
-// package of ANTLR's generated code.
+// GoFlavors are the values of the Go target's `flavor` option; the first is
+// the default.
+//
+//   - `native`: galop's own tokens and tree, in `<base>_lexer.go` and
+//     `<base>_parser.go`, with no dependency.
+//   - `antlr`: builds ANTLR's own context types and tokens, in
+//     `<base>_galop_lexer.go` and `<base>_galop_parser.go` next to ANTLR's
+//     generated code, for programs written against ANTLR's trees.
+val GoFlavors = ArrayOf("native", "antlr")
+
+func (t goTarget) Flavors() Array[string] = GoFlavors
+
+// flavorOf is the flavor the `flavor` option picks for grammar g (the
+// default when it is not set), or None for a value that is not a flavor.
+func flavorOf(opts codegen.Options, g g4.Grammar) Option[Flavor] = opts.Define("flavor").GetOrElse(GoFlavors.Head()) match {
+    case "native" => Some(NativeFlavor(capitalize(baseName(g))))
+    case "antlr" => Some(ANTLRFlavor())
+    case _ => None()
+}
+
+// Generate returns the Go files for in in the chosen flavor.
 func (t goTarget) Generate(in codegen.Input, opts codegen.Options) Either[Array[string], Array[codegen.OutputFile]] =
-    opts.Define("flavor").GetOrElse("companion") match {
-        case "companion" => companion(in, opts, t.Version)
-        case other => Left(ArrayOf(s"Go target: unknown flavor '$other' (supported: companion)"))
+    flavorOf(opts, in.Grammar) match {
+        case Some(f) => generateFlavor(in, opts, t.Version, f)
+        case None() => Left(ArrayOf(s"Go target: unknown flavor '${opts.Define("flavor").GetOrElse("")}' (supported: ${GoFlavors.MkString(", ")})"))
     }
 
 // baseName is the grammar name without the trailing `Parser` of a parser
@@ -49,22 +67,36 @@ func isCombined(g g4.Grammar) bool = g.Kind match {
     case _ => false
 }
 
-func parserFileName(g g4.Grammar) string = fileBase(g) + "_galop_parser.go"
+// parserFileName and lexerFileName name the generated files: the antlr flavor's
+// carry `_galop` so they can sit next to ANTLR's own; the native flavor's are
+// named like ANTLR's.
+func parserFileName(g g4.Grammar, f Flavor) string = fileBase(g) + infix(f) + "_parser.go"
 
-func lexerFileName(g g4.Grammar) string = fileBase(g) + "_galop_lexer.go"
+func lexerFileName(g g4.Grammar, f Flavor) string = fileBase(g) + infix(f) + "_lexer.go"
 
-// FileNames lists the companion files: a parser for a grammar with parser
-// rules, a lexer for one with lexer rules.
-func (t goTarget) FileNames(g g4.Grammar, c atn.Compiled, opts codegen.Options) Array[string] =
-    ArrayOf(c.Parser.Map((_) => parserFileName(g)), c.Lexer.Map((_) => lexerFileName(g))).Collect((name) => name)
+func infix(f Flavor) string = f match {
+    case ANTLRFlavor() => "_galop"
+    case NativeFlavor(_) => ""
+}
 
-// companion generates the fast parser and lexer that sit next to ANTLR's
-// generated parser and lexer: `<base>_galop_parser.go` for a grammar with
-// parser rules, `<base>_galop_lexer.go` for one with lexer rules.
-func companion(in codegen.Input, opts codegen.Options, version string) Either[Array[string], Array[codegen.OutputFile]] {
-    val parser = companionParserFile(in, opts, version, parserFileName(in.Grammar))
+// FileNames lists the generated files: a parser for a grammar with parser
+// rules, a lexer for one with lexer rules. An unknown flavor names none (the
+// tool reports it before asking).
+func (t goTarget) FileNames(g g4.Grammar, c atn.Compiled, opts codegen.Options) Array[string] = flavorOf(opts, g) match {
+    case Some(f) => ArrayOf(c.Parser.Map((_) => parserFileName(g, f)), c.Lexer.Map((_) => lexerFileName(g, f))).Collect((name) => name)
+    case None() => EmptyArray[string]()
+}
+
+// generateFlavor generates a flavor's parser, for a grammar with parser rules,
+// and lexer, for one with lexer rules.
+func generateFlavor(in codegen.Input, opts codegen.Options, version string, f Flavor) Either[Array[string], Array[codegen.OutputFile]] {
+    val parser = flavorParserFile(in, opts, version, f)
+    val name = lexerFileName(in.Grammar, f)
     val lexer = in.Compiled.Lexer match {
-        case Some(_) => lexgen.GoLexerFile(in, opts, lexerFileName(in.Grammar), baseName(in.Grammar) + "GalopLexer").Map((f) => ArrayOf(f))
+        case Some(_) => (f match {
+            case ANTLRFlavor() => lexgen.GoLexerFile(in, opts, name, baseName(in.Grammar) + "GalopLexer")
+            case NativeFlavor(x) => lexgen.NativeGoLexerFile(in, opts, name, x)
+        }).Map((file) => ArrayOf(file))
         case None() => Right[Array[string], Array[codegen.OutputFile]](EmptyArray[codegen.OutputFile]())
     }
     parser match {
@@ -73,8 +105,8 @@ func companion(in codegen.Input, opts codegen.Options, version string) Either[Ar
     }
 }
 
-// companionParserFile generates the fast parser, if the grammar has parser rules.
-func companionParserFile(in codegen.Input, opts codegen.Options, version string, name string) Either[Array[string], Array[codegen.OutputFile]] {
+// flavorParserFile generates a flavor's parser, if the grammar has parser rules.
+func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f Flavor) Either[Array[string], Array[codegen.OutputFile]] {
     val compiled = in.Compiled
     val predicates = compiled.Rules.Exists((r) => r.Alts.Exists((a) => hasPredicate(a.Steps)))
     if predicates {
@@ -93,9 +125,16 @@ func companionParserFile(in codegen.Input, opts codegen.Options, version string,
                 rules = compiled.Rules,
                 plans = an.Plans,
                 adaptive = an.Plans.Exists((p) => hasAdaptive(p.Lookahead)),
+                flavor = f,
+                tokenLabels = HasTokenLabels(compiled.Rules),
             )
-            val pkg = if (opts.Package == "") "parser" else opts.Package
-            Right(ArrayOf(codegen.OutputFile(name, companionParser(e, pkg, version, grammar + ".g4"))))
+            val pkg = lexgen.PackageOf(opts)
+            val file = grammar + ".g4"
+            val code = f match {
+                case NativeFlavor(_) => nativeParser(e, pkg, version, file, compiled.Lexer.IsEmpty(), in.Grammar.Channels)
+                case ANTLRFlavor() => antlrParser(e, pkg, version, file)
+            }
+            Right(ArrayOf(codegen.OutputFile(parserFileName(in.Grammar, f), code)))
         }
         case _ => Right(EmptyArray[codegen.OutputFile]())
     }

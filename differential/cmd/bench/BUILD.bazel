@@ -1,6 +1,6 @@
 load("@rules_go//go:def.bzl", "go_binary")
 
-# `bazel run -c opt //differential/cmd/bench` times ANTLR on the GALA corpus;
+# `bazel run -c opt //differential/cmd/bench` times ANTLR and galop on the GALA corpus;
 # pass -dir or files after `--` to time other input.
 go_binary(
     name = "bench",
@@ -10,5 +10,6 @@ go_binary(
     deps = [
         "//differential/corpus",
         "//differential/gala",
+        "//differential/nativegala",
     ],
 )

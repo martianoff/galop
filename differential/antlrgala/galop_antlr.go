@@ -2,9 +2,9 @@ package antlrgala
 
 import "github.com/antlr4-go/antlr/v4"
 
-// galop's generated parser joins the harness as the "galop" companion.
+// galop's generated parser in its antlr flavor joins the harness as "galop".
 func init() {
-	Companions["galop"] = func(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
+	SameTypes["galop"] = func(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
 		tree, err := NewgalaGalopParser(stream).SourceFile()
 		if err != nil {
 			return nil, err

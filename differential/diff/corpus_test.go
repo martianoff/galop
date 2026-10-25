@@ -78,7 +78,7 @@ func TestLenientMatchesLL(t *testing.T) {
 func TestGalopMatchesANTLR(t *testing.T) {
 	galop, ok := gala.Parsers()["galop"]
 	if !ok {
-		t.Fatal("the galop companion is not registered")
+		t.Fatal("galop's antlr flavor is not registered")
 	}
 	var out strings.Builder
 	var accepted []Result

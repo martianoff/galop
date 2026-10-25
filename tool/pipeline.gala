@@ -199,22 +199,36 @@ func backEnd(cfg Config, kit Toolkit, path string, a Analyzed) FileResult {
     val diagrams = if (cfg.ATN) ATNFiles(g, a.Compiled) else EmptyArray[codegen.OutputFile]()
     kit.Targets.Find(_.Language() == language) match {
         case None() => problemsOnly(ArrayOf(diag.CannotCreateTargetGenerator.New(language, kit.Version)))
-        case Some(t) => cfg.Action match {
-            case Depend() => {
-                val names = t.FileNames(g, a.Compiled, opts).AppendAll(diagrams.Map(_.Name))
-                printed(names.Map((name) => s"${OutputPath(cfg, path, name)} : $path\n").MkString(""))
-            }
-            case _ => t.Generate(codegen.Input(g, a.Compiled, a.Analysis), opts) match {
-                case Left(msgs) => problemsOnly(
-                    msgs.Map((m) => diag.CodeGenerationFailed.New(language, m).At(g.Pos.Line, g.Pos.Col).In(path)),
-                )
-                case Right(files) => problemsOnly(writeAll(
-                    kit.Files,
-                    files.AppendAll(diagrams).Map((f) => (OutputPath(cfg, path, f.Name), f.Content)),
-                ))
+        case Some(t) => flavorProblem(t, opts, path) match {
+            case Some(d) => problemsOnly(ArrayOf(d))
+            case None() => cfg.Action match {
+                case Depend() => {
+                    val names = t.FileNames(g, a.Compiled, opts).AppendAll(diagrams.Map(_.Name))
+                    printed(names.Map((name) => s"${OutputPath(cfg, path, name)} : $path\n").MkString(""))
+                }
+                case _ => t.Generate(codegen.Input(g, a.Compiled, a.Analysis), opts) match {
+                    case Left(msgs) => problemsOnly(
+                        msgs.Map((m) => diag.CodeGenerationFailed.New(language, m).At(g.Pos.Line, g.Pos.Col).In(path)),
+                    )
+                    case Right(files) => problemsOnly(writeAll(
+                        kit.Files,
+                        files.AppendAll(diagrams).Map((f) => (OutputPath(cfg, path, f.Name), f.Content)),
+                    ))
+                }
             }
         }
     }
+}
+
+// flavorProblem is error 508 when the `flavor` option (the last one: -D
+// overrides the grammar) names a flavor target t does not have. It is placed
+// at the grammar's option when it came from there.
+func flavorProblem(t codegen.Target, opts codegen.Options, path string) Option[diag.Diagnostic] {
+    val flavors = t.Flavors()
+    opts.Defines.FindLast(_.Name == "flavor").Filter((o) => flavors.NonEmpty() && !flavors.Contains(o.Value)).Map((o) => {
+        val d = diag.UnknownFlavor.New(t.Language(), o.Value, flavors.MkString(", "))
+        if (o.Pos.Line > 0) d.At(o.Pos.Line, o.Pos.Col).In(path) else d
+    })
 }
 
 // writeAll writes every output, reporting each one that fails.

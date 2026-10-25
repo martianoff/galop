@@ -6,30 +6,42 @@ import (
     . "martianoff/gala/collection_immutable"
     "martianoff/gala/strings"
 
+    "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
 )
 
-// Go emission: the lexer of the Go target's companion flavor. The generated
-// type embeds *antlr.BaseLexer and implements antlr.Lexer, so it replaces
-// ANTLR's generated lexer wherever that one is used; see the type's doc
-// comment in goLexerTemplate for the contract.
+// Go emission. The `antlr` flavor's lexer embeds *antlr.BaseLexer and
+// implements antlr.Lexer, so it replaces ANTLR's generated lexer wherever that
+// one is used (see the type's doc comment in goLexerTemplate). The `native`
+// flavor's lexer has no dependency: it turns a string into a flat token slice
+// (see goNativeLexerTemplate). Both run the same DFA (goMatchTemplate).
 
 // DepthOption is the `-D` option that sets the static DFA's rule-call depth.
 val DepthOption = "lexerDepth"
 
-// GoLexerFile generates the companion Go lexer of in's grammar as file name,
-// declaring type typeName in package opts.Package (ANTLR's default, `parser`, when empty).
-// The DFA keeps rule-call stacks up to the `lexerDepth` define (default 12).
-func GoLexerFile(in codegen.Input, opts codegen.Options, name string, typeName string) Either[Array[string], codegen.OutputFile] {
-    val pkg = if (opts.Package == "") "parser" else opts.Package
-    lexerDepth(opts) match {
-        case Left(msg) => Left(ArrayOf(msg))
-        case Right(depth) => in.Compiled.Lexer match {
-            case Some(lexer) => NewModel(lexer, in.Grammar.Channels)
-                .FlatMap((m) => Build(m, Options(MaxDepth = depth)))
-                .Map((d) => codegen.OutputFile(name, EmitGo(d, pkg, in.Grammar.Name, typeName)))
-            case None() => Left(ArrayOf(s"grammar ${in.Grammar.Name} has no lexer rules"))
-        }
+// GoLexerFile generates the `antlr` flavor's Go lexer of in's grammar as file
+// name, declaring type typeName in package opts.Package (ANTLR's default,
+// `parser`, when empty). The DFA keeps rule-call stacks up to the
+// `lexerDepth` define (default 12).
+func GoLexerFile(in codegen.Input, opts codegen.Options, name string, typeName string) Either[Array[string], codegen.OutputFile] =
+    buildDFA(in, opts).Map((d) => codegen.OutputFile(name, EmitGo(d, PackageOf(opts), in.Grammar.Name, typeName)))
+
+// NativeGoLexerFile generates the `native` flavor's Go lexer of in's grammar
+// as file name in package opts.Package: the token types, the token runtime
+// and a Lex function, every exported name starting with prefix (`Gala`).
+func NativeGoLexerFile(in codegen.Input, opts codegen.Options, name string, prefix string) Either[Array[string], codegen.OutputFile] =
+    buildDFA(in, opts).Map((d) => codegen.OutputFile(name, EmitNativeGo(d, PackageOf(opts), in.Grammar.Name, prefix, in.Grammar.Channels)))
+
+// PackageOf is the package of the generated code: ANTLR's default, `parser`,
+// when -package is not given.
+func PackageOf(opts codegen.Options) string = if (opts.Package == "") "parser" else opts.Package
+
+// buildDFA builds the lexer DFA of in's grammar to the `lexerDepth` define.
+func buildDFA(in codegen.Input, opts codegen.Options) Either[Array[string], DFA] = lexerDepth(opts) match {
+    case Left(msg) => Left(ArrayOf(msg))
+    case Right(depth) => in.Compiled.Lexer match {
+        case Some(lexer) => NewModel(lexer, in.Grammar.Channels).FlatMap((m) => Build(m, Options(MaxDepth = depth)))
+        case None() => Left(ArrayOf(s"grammar ${in.Grammar.Name} has no lexer rules"))
     }
 }
 
@@ -43,12 +55,59 @@ func lexerDepth(opts codegen.Options) Either[string, int] = opts.Define(DepthOpt
     }
 }
 
-// EmitGo renders d as a Go source file declaring lexer type typeName in package pkg.
+// EmitGo renders d as the `antlr` flavor's Go source file, declaring lexer
+// type typeName in package pkg.
 func EmitGo(d DFA, pkg string, grammar string, typeName string) string {
     val prefix = "galop" + strings.S(typeName).Capitalize().ToString()
     val m = d.Model
-    val numClasses = m.Classes.Size()
     val vocab = m.ATN.Vocab
+    val names = ArrayOf(
+        GoStrings(s"${prefix}RuleNames", m.ATN.RuleNames, "are the lexer's rule names, as in ANTLR's lexer."),
+        GoStrings(s"${prefix}LiteralNames", literalNames(vocab), "are the token types' literal names, as in ANTLR's lexer."),
+        GoStrings(s"${prefix}SymbolicNames", symbolicNames(vocab), "are the token types' symbolic names, as in ANTLR's lexer."),
+    )
+    val header = fill(
+        goLexerTemplate,
+        "@P@", prefix,
+        "@T@", typeName,
+        "@PKG@", pkg,
+        "@GRAMMAR@", grammar,
+        "@GRAMMARFILE@", strconv.Quote(grammar + ".g4"),
+        "@STATS@", dfaStats(d),
+    )
+    header + gostrings.TrimPrefix(fill(goMatchTemplate, "@P@", prefix), "\n") + "\n" + dfaTables(d, prefix) + "\n" + names.MkString("\n")
+}
+
+// EmitNativeGo renders d as the `native` flavor's Go source file in package
+// pkg: the token runtime (see NativeTokenRuntime) and the Lex functions,
+// every exported name starting with exported (`Gala`).
+func EmitNativeGo(d DFA, pkg string, grammar string, exported string, channels Array[string]) string {
+    val prefix = "galop" + exported + "Lexer"
+    val runtime = NativeTokenRuntime(d.Model.ATN.Vocab, channels, exported, grammar)
+    val lexer = fill(goNativeLexerTemplate, "@P@", prefix, "@X@", exported, "@GRAMMAR@", grammar, "@STATS@", dfaStats(d))
+    s"// Code generated by galop. DO NOT EDIT.\n\npackage $pkg\n\nimport (\n\t\"strconv\"\n\t\"unicode/utf8\"\n)\n\n" +
+        runtime + lexer + fill(goMatchTemplate, "@P@", prefix) + "\n" + dfaTables(d, prefix)
+}
+
+func dfaStats(d DFA) string =
+    s"${d.States.Size()} states, ${d.Model.Classes.Size()} input classes, rule calls up to ${d.MaxDepth} deep"
+
+// literalNames are the token types' literal names, ANTLR's LiteralNames.
+func literalNames(vocab atn.Vocabulary) Array[string] = ArrayTabulate(vocab.Names.Size(), (t) =>
+    if (t == 0) "" else vocab.Literals.Get(t).Map((lit) => s"'$lit'").GetOrElse("")
+)
+
+// symbolicNames are the token types' symbolic names, ANTLR's SymbolicNames:
+// none for the implicit `T__n` types.
+func symbolicNames(vocab atn.Vocabulary) Array[string] = ArrayTabulate(vocab.Names.Size(), (t) =>
+    if (t == 0 || vocab.Implicit.Get(t)) "" else vocab.Names.Get(t)
+)
+
+// dfaTables renders the DFA and, when it has dynamic edges, the lexer ATN and
+// its simulator; every name starts with prefix.
+func dfaTables(d DFA, prefix string) string {
+    val m = d.Model
+    val numClasses = m.Classes.Size()
     val accepts = d.States.Map((st) => st.Accept match {
         case Some(acc) => {
             val effect = m.EffectOf(acc.Actions)
@@ -77,29 +136,10 @@ func EmitGo(d DFA, pkg string, grammar string, typeName string) string {
             "is the token type each DFA state accepts (0: none); skip and more are ANTLR's\n// Lexer.SKIP and Lexer.MORE."),
         goTable(s"${prefix}AccChannel", signedType(accepts.Map(_.V2)), accepts.Map(_.V2),
             "is the channel each accepting state sets, or -1."),
-        goStrings(s"${prefix}RuleNames", m.ATN.RuleNames, "are the lexer's rule names, as in ANTLR's lexer."),
-        goStrings(s"${prefix}LiteralNames", ArrayTabulate(vocab.Names.Size(), (t) =>
-            if (t == 0) "" else vocab.Literals.Get(t).Map((lit) => s"'$lit'").GetOrElse("")
-        ), "are the token types' literal names, as in ANTLR's lexer."),
-        goStrings(s"${prefix}SymbolicNames", ArrayTabulate(vocab.Names.Size(), (t) =>
-            if (t == 0 || vocab.Implicit.Get(t)) "" else vocab.Names.Get(t)
-        ), "are the token types' symbolic names, as in ANTLR's lexer."),
     )
-    val sim = if (d.HasDynamicEdges()) atnTables(m, prefix) + fill(goSimTemplate, "@P@", prefix, "@T@", typeName)
-        else fill(goNoSimTemplate, "@P@", prefix, "@T@", typeName)
-    val stats = s"${d.States.Size()} states, $numClasses input classes, rule calls up to ${d.MaxDepth} deep"
-    val header = fill(
-        goLexerTemplate,
-        "@P@", prefix,
-        "@T@", typeName,
-        "@PKG@", pkg,
-        "@GRAMMAR@", grammar,
-        "@GRAMMARFILE@", strconv.Quote(grammar + ".g4"),
-        "@STATS@", stats,
-    )
-    header + "\n" + tables.MkString("\n") + sim
+    val sim = if (d.HasDynamicEdges()) atnTables(m, prefix) + fill(goSimTemplate, "@P@", prefix) else fill(goNoSimTemplate, "@P@", prefix)
+    tables.MkString("\n") + sim
 }
-
 // fill replaces each placeholder in template with its value, in one pass;
 // pairs alternate placeholder and value.
 func fill(template string, pairs ...string) string = gostrings.NewReplacer(pairs...).Replace(template)
@@ -159,8 +199,8 @@ func goTable(name string, goType string, values Array[int], doc string) string =
         values.Grouped(16).Map((row) => "\t" + row.MkString(", ") + ",").MkString("\n") + "\n}\n"
 }
 
-// goStrings renders values as a Go []string variable.
-func goStrings(name string, values Array[string], doc string) string =
+// GoStrings renders values as a documented Go []string variable named name.
+func GoStrings(name string, values Array[string], doc string) string =
     s"// $name $doc\nvar $name = []string{\n" +
         values.Grouped(8).Map((row) => "\t" + row.Map((v) => strconv.Quote(v)).MkString(", ") + ",").MkString("\n") + "\n}\n"
 
@@ -353,6 +393,11 @@ func (l *@T@) recognitionError(start, stop @P@Pos) {
 		"token recognition error at: '"+text+"'", e)
 }
 
+`
+
+// goMatchTemplate is the DFA scan both lexer flavors share: positions, code
+// points, input classes and one longest match. @P@ is the prefix of every name.
+val goMatchTemplate = `
 // @P@Pos is a position in the input: a code-point index and its byte offset,
 // its line, and the index the line's columns count from.
 type @P@Pos struct {

@@ -13,19 +13,27 @@ deserialization.
 
 > **Status: early development.** galop generates a Go lexer and parser for the
 > GALA compiler's grammar that produce exactly ANTLR's tokens and trees on the
-> whole GALA source corpus (722 of 722 files ANTLR accepts), several times faster.
+> whole GALA source corpus (722 of 722 files ANTLR accepts), several times faster,
+> in two flavors: its own compact tree (the default) or ANTLR's tree types.
 > Other grammars work as far as their features are supported (see below); see the
 > [roadmap](docs/ROADMAP.md).
 
-On the GALA corpus (723 files, 1.8 MB; Go 1.25, one machine; ANTLR driven the way
-the GALA compiler drives it, SLL with an LL retry):
+On the GALA corpus (723 files, 1.8 MB; Go 1.25, Windows, one machine with 32
+hardware threads; ANTLR driven the way the GALA compiler drives it, SLL with an LL
+retry, lexing included), from `bazel run -c opt //differential/cmd/bench`:
 
-| | ANTLR 4.13.1 | galop | |
+| | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` flavor |
 |---|---:|---:|---:|
-| First pass in a fresh process | 2.00 s | 0.72 s | 2.8× |
-| Warm, one goroutine | 0.58 s | 0.19 s | 3× |
-| Warm, 32 goroutines | 394 ms | 67 ms | 5.9× |
-| Lexer only, warm, parallel | 107 ms | 11 ms | 10× |
+| Warm, one goroutine | 488 ms | 178 ms (2.7×) | 65 ms (7.5×) |
+| Warm, 32 goroutines | 349 ms | 35 ms (10×) | 14 ms (25×) |
+| First pass in a fresh process | 1.58 s | 0.40 s (3.9×) | 0.28 s (5.7×) |
+| Allocations per warm pass | 6.8 M, 526 MB | 3.7 M, 293 MB | 19 k, 74 MB |
+| Lexer only, warm, 32 goroutines | 92 ms | 6.6 ms (14×) | 2.2 ms (43×) |
+
+The `antlr` flavor spends most of its time building ANTLR's token and tree
+objects; the `native` flavor's own tokens and tree cost a few milliseconds. A
+fresh process is dominated by building the runtime prediction cache, which both
+flavors share.
 
 ## Why
 
@@ -53,14 +61,16 @@ lexer is built entirely ahead of time.
 What you keep:
 
 - **Your grammar.** galop reads the same `.g4` file. No rewrite.
-- **Your code.** The parser builds ANTLR's own parse-tree types, so existing
-  listeners and visitors keep working.
-- **The same results.** Tokens and trees match ANTLR's on the whole GALA corpus.
+- **The same results.** Tokens and trees match ANTLR's on the whole GALA corpus,
+  in both flavors.
+- **Your code, if you want.** The `antlr` flavor builds ANTLR's own parse-tree
+  types, so existing listeners and visitors keep working. The default, `native`,
+  builds galop's own compact tree, with ANTLR's accessors (`ctx.Expression()`,
+  `ctx.AllStatement()`, `ctx.IDENTIFIER()`, `ctx.GetGuard()`), so porting code
+  written against ANTLR's trees is mostly renaming; it has no dependency.
 
-What you get: a faster parser, especially in a fresh process and when many
-goroutines parse at once (see the table above). A hand-written parser for the
-same grammar is still faster, about 10× ANTLR warm; closing that gap is the next
-milestone. galop's first user is the GALA compiler itself.
+What you get: a faster parser, especially when many goroutines parse at once
+(see the table above). galop's first user is the GALA compiler itself.
 
 ## Install
 
@@ -113,9 +123,9 @@ galop options:
 ```
 
 - **Targets.** `-Dlanguage=Go` (the default) picks the Go target, and
-  `-Dflavor=companion|standalone` its output style (see
+  `-Dflavor=native|antlr` its output style, `native` by default (see
   [design](docs/DESIGN.md#code-generation-codegen-golang)). `-D` options override
-  the grammar's own `options {}`.
+  the grammar's own `options {}`; an unknown flavor is error 508.
 - **Output layout** follows ANTLR: files go next to the grammar; with `-o dir`
   they go to `dir` plus the grammar's relative directory (`-o gen sub/T.g4`
   writes to `gen/sub/`), unless `-Xexact-output-dir` is given.
@@ -146,6 +156,33 @@ galop options:
 
 Grammar files are processed concurrently and independently: an error in one
 does not stop the others, and output is reported in command-line order.
+
+### Flavors
+
+The Go target writes one of two kinds of parser, picked with `-Dflavor`:
+
+| | `native` (default) | `antlr` |
+|---|---|---|
+| Files | `expr_lexer.go`, `expr_parser.go` | `expr_galop_lexer.go`, `expr_galop_parser.go` |
+| Dependencies | none | ANTLR's Go runtime, and ANTLR's generated code in the same package |
+| Tokens | a slice of 20-byte tokens; comments and other off-channel tokens in a side slice | `antlr.CommonToken`s from an `antlr.TokenStream` |
+| Tree | galop's compact tree, with typed accessors per rule | ANTLR's own context types |
+| For | new code, and speed | programs already written against ANTLR's trees |
+
+With the `native` flavor, for `Expr.g4` in package `parser`:
+
+```go
+toks := parser.ExprLex(src)          // tokens; toks.Hidden holds the comments
+prog, err := parser.ParseProg(toks)  // a *parser.ExprSyntaxError with line and column
+for _, st := range prog.AllStat() {  // ANTLR's accessors, on typed handles
+	if a, ok := st.AsAssign(); ok {  // a labeled alternative
+		fmt.Println(a.ID().GetText(), a.Start().Line, a.Expr().GetText())
+	}
+}
+```
+
+Both flavors decide exactly as ANTLR does and give the same tokens and trees.
+Neither recovers from syntax errors yet: a parse stops at the first one.
 
 ### Bazel
 

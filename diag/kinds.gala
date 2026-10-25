@@ -111,3 +111,6 @@ val BadCommandLine = Kind(506, Error(), "<arg>")
 
 // ReversedRange: a lexer set range whose end comes before its start.
 val ReversedRange = Kind(507, Error(), "reversed range <arg> in set [<arg2>]")
+
+// UnknownFlavor: a `flavor` option the target does not have.
+val UnknownFlavor = Kind(508, Error(), "unknown <arg> flavor <arg2> (supported: <arg3>)")

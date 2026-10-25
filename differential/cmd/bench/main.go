@@ -1,8 +1,11 @@
-// Command bench times ANTLR's lexer and parser for gala.g4 on a corpus.
+// Command bench times ANTLR's and galop's lexers and parsers for gala.g4 on a
+// corpus.
 //
-// It measures three phases: lex (the token stream a parse reads, GALA's
-// re-typing included), lex-galop (the same stream from galop's generated
-// lexer) and parse (lex plus the GALA compiler's SLL-then-LL parse), each:
+// It measures six phases. lex is the token stream a parse reads (GALA's
+// re-typing included), lex-galop the same stream from galop's antlr flavor's
+// lexer, and lex-native the native flavor's token list; parse is lex plus the
+// GALA compiler's SLL-then-LL parse with ANTLR, parse-galop the same with
+// galop's antlr flavor, and parse-native with the native flavor. Each is timed:
 //
 //   - warm: in this process, after one untimed pass has built ANTLR's DFA
 //     caches, timed with testing.Benchmark; per file for the largest files,
@@ -31,21 +34,26 @@ import (
 
 	"github.com/martianoff/galop/differential/corpus"
 	"github.com/martianoff/galop/differential/gala"
+	"github.com/martianoff/galop/differential/nativegala"
 )
 
 // phases are the measured operations, by name.
 var phases = map[string]func(src string){
-	"lex":       func(src string) { gala.Tokens(src).Fill() },
-	"lex-galop": func(src string) { gala.GalopTokens(src).Fill() },
-	"parse":     func(src string) { gala.Lenient(gala.Tokens(src)) },
+	"lex":          func(src string) { gala.Tokens(src).Fill() },
+	"lex-galop":    func(src string) { gala.GalopTokens(src).Fill() },
+	"parse":        func(src string) { gala.Lenient(gala.Tokens(src)) },
+	"lex-native":   func(src string) { nativegala.Tokens(src) },
+	"parse-galop":  func(src string) { gala.Parsers()["galop"](gala.GalopTokens(src)) },
+	"parse-native": func(src string) { nativegala.Parse(src) },
 }
 
-var phaseOrder = []string{"lex", "lex-galop", "parse"}
+var phaseOrder = []string{"lex", "lex-galop", "lex-native", "parse", "parse-galop", "parse-native"}
 
 // sample is one measurement.
 type sample struct {
 	Elapsed time.Duration `json:"elapsed"`
 	Allocs  uint64        `json:"allocs"`
+	AllocMB float64       `json:"alloc_mb"`
 	Bytes   int           `json:"bytes"`
 }
 
@@ -75,8 +83,8 @@ func main() {
 
 	fmt.Printf("%d files, %.2f MB, GOMAXPROCS=%d, %s/%s, %s\n\n", len(files),
 		float64(corpus.Bytes(files))/1e6, runtime.GOMAXPROCS(0), runtime.GOOS, runtime.GOARCH, runtime.Version())
-	fmt.Println("| What | Phase | Time | MB/s | Allocs |")
-	fmt.Println("|---|---|---:|---:|---:|")
+	fmt.Println("| What | Phase | Time | MB/s | Allocs | MB allocated |")
+	fmt.Println("|---|---|---:|---:|---:|---:|")
 
 	// Warm everything up once so the warm rows do not pay for the DFA build.
 	for _, name := range phaseOrder {
@@ -124,7 +132,7 @@ func warm(files []corpus.File, do func(string), parallel bool) sample {
 			pass(files, do, parallel)
 		}
 	})
-	return sample{Elapsed: time.Duration(r.NsPerOp()), Allocs: uint64(r.AllocsPerOp()), Bytes: corpus.Bytes(files)}
+	return sample{Elapsed: time.Duration(r.NsPerOp()), Allocs: uint64(r.AllocsPerOp()), AllocMB: float64(r.AllocedBytesPerOp()) / 1e6, Bytes: corpus.Bytes(files)}
 }
 
 // measure times a single pass of do over files, as a fresh process sees it.
@@ -138,7 +146,7 @@ func measure(files []corpus.File, do func(string), parallel bool) sample {
 	pass(files, do, parallel)
 	elapsed := time.Since(start)
 	runtime.ReadMemStats(&after)
-	return sample{Elapsed: elapsed, Allocs: after.Mallocs - before.Mallocs, Bytes: corpus.Bytes(files)}
+	return sample{Elapsed: elapsed, Allocs: after.Mallocs - before.Mallocs, AllocMB: float64(after.TotalAlloc-before.TotalAlloc) / 1e6, Bytes: corpus.Bytes(files)}
 }
 
 // pass runs do over every file, on one goroutine or on GOMAXPROCS.
@@ -202,7 +210,7 @@ func cold(n int, phase string, parallel bool, paths []string) sample {
 func row(what, phase string, s sample) {
 	ms := float64(s.Elapsed) / float64(time.Millisecond)
 	mbps := float64(s.Bytes) / 1e6 / s.Elapsed.Seconds()
-	fmt.Printf("| %s | %s | %.2f ms | %.1f | %d |\n", what, phase, ms, mbps, s.Allocs)
+	fmt.Printf("| %s | %s | %.2f ms | %.1f | %d | %.1f |\n", what, phase, ms, mbps, s.Allocs, s.AllocMB)
 }
 
 // abs makes p independent of the working directory, which a child process
