@@ -370,6 +370,12 @@ type PFXPredictor struct {
 	skipped []PFXConfig
 	sorted  []PFXConfig
 	multi   bool
+	// Scratch for subsets.
+	groups     PFXMap
+	states     PFXMap
+	groupMin   []int32
+	stateAlt   []int32
+	stateMulti []bool
 }
 
 // matches reports whether consuming transition i accepts token type t.
@@ -396,12 +402,63 @@ func PFXMatches(i int32, t int32) bool {
 
 // closure adds c and every configuration reachable from it without consuming
 // a token to out (ANTLR's closureCheckingStopState and closureWork).
+//
+// Within a rule, what a state reaches without consuming is the same in every
+// context, so it comes from the precomputed PFXClos tables; only rule calls
+// and rule ends are handled here. After EOF, transitions that match EOF also
+// count as epsilon, which the tables do not cover, so that case walks the ATN.
 func (pr *PFXPredictor) closure(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool) {
 	if _, isNew := pr.busy.put(c.key(), 0); !isNew {
 		return
 	}
-	cp := &pr.pool
 	if PFXStateIsStop[c.state] {
+		pr.ruleEnd(c, out, eofAsEpsilon)
+		return
+	}
+	if eofAsEpsilon {
+		pr.walk(c, out)
+		return
+	}
+	cp := &pr.pool
+	for i := PFXClosStart[c.state]; i < PFXClosStart[c.state+1]; i++ {
+		s := PFXClosState[i]
+		switch PFXClosKind[i] {
+		case 0:
+			out.add(PFXConfig{s, c.alt, c.ctx}, cp)
+		case 1:
+			pr.closure(PFXConfig{s, c.alt, cp.singleton(c.ctx, PFXClosArg[i])}, out, false)
+		default:
+			pr.closure(PFXConfig{s, c.alt, c.ctx}, out, false)
+		}
+	}
+}
+
+// walk is closure over the ATN transitions themselves, for after EOF.
+func (pr *PFXPredictor) walk(c PFXConfig, out *PFXConfigSet) {
+	cp := &pr.pool
+	if !PFXStateEpsOnly[c.state] {
+		out.add(c, cp)
+	}
+	for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
+		switch PFXTransKind[i] {
+		case PFXKindEpsilon:
+			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, true)
+		case PFXKindRule:
+			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, cp.singleton(c.ctx, PFXTransArg[i])}, out, true)
+		default:
+			if PFXMatches(i, -1) {
+				pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, true)
+			}
+		}
+	}
+}
+
+// ruleEnd continues a configuration at a rule's end: back to each return state
+// of its context, or, with the context exhausted, at the end of the start rule
+// (LL) or after every call of the rule (SLL).
+func (pr *PFXPredictor) ruleEnd(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool) {
+	cp := &pr.pool
+	{
 		if !cp.isEmpty(c.ctx) {
 			for i := int32(0); i < cp.length[c.ctx]; i++ {
 				ret, parent := cp.rets[cp.start[c.ctx]+i], cp.parents[cp.start[c.ctx]+i]
@@ -423,22 +480,6 @@ func (pr *PFXPredictor) closure(c PFXConfig, out *PFXConfigSet, eofAsEpsilon boo
 			return
 		}
 		pr.follow(c, out, eofAsEpsilon)
-		return
-	}
-	if !PFXStateEpsOnly[c.state] {
-		out.add(c, cp)
-	}
-	for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
-		switch PFXTransKind[i] {
-		case PFXKindEpsilon:
-			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, eofAsEpsilon)
-		case PFXKindRule:
-			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, cp.singleton(c.ctx, PFXTransArg[i])}, out, eofAsEpsilon)
-		default:
-			if eofAsEpsilon && PFXMatches(i, -1) {
-				pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, eofAsEpsilon)
-			}
-		}
 	}
 }
 
@@ -537,61 +578,44 @@ func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, intermediate, out 
 // pr.multi when some subset has more than one alternative, and reports
 // whether some state is associated with exactly one alternative.
 func (pr *PFXPredictor) subsets(set *PFXConfigSet) (single int32, stateWithOneAlt bool) {
-	s := append(pr.sorted[:0], set.list...)
-	pr.sorted = s
-	slices.SortFunc(s, func(a, b PFXConfig) int {
-		if a.state != b.state {
-			return int(a.state - b.state)
-		}
-		if a.ctx != b.ctx {
-			return int(a.ctx - b.ctx)
-		}
-		return int(a.alt - b.alt)
-	})
+	// A configuration set holds one configuration per (state, alt), so two
+	// configurations in the same (state, ctx) group always differ in alt.
+	pr.groups.reset()
+	pr.states.reset()
+	pr.groupMin = pr.groupMin[:0]
+	pr.stateAlt = pr.stateAlt[:0]
+	pr.stateMulti = pr.stateMulti[:0]
 	pr.multi = false
-	viable := int32(0)
-	consistent := true
-	for i := 0; i < len(s); {
-		j := i
-		alts := 0
-		for j < len(s) && s[j].state == s[i].state {
-			// One subset: equal (state, ctx), alternatives ascending.
-			k := j
-			for k < len(s) && s[k].state == s[j].state && s[k].ctx == s[j].ctx {
-				k++
-			}
-			if k-j > 1 {
-				pr.multi = true
-			}
-			if viable == 0 {
-				viable = s[j].alt
-			} else if viable != s[j].alt {
-				consistent = false
-			}
-			j = k
+	for _, c := range set.list {
+		g, isNew := pr.groups.put(uint64(uint32(c.state))<<32|uint64(uint32(c.ctx)), int32(len(pr.groupMin)))
+		if isNew {
+			pr.groupMin = append(pr.groupMin, c.alt)
+		} else {
+			pr.multi = true
+			pr.groupMin[g] = min(pr.groupMin[g], c.alt)
 		}
-		// Distinct alternatives of this state.
-		for q := i; q < j; q++ {
-			seen := false
-			for r := i; r < q; r++ {
-				if s[r].alt == s[q].alt {
-					seen = true
-					break
-				}
-			}
-			if !seen {
-				alts++
-			}
+		s, isNew := pr.states.put(uint64(uint32(c.state)), int32(len(pr.stateAlt)))
+		if isNew {
+			pr.stateAlt = append(pr.stateAlt, c.alt)
+			pr.stateMulti = append(pr.stateMulti, false)
+		} else if pr.stateAlt[s] != c.alt {
+			pr.stateMulti[s] = true
 		}
-		if alts == 1 {
+	}
+	for _, m := range pr.stateMulti {
+		if !m {
 			stateWithOneAlt = true
+			break
 		}
-		i = j
 	}
-	if !consistent {
-		viable = 0
+	for _, m := range pr.groupMin {
+		if single == 0 {
+			single = m
+		} else if single != m {
+			return 0, stateWithOneAlt
+		}
 	}
-	return viable, stateWithOneAlt
+	return single, stateWithOneAlt
 }
 
 func PFXAllInStop(list []PFXConfig) bool {

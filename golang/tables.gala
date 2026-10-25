@@ -44,6 +44,9 @@ func tables(e env) string {
     // rule when the caller is unknown (ANTLR's rule-stop follow links).
     val follows = ArrayTabulate(e.parser.RuleNames.Size(), (r) => e.parser.Callers(r).Map(_.Follow))
     val followStarts = follows.FoldLeft(ArrayOf(0), (acc, fs) => acc.Append(acc.Last() + fs.Size()))
+    val closures = states.Map((s) => staticClosure(e.parser, s.Id))
+    val closStarts = closures.FoldLeft(ArrayOf(0), (acc, c) => acc.Append(acc.Last() + c.Size()))
+    val closAll = closures.FlatMap((c) => c)
     val x = e.pfx
     ArrayOf(
         "// The parser ATN, for adaptive prediction.",
@@ -67,6 +70,10 @@ func tables(e env) string {
         goSlice(s"${x}DecisionState", "int32", e.parser.Decisions.Map((d) => s"${d.State}")),
         goSlice(s"${x}FollowStart", "int32", followStarts.Map((n) => s"$n")),
         goSlice(s"${x}FollowState", "int32", follows.FlatMap((fs) => fs).Map((n) => s"$n")),
+        goSlice(s"${x}ClosStart", "int32", closStarts.Map((n) => s"$n")),
+        goSlice(s"${x}ClosKind", "uint8", closAll.Map((c) => s"${c.Kind}")),
+        goSlice(s"${x}ClosState", "int32", closAll.Map((c) => s"${c.State}")),
+        goSlice(s"${x}ClosArg", "int32", closAll.Map((c) => s"${c.Arg}")),
         s"var ${x}Sets = [][]int32{",
     ).AppendAll(sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},"))
         .Append("}")
@@ -77,4 +84,45 @@ func tables(e env) string {
 func goSlice(name string, typ string, values Array[string]) string {
     val rows = values.Grouped(24).Map((row) => "\t" + row.MkString(", ") + ",")
     s"var $name = []$typ{\n" + rows.MkString("\n") + "\n}\n"
+}
+
+// Kinds of the items in a state's static closure.
+val closAdd = 0
+val closCall = 1
+val closStop = 2
+
+// closureItem is one thing a configuration reaches from a state without
+// consuming a token and without leaving the state's rule: a state that consumes
+// (closAdd), a rule call (closCall, State = the rule's start, Arg = the follow
+// state), or the rule's end (closStop).
+struct closureItem(Kind int, State int, Arg int)
+
+// staticClosure is the part of ANTLR's closure that does not depend on the
+// prediction context: everything reachable from state s through epsilon,
+// action and predicate transitions inside one rule. The runtime only handles
+// rule calls and returns itself.
+func staticClosure(a atn.ATN, s int) Array[closureItem] =
+    visitClosure(a, s, Tuple(EmptyArray[closureItem](), EmptyArray[int]())).V1
+
+func visitClosure(a atn.ATN, s int, acc Tuple[Array[closureItem], Array[int]]) Tuple[Array[closureItem], Array[int]] {
+    if acc.V2.Contains(s) {
+        return acc
+    }
+    val seen = Tuple(acc.V1, acc.V2.Append(s))
+    val st = a.State(s)
+    st.Kind match {
+        case atn.RuleStopState() => Tuple(seen.V1.Append(closureItem(closStop, s, 0)), seen.V2)
+        case _ => {
+            val epsOnly = st.Out.NonEmpty() && st.Out.ForAll(_.IsEpsilon())
+            val start = if (epsOnly) seen else Tuple(seen.V1.Append(closureItem(closAdd, s, 0)), seen.V2)
+            st.Out.FoldLeft(start, (next, t) => t match {
+                case atn.RuleCall(target, _, follow) => Tuple(next.V1.Append(closureItem(closCall, target, follow)), next.V2)
+                case atn.Epsilon(target) => visitClosure(a, target, next)
+                case atn.LexerActions(target, _) => visitClosure(a, target, next)
+                case atn.Predicate(target, _, _) => visitClosure(a, target, next)
+                case atn.Action(target, _, _) => visitClosure(a, target, next)
+                case _ => next
+            })
+        }
+    }
 }
