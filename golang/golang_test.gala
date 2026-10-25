@@ -1,0 +1,105 @@
+package golang
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/go_builtins"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/g4"
+)
+
+val exprGrammar = `grammar Expr;
+prog : stat+ EOF ;
+stat : expr ';' # exprStat
+     | ID '=' expr ';' # assign
+     ;
+expr : term (op=('+' | '-') term)* ;
+term : ID | INT | '(' expr ')' ;
+ID : [a-z]+ ;
+INT : [0-9]+ ;
+WS : [ \t\r\n]+ -> skip ;
+`
+
+// generate runs the Go target on a test grammar that must be valid.
+func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], Array[codegen.OutputFile]] = g4.Parse(src) match {
+    case Right(g) => atn.Compile(g) match {
+        case Right(c) => Target().Generate(
+            codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))),
+            codegen.Options(Package = "expr", Defines = defines),
+        )
+        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+}
+
+func parserFile(t T) string = generate(exprGrammar, EmptyArray[g4.OptionEntry]()) match {
+    case Right(Array(f)) => f.Content
+    case other => go_builtins.Panic(s"expected one file, got $other")
+}
+
+func TestCompanionFileNameAndPackage(t T) T = generate(exprGrammar, EmptyArray[g4.OptionEntry]()) match {
+    case Right(files) => {
+        val t1 = Eq(t, files.Map(_.Name), ArrayOf("expr_galop_parser.go"))
+        IsTrue(t1, strings.Contains(files.Head().Content, "\npackage expr\n"))
+    }
+    case Left(errs) => t.Error(errs.MkString("; "))
+}
+
+func TestCompanionUsesANTLRNames(t T) T {
+    val code = parserFile(t)
+    val expected = ArrayOf(
+        // ANTLR's context constructors, labeled alternatives and token constants.
+        "NewProgContext(nil, parent, invokingState)",
+        "localctx = NewExprStatContext(nil, localctx)",
+        "localctx = NewAssignContext(nil, localctx)",
+        "p.match(localctx, ExprParserID)",
+        // Token-number assertions against ANTLR's constants.
+        "_ uint = ExprParserID - ",
+        // The set label is stored in ANTLR's field.
+        "localctx.(*ExprContext).op = tok",
+        // Public entry points return ANTLR's interfaces.
+        "func (p *ExprFastParser) Prog() (IProgContext, error)",
+    )
+    expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
+}
+
+func TestStaticGrammarHasNoPredictor(t T) T {
+    // Every decision of this grammar is LL(1), so no runtime predictor is emitted.
+    val code = parserFile(t)
+    val t1 = IsFalse(t, strings.Contains(code, "adaptivePredict"))
+    IsTrue(t1, strings.Contains(code, "func (p *ExprFastParser) decide0() int"))
+}
+
+func TestAdaptiveGrammarEmitsPredictor(t T) T = generate(`grammar A;
+s : a | b ;
+a : X* Y ;
+b : X* Z ;
+X : 'x' ; Y : 'y' ; Z : 'z' ;
+`, EmptyArray[g4.OptionEntry]()) match {
+    case Right(Array(f)) => {
+        val t1 = IsTrue(t, strings.Contains(f.Content, "return p.adaptivePredict("))
+        val t2 = IsTrue(t1, strings.Contains(f.Content, "var AGalopTransStart = []int32{"))
+        IsTrue(t2, strings.Contains(f.Content, "p.stack = append(p.stack, "))
+    }
+    case other => t.Error(s"unexpected result $other")
+}
+
+func TestUnknownFlavor(t T) T =
+    generate(exprGrammar, ArrayOf(g4.OptionEntry("flavor", "nope"))) match {
+        case Left(errs) => Eq(t, errs, ArrayOf("Go target: unknown flavor 'nope' (supported: companion)"))
+        case Right(_) => t.Error("expected an error")
+    }
+
+func TestNames(t T) T {
+    val n = Names("gala")
+    val t1 = Eq(t, n.RuleMethod("type"), "Type_")
+    val t2 = Eq(t1, n.RuleMethod("sourceFile"), "SourceFile")
+    val t3 = Eq(t2, n.Context("caseClause"), "CaseClauseContext")
+    val t4 = Eq(t3, n.TokenConst("T__4"), "galaParserT__4")
+    Eq(t4, n.RuleConst("type"), "galaParserRULE_type")
+}

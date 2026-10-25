@@ -1,0 +1,73 @@
+package golang
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
+)
+
+// Version is stamped into generated files.
+var Version = "0.0.0-dev"
+
+// goTarget generates Go.
+type goTarget struct {}
+
+// Target is the Go code generator (`-Dlanguage=Go`).
+func Target() codegen.Target = goTarget{}
+
+func (t goTarget) Language() string = "Go"
+
+// Generate returns the Go files for in. The `flavor` option picks the shape:
+// `companion` (the default) builds ANTLR's own context types and lives in the
+// package of ANTLR's generated code.
+func (t goTarget) Generate(in codegen.Input, opts codegen.Options) Either[Array[string], Array[codegen.OutputFile]] =
+    opts.Define("flavor").GetOrElse("companion") match {
+        case "companion" => companion(in, opts)
+        case other => Left(ArrayOf(s"Go target: unknown flavor '$other' (supported: companion)"))
+    }
+
+// companion generates the fast parser that sits next to ANTLR's generated parser.
+func companion(in codegen.Input, opts codegen.Options) Either[Array[string], Array[codegen.OutputFile]] {
+    val compiled = in.Compiled
+    val predicates = compiled.Rules.Exists((r) => r.Alts.Exists((a) => hasPredicate(a.Steps)))
+    if predicates {
+        return Left(ArrayOf("Go target: semantic predicates are not supported yet"))
+    }
+    (compiled.Parser, in.Analysis) match {
+        case (Some(parser), Some(an)) => {
+            val grammar = in.Grammar.Name
+            val names = Names(grammar)
+            val e = env(
+                names = names,
+                pfx = grammar + "Galop",
+                parserType = grammar + "FastParser",
+                vocab = compiled.Vocab,
+                parser = parser,
+                rules = compiled.Rules,
+                plans = an.Plans,
+                adaptive = an.Plans.Exists((p) => hasAdaptive(p.Lookahead)),
+            )
+            val pkg = if (opts.Package == "") "parser" else opts.Package
+            val file = codegen.OutputFile(strings.ToLower(grammar) + "_galop_parser.go", companionParser(e, pkg, Version, grammar + ".g4"))
+            Right(ArrayOf(file))
+        }
+        case _ => Right(EmptyArray[codegen.OutputFile]())
+    }
+}
+
+func hasAdaptive(la analysis.Lookahead) bool = la match {
+    case analysis.Adaptive(_) => true
+    case analysis.Switch(_, cases) => cases.Exists((c) => hasAdaptive(c.Then))
+    case _ => false
+}
+
+func hasPredicate(steps Array[atn.Step]) bool = steps.Exists((s) => s match {
+    case atn.CheckPredicate(_) => true
+    case atn.Choose(_, alts, _) => alts.Exists(hasPredicate)
+    case atn.Loop(_, _, _, body) => hasPredicate(body)
+    case _ => false
+})

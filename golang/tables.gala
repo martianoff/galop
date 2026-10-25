@@ -1,0 +1,70 @@
+package golang
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// Transition kinds in the emitted tables. Actions and predicates are epsilon
+// for prediction (galop rejects grammars whose prediction needs predicates).
+val kindEpsilon = 0
+val kindRule = 1
+val kindAtom = 2
+val kindSet = 3
+
+// flatTransition is one transition in table form.
+struct flatTransition(Kind int, Target int, Arg int)
+
+// flatten turns a transition into table form; sets are numbered by the order
+// of first appearance in sets.
+func flatten(t atn.Transition, sets Array[atn.IntervalSet]) flatTransition = t match {
+    case atn.Epsilon(target) => flatTransition(kindEpsilon, target, 0)
+    case atn.RuleCall(target, _, follow) => flatTransition(kindRule, target, follow)
+    case atn.Atom(target, label) => flatTransition(kindAtom, target, label)
+    case atn.SetMatch(target, set) => flatTransition(kindSet, target, sets.IndexOf(set))
+    case atn.LexerActions(target, _) => flatTransition(kindEpsilon, target, 0)
+    case atn.Predicate(target, _, _) => flatTransition(kindEpsilon, target, 0)
+    case atn.Action(target, _, _) => flatTransition(kindEpsilon, target, 0)
+}
+
+// tables emits the parser ATN as Go literals for the runtime predictor.
+func tables(e env) string {
+    val states = e.parser.States
+    val sets = states.FlatMap((s) => s.Out.Collect({ case atn.SetMatch(_, set) => set })).Distinct()
+    val flat = states.Map((s) => s.Out.Map((t) => flatten(t, sets)))
+    val starts = flat.FoldLeft(ArrayOf(0), (acc, out) => acc.Append(acc.Last() + out.Size()))
+    val all = flat.FlatMap((out) => out)
+    val isStop = states.Map((s) => s.Kind match {
+        case atn.RuleStopState() => true
+        case _ => false
+    })
+    val epsOnly = states.Map((s) => s.Out.NonEmpty() && s.Out.ForAll(_.IsEpsilon()))
+    val x = e.pfx
+    ArrayOf(
+        "// The parser ATN, for adaptive prediction.",
+        "const (",
+        s"\t${x}KindEpsilon = $kindEpsilon",
+        s"\t${x}KindRule    = $kindRule",
+        s"\t${x}KindAtom    = $kindAtom",
+        s"\t${x}KindSet     = $kindSet",
+        ")",
+        "",
+        goSlice(s"${x}StateIsStop", "bool", isStop.Map((b) => s"$b")),
+        goSlice(s"${x}StateEpsOnly", "bool", epsOnly.Map((b) => s"$b")),
+        goSlice(s"${x}TransStart", "int32", starts.Map((n) => s"$n")),
+        goSlice(s"${x}TransKind", "uint8", all.Map((t) => s"${t.Kind}")),
+        goSlice(s"${x}TransTarget", "int32", all.Map((t) => s"${t.Target}")),
+        goSlice(s"${x}TransArg", "int32", all.Map((t) => s"${t.Arg}")),
+        goSlice(s"${x}DecisionState", "int32", e.parser.Decisions.Map((d) => s"${d.State}")),
+        s"var ${x}Sets = [][]int32{",
+    ).AppendAll(sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},"))
+        .Append("}")
+        .MkString("\n") + "\n"
+}
+
+// goSlice renders `var name = []typ{...}` with a bounded number of values per line.
+func goSlice(name string, typ string, values Array[string]) string {
+    val rows = values.Grouped(24).Map((row) => "\t" + row.MkString(", ") + ",")
+    s"var $name = []$typ{\n" + rows.MkString("\n") + "\n}\n"
+}
