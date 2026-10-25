@@ -1,60 +1,80 @@
 package g4
 
-import . "martianoff/gala/collection_immutable"
+import (
+    . "martianoff/gala/collection_immutable"
 
-// Check reports semantic errors that parsing alone does not catch: duplicate
-// rules, references to undefined rules or tokens, parser rules in a lexer
-// grammar (and the reverse), lexer rules that reference parser rules, and
-// parser rules that reference fragments. The result is empty for a valid
-// grammar. Diagnostics carry no position (line and column are 0); the message
-// names the rule.
-func Check(g Grammar) Array[string] {
-    val names = g.Rules.Map(_.Name)
-    val duplicates = names.Distinct().Collect({ case n if names.Count(_ == n) > 1 => s"rule '$n' is defined more than once" })
-    val kindErrors = g.Rules.Collect((r) => ruleKindError(g.Kind, r))
-    val refErrors = g.Rules.FlatMap((r) => r.Alts.FlatMap(altRefs).Distinct().Collect((ref) => refError(g, r, ref)))
-    duplicates.AppendAll(kindErrors).AppendAll(refErrors)
+    "github.com/martianoff/galop/diag"
+)
+
+// Check reports the semantic problems parsing alone does not catch, as
+// diagnostics with ANTLR's codes where ANTLR reports the same problem: a
+// grammar with no rules, rule redefinitions, parser rules in a lexer grammar
+// (and the reverse), references to undefined rules, lexer rules that
+// reference parser rules, parser rules that reference fragments, and (a
+// warning) tokens a parser rule uses that nothing defines, which ANTLR then
+// defines implicitly. The result is in source order and empty for a valid
+// grammar. Diagnostics carry the position of the offending name (none for a
+// grammar built in code) and no file.
+func Check(g Grammar) Array[diag.Diagnostic] {
+    val noRules = g.Rules match {
+        case Array() => ArrayOf(at(diag.NoRules.New(g.Name), g.Pos))
+        case _ => EmptyArray[diag.Diagnostic]()
+    }
+    val redefinitions = g.Rules.ZipWithIndex().Collect((ri) => {
+        val (r, i) = ri
+        g.Rules.Take(i).Find(_.Name == r.Name).Map((prev) =>
+            at(diag.RuleRedefinition.New(r.Name, s"${prev.Pos.Line}"), r.Pos)
+        )
+    })
+    val kindErrors = g.Rules.Collect((r) => ruleKindError(g.Kind, r).Map((d) => at(d, r.Pos)))
+    val refErrors = g.Rules.FlatMap((r) =>
+        r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => at(d, l.Pos)))
+    )
+    val all = noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors)
+    diag.InSourceOrder(all.AppendAll(implicitTokens(g)))
 }
 
-func ruleKindError(kind GrammarKind, r Rule) Option[string] = kind match {
-    case LexerOnly() if !r.IsLexer() => Some(s"parser rule '${r.Name}' in a lexer grammar")
-    case ParserOnly() if r.IsLexer() => Some(s"lexer rule '${r.Name}' in a parser grammar")
+// at places d at p.
+func at(d diag.Diagnostic, p Pos) diag.Diagnostic = d.At(p.Line, p.Col)
+
+func ruleKindError(kind GrammarKind, r Rule) Option[diag.Diagnostic] = kind match {
+    case LexerOnly() if !r.IsLexer() => Some(diag.ParserRulesNotAllowed.New(r.Name))
+    case ParserOnly() if r.IsLexer() => Some(diag.LexerRulesNotAllowed.New(r.Name))
     case _ => None()
 }
 
-// refError checks one rule or token name referenced from rule r.
-func refError(g Grammar, r Rule, ref string) Option[string] {
-    val target = g.Rules.Find(_.Name == ref)
-    if IsTokenName(ref) {
-        val declared = target.IsDefined() || g.Tokens.Contains(ref) || ref == "EOF"
-        // A parser grammar gets its tokens from a separate lexer grammar.
-        if !declared && !g.Kind.isParserOnly() {
-            return Some(s"rule '${r.Name}' references undefined token '$ref'")
-        }
-        val toFragment = target.Filter(_.Fragment).IsDefined()
-        if toFragment && !r.IsLexer() {
-            return Some(s"parser rule '${r.Name}' references fragment '$ref'")
-        }
-        return None()
+// refProblem checks one element of rule r that names a rule or token.
+func refProblem(g Grammar, r Rule, e Element) Option[diag.Diagnostic] = e match {
+    case TokenRef(name) => {
+        val target = g.Rules.Find(_.Name == name)
+        if (r.IsLexer())
+            When(target.IsEmpty() && name != "EOF", diag.UndefinedRuleRef.New(name))
+        else
+            When(target.Filter(_.Fragment).IsDefined(), diag.FragmentRefInParserRule.New(name, r.Name))
     }
-    if r.IsLexer() {
-        return Some(s"lexer rule '${r.Name}' references parser rule '$ref'")
-    }
-    if target.IsEmpty() {
-        return Some(s"rule '${r.Name}' references undefined rule '$ref'")
-    }
-    None()
+    case RuleRef(name) =>
+        if (r.IsLexer()) Some(diag.ParserRuleRefInLexerRule.New(name, r.Name))
+        else When(!g.Rules.Exists(_.Name == name), diag.UndefinedRuleRef.New(name))
+    case _ => None()
 }
 
-// altRefs lists the rule and token names an alternative references, in order.
-func altRefs(a Alt) Array[string] = a.Elements.FlatMap(elementRefs)
-
-func elementRefs(e Element) Array[string] = e match {
-    case RuleRef(name) => ArrayOf(name)
-    case TokenRef(name) => ArrayOf(name)
-    case Not(inner) => elementRefs(inner)
-    case Block(alts) => alts.FlatMap(altRefs)
-    case Repeat(inner, _) => elementRefs(inner)
-    case Labeled(_, _, inner) => elementRefs(inner)
-    case _ => EmptyArray[string]()
+// implicitTokens warns once, at its first use, about each token a parser rule
+// references that no lexer rule or `tokens {}` entry defines. ANTLR defines
+// such a token anyway (atn.BuildVocabulary numbers it last). A grammar that
+// imports its vocabulary with the tokenVocab option gets its tokens from
+// elsewhere and is not checked.
+func implicitTokens(g Grammar) Array[diag.Diagnostic] {
+    if g.Options.Exists(_.Name == "tokenVocab") {
+        return EmptyArray[diag.Diagnostic]()
+    }
+    val uses = g.Rules.Filter((r) => !r.IsLexer()).FlatMap(_.Located()).Collect({
+        case Located(TokenRef(name), pos) if !isDeclaredToken(g, name) => (name, pos)
+    })
+    val firsts = uses.FoldLeft(EmptyArray[Tuple[string, Pos]](), (acc, first) =>
+        if (acc.Exists(_.V1 == first.V1)) acc else acc.Append(first)
+    )
+    firsts.Map((first) => at(diag.ImplicitTokenDefinition.New(first.V1), first.V2))
 }
+
+func isDeclaredToken(g Grammar, name string) bool =
+    name == "EOF" || g.Tokens.Contains(name) || g.Rules.Exists(_.Name == name)

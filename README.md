@@ -42,18 +42,82 @@ Tagged releases publish binaries for Linux, macOS and Windows.
 
 ## Usage
 
+galop is used like ANTLR's `antlr4` tool: the same options, the same output
+layout, the same message format.
+
 ```sh
-galop check grammar.g4               # parse and validate
-galop check --roundtrip *.g4         # also verify format → parse gives the same grammar
-galop format grammar.g4              # print the grammar in canonical form
+galop -o gen -package parser Expr.g4      # generate Go code into gen/
+galop -depend -o gen Expr.g4              # list the files it would write
+galop -check -roundtrip grammars/*.g4     # validate only; also check the formatter keeps each grammar
+galop -format Expr.g4                     # print the grammar in canonical form
+galop -report Expr.g4                     # list the decisions static lookahead cannot settle
 ```
 
-`check` reports syntax errors with their position and semantic errors:
-undefined or duplicate rules, lexer rules that reference parser rules, parser
-rules that reference fragments.
+```
+galop 0.0.0-dev, a parser generator for ANTLR 4 grammars
+usage: galop [options] grammar.g4...
+ -o ___              specify output directory where all output is generated
+ -lib ___            specify location of grammars, tokens files
+ -atn                generate rule augmented transition network diagrams
+ -message-format ___ specify output style for messages in antlr, gnu, vs2005
+ -listener           generate parse tree listener (default)
+ -no-listener        don't generate parse tree listener
+ -visitor            generate parse tree visitor
+ -no-visitor         don't generate parse tree visitor (default)
+ -package ___        specify a package/namespace for the generated code
+ -depend             generate file dependencies
+ -D<option>=value    set/override a grammar-level option
+ -Werror             treat warnings as errors
+ -Xexact-output-dir  all output goes into -o dir regardless of paths/package
+galop options:
+ -check              validate grammars without generating anything
+ -roundtrip          with -check, also verify that formatting keeps each grammar
+ -format             print each grammar in canonical form
+ -report             print the decisions static lookahead cannot settle
+ -version            print the galop version
+ -help               print this help
+```
 
-`format` prints a canonical form. Comments are not part of the grammar model,
-so they are not printed.
+- **Targets.** `-Dlanguage=Go` (the default) picks the Go target, and
+  `-Dflavor=companion|standalone` its output style (see
+  [design](docs/DESIGN.md#code-generation-codegen-golang)). `-D` options override
+  the grammar's own `options {}`.
+- **Output layout** follows ANTLR: files go next to the grammar; with `-o dir`
+  they go to `dir` plus the grammar's relative directory (`-o gen sub/T.g4`
+  writes to `gen/sub/`), unless `-Xexact-output-dir` is given.
+- **`-atn`** writes each rule's network as a Graphviz file, `T.rule.dot` (a
+  combined grammar's lexer rules are `TLexer.RULE.dot`), as ANTLR does.
+- **Messages** use ANTLR's numbers and wording where the problem is the same
+  one ANTLR reports, and numbers from 500 up for galop's own (such as a
+  construct it does not support yet). `-message-format` picks ANTLR's layouts:
+
+  ```
+  error(56): Expr.g4:4:33: reference to undefined rule: factor                  # antlr (default)
+  grammars/Expr.g4:4:33: error: reference to undefined rule: factor [error 56]  # gnu
+  grammars/Expr.g4(4,33) : error 56 : reference to undefined rule: factor       # vs2005
+  ```
+
+  As in ANTLR, the column is the 0-based character position, and the `antlr`
+  layout shows only the file name. The exit code is 1 when any error was
+  reported; `-Werror` makes warnings errors.
+- **`-check`** parses, checks and compiles each grammar: syntax errors,
+  undefined or redefined rules, lexer rules that reference parser rules,
+  parser rules that reference fragments, undecodable literals and sets, and
+  (a warning, as in ANTLR) tokens used but never defined.
+- **`-format`** prints a canonical form. Comments are not part of the grammar
+  model, so they are not printed.
+
+`-lib` is accepted; importing grammars or a token vocabulary (`import`,
+`tokenVocab`) is not supported yet and is reported as an error.
+
+Grammar files are processed concurrently and independently: an error in one
+does not stop the others, and output is reported in command-line order.
+
+### Bazel
+
+[rules_gala](https://github.com/martianoff/rules-gala) provides
+`galop_parser`, which runs galop on a `.g4` file and yields the generated Go
+sources for a `go_library`.
 
 ## Supported `.g4` syntax
 
@@ -78,7 +142,7 @@ for the workflow.
 ```sh
 gala test                                        # unit tests
 gala build -o galop ./cmd/galop                  # the CLI
-./galop check --roundtrip testdata/grammars/*.g4 # the grammar corpus
+./galop -check -roundtrip testdata/grammars/*.g4 # the grammar corpus
 bazel test //...                                 # the same suite under Bazel
 ```
 

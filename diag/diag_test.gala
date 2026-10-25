@@ -1,0 +1,88 @@
+package diag
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+)
+
+val undefined = UndefinedRuleRef.New("foo").In("grammars/gala.g4").At(12, 6)
+val implicit = ImplicitTokenDefinition.New("ID").In("T.g4").At(3, 1)
+val unknownOption = InvalidCmdlineArg.New("-bogus")
+
+struct RenderCase(D Diagnostic, F Format)
+
+func TestRender(t T) T = RunCases[RenderCase, string](t,
+    (sub, in, want) => Eq(sub, in.D.Render(in.F), want),
+    Case[RenderCase, string](
+        Name = "antlr shows the base name and the 0-based column",
+        Input = RenderCase(undefined, ANTLRFormat()),
+        Expected = "error(56): gala.g4:12:5: reference to undefined rule: foo",
+    ),
+    Case[RenderCase, string](
+        Name = "gnu",
+        Input = RenderCase(undefined, GNUFormat()),
+        Expected = "grammars/gala.g4:12:5: error: reference to undefined rule: foo [error 56]",
+    ),
+    Case[RenderCase, string](
+        Name = "vs2005",
+        Input = RenderCase(undefined, VS2005Format()),
+        Expected = "grammars/gala.g4(12,5) : error 56 : reference to undefined rule: foo",
+    ),
+    Case[RenderCase, string](
+        Name = "antlr warning",
+        Input = RenderCase(implicit, ANTLRFormat()),
+        Expected = "warning(125): T.g4:3:0: implicit definition of token ID in parser",
+    ),
+    Case[RenderCase, string](
+        Name = "gnu warning keeps ANTLR's [error n] suffix",
+        Input = RenderCase(implicit, GNUFormat()),
+        Expected = "T.g4:3:0: warning: implicit definition of token ID in parser [error 125]",
+    ),
+    Case[RenderCase, string](
+        Name = "vs2005 warning",
+        Input = RenderCase(implicit, VS2005Format()),
+        Expected = "T.g4(3,0) : warning 125 : implicit definition of token ID in parser",
+    ),
+    Case[RenderCase, string](
+        Name = "antlr without a location keeps ANTLR's double space",
+        Input = RenderCase(unknownOption, ANTLRFormat()),
+        Expected = "error(2):  unknown command-line option -bogus",
+    ),
+    Case[RenderCase, string](
+        Name = "gnu without a location",
+        Input = RenderCase(unknownOption, GNUFormat()),
+        Expected = " error: unknown command-line option -bogus [error 2]",
+    ),
+    Case[RenderCase, string](
+        Name = "vs2005 without a location",
+        Input = RenderCase(unknownOption, VS2005Format()),
+        Expected = " : error 2 : unknown command-line option -bogus",
+    ),
+    Case[RenderCase, string](
+        Name = "gnu joins lines",
+        Input = RenderCase(SyntaxError.New("a\nb").In("x.g4").At(1, 1), GNUFormat()),
+        Expected = "x.g4:1:0: error: syntax error: a b [error 50]",
+    ),
+)
+
+func TestTemplateArguments(t T) T {
+    val t1 = Eq(t, RuleRedefinition.New("expr", "4").Message, "rule expr redefinition; previous at line 4")
+    val t2 = Eq(t1, TokenRangeInParser.New("'a'", "'z'").Message, "token ranges not allowed in parser: 'a'..'z'")
+    val t3 = Eq(t2, NoRules.New("G").String(), "0:0: grammar G has no rules")
+    Eq(t3, ImplicitTokenDefinition.New("ID").IsError(), false)
+}
+
+func TestParseFormat(t T) T = RunCases[string, Option[Format]](t,
+    (sub, in, want) => Eq(sub, ParseFormat(in), want),
+    Case[string, Option[Format]](Name = "antlr", Input = "antlr", Expected = Some[Format](ANTLRFormat())),
+    Case[string, Option[Format]](Name = "gnu", Input = "gnu", Expected = Some[Format](GNUFormat())),
+    Case[string, Option[Format]](Name = "vs2005", Input = "vs2005", Expected = Some[Format](VS2005Format())),
+    Case[string, Option[Format]](Name = "unknown", Input = "json", Expected = None[Format]()),
+)
+
+func TestHasErrors(t T) T {
+    val t1 = IsFalse(t, HasErrors(ArrayOf(implicit)))
+    IsTrue(t1, HasErrors(ArrayOf(implicit, undefined)))
+}
+
+func TestInKeepsAnExistingFile(t T) T = Eq(t, undefined.In("other.g4").File, "grammars/gala.g4")

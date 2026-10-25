@@ -2,11 +2,15 @@ load("@rules_gala//gala:defs.bzl", "gala_library")
 
 gala_library(
     name = "analysis",
-    srcs = ["plan.gala"],
+    srcs = [
+        "analyze_stub.gala",
+        "plan.gala",
+    ],
     importpath = "github.com/martianoff/galop/analysis",
     visibility = ["//visibility:public"],
     deps = [
         "//atn",
         "@gala//collection_immutable",
+        "@gala//go_builtins",
     ],
 )

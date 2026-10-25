@@ -70,7 +70,7 @@ jobs:
       # The corpus check: every grammar under testdata/grammars parses, passes
       # the semantic checks, and round-trips through the formatter.
       - name: Check grammar corpus
-        run: '"$GALOP" check --roundtrip testdata/grammars/*.g4'
+        run: '"$GALOP" -check -roundtrip testdata/grammars/*.g4'
 
   bazel:
     name: bazel test

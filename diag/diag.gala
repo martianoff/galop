@@ -1,0 +1,122 @@
+package diag
+
+import (
+    "path/filepath"
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+)
+
+// Diagnostics are galop's messages: errors and warnings about the command
+// line, grammar files and generated code. They use ANTLR 4's message formats
+// and, where the problem is the same as one ANTLR reports, ANTLR's error
+// number and wording, so tools that read ANTLR's output read galop's too.
+
+// Severity is how bad a diagnostic is.
+sealed type Severity {
+    case Warning()
+    case Error()
+}
+
+// Text is the severity as ANTLR prints it: `warning` or `error`.
+func (s Severity) Text() string = s match {
+    case Warning() => "warning"
+    case Error() => "error"
+}
+
+// Diagnostic is one message. Line and Col are 1-based; 0 means unknown.
+// File is the path as the user gave it, or "" for a message about the tool
+// itself (the command line, an unknown language).
+struct Diagnostic(
+    Code int,
+    Severity Severity,
+    File string,
+    Line int,
+    Col int,
+    Message string,
+)
+
+// IsError reports whether d is an error rather than a warning.
+func (d Diagnostic) IsError() bool = d.Severity.isError()
+
+// At places d at a 1-based line and column.
+func (d Diagnostic) At(line int, col int) Diagnostic = d.Copy(Line = line, Col = col)
+
+// In attributes d to file, unless it already names one.
+func (d Diagnostic) In(file string) Diagnostic = if (d.File == "") d.Copy(File = file) else d
+
+// String renders d as `line:col: message`, without file, code or severity.
+func (d Diagnostic) String() string = s"${d.Line}:${d.Col}: ${d.Message}"
+
+// Kind is one kind of problem: its number, severity and message template.
+// The template refers to its arguments as `<arg>`, `<arg2>`, `<arg3>`, as
+// ANTLR's ErrorType does.
+struct Kind(Code int, Severity Severity, Template string)
+
+// New makes a diagnostic of kind k with no position.
+// args: the values for `<arg>`, `<arg2>` and `<arg3>`, in order.
+func (k Kind) New(args ...string) Diagnostic {
+    val values = ArrayOf(args...)
+    val text = values.ZipWithIndex().FoldLeft(k.Template, (acc, pair) => {
+        val (value, i) = pair
+        val name = if (i == 0) "<arg>" else s"<arg${i + 1}>"
+        strings.ReplaceAll(acc, name, value)
+    })
+    Diagnostic(k.Code, k.Severity, "", 0, 0, text)
+}
+
+// Format is a message layout: ANTLR's `antlr`, `gnu` or `vs2005`.
+sealed type Format {
+    case ANTLRFormat()
+    case GNUFormat()
+    case VS2005Format()
+}
+
+// FormatNames lists the names -message-format accepts.
+val FormatNames = ArrayOf("antlr", "gnu", "vs2005")
+
+// ParseFormat looks a message format up by its -message-format name.
+func ParseFormat(name string) Option[Format] = name match {
+    case "antlr" => Some(ANTLRFormat())
+    case "gnu" => Some(GNUFormat())
+    case "vs2005" => Some(VS2005Format())
+    case _ => None()
+}
+
+// Render lays d out the way ANTLR's message format f does. ANTLR prints the
+// 0-based character position as the column, so Render prints Col - 1. The
+// `antlr` format shows only the file's base name; `gnu` and `vs2005` show the
+// path as given, for IDEs to follow. A message with no location keeps the
+// gap where the location would be, exactly as ANTLR prints it.
+func (d Diagnostic) Render(f Format) string {
+    val line = if (d.Line > 0) s"${d.Line}" else ""
+    val col = if (d.Col > 0) s"${d.Col - 1}" else ""
+    val located = d.File != "" || d.Line > 0
+    val sev = d.Severity.Text()
+    f match {
+        case ANTLRFormat() => {
+            val file = if (d.File == "") "" else filepath.Base(d.File)
+            val loc = if (located) s"$file:$line:$col:" else ""
+            s"$sev(${d.Code}): $loc ${d.Message}"
+        }
+        case GNUFormat() => {
+            val loc = if (located) s"${d.File}:$line:$col:" else ""
+            s"$loc $sev: ${singleLine(d.Message)} [error ${d.Code}]"
+        }
+        case VS2005Format() => {
+            val loc = if (located) s"${d.File}($line,$col)" else ""
+            s"$loc : $sev ${d.Code} : ${singleLine(d.Message)}"
+        }
+    }
+}
+
+// singleLine joins a multi-line message into one line, as ANTLR does for the
+// formats meant for IDEs.
+func singleLine(text string) string = strings.ReplaceAll(text, "\n", " ")
+
+// HasErrors reports whether any of ds is an error.
+func HasErrors(ds Array[Diagnostic]) bool = ds.Exists(_.IsError())
+
+// InSourceOrder sorts ds by line, then column.
+func InSourceOrder(ds Array[Diagnostic]) Array[Diagnostic] =
+    ds.SortWith((a, b) => a.Line < b.Line || (a.Line == b.Line && a.Col < b.Col))

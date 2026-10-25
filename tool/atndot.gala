@@ -1,0 +1,131 @@
+package tool
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/g4"
+)
+
+// ATNFiles are the Graphviz files -atn writes: one per rule, named the way
+// ANTLR names them. A combined grammar's lexer rules belong to its implicit
+// lexer grammar, so they are `<Name>Lexer.<RULE>.dot`; every other rule is
+// `<Name>.<rule>.dot`.
+func ATNFiles(g g4.Grammar, c atn.Compiled) Array[codegen.OutputFile] {
+    val lexerName = g.Kind match {
+        case g4.Combined() => g.Name + "Lexer"
+        case _ => g.Name
+    }
+    val parser = c.Parser.Map((p) => ruleFiles(p, g.Name)).GetOrElse(EmptyArray[codegen.OutputFile]())
+    val lexer = c.Lexer.Map((l) => ruleFiles(l, lexerName)).GetOrElse(EmptyArray[codegen.OutputFile]())
+    parser.AppendAll(lexer)
+}
+
+func ruleFiles(a atn.ATN, prefix string) Array[codegen.OutputFile] =
+    a.RuleNames.ZipWithIndex().Map((ri) => codegen.OutputFile(s"$prefix.${ri.V1}.dot", RuleDOT(a, ri.V2)))
+
+// RuleDOT renders one rule of a network as a Graphviz digraph, in the style
+// of ANTLR's -atn output: states are numbered as in the network, a decision
+// state shows its decision number, the stop state is a double circle, and a
+// rule call is an edge `<rule>` to the state after the call.
+func RuleDOT(a atn.ATN, rule int) string {
+    val stop = a.RuleStop.Get(rule)
+    val states = reachable(a, a.RuleStart.Get(rule), stop)
+    val nodes = states.Map((id) => stateLine(a.State(id), stop))
+    val edges = states.FlatMap((id) => a.State(id).Out.Map((t) => edgeLine(a, id, t)))
+    "digraph ATN {\nrankdir=LR;\n" + nodes.AppendAll(edges).Map(_ + "\n").MkString("") + "}\n"
+}
+
+// reachable lists, in increasing order, the states a rule's sub-network
+// reaches from its start state without entering called rules.
+func reachable(a atn.ATN, start int, stop int) Array[int] =
+    explore(a, stop, ArrayOf(start), ArrayOf(start)).Sorted()
+
+// explore visits the states in work breadth first, adding the ones not yet
+// seen, and returns every state seen.
+func explore(a atn.ATN, stop int, work Array[int], seen Array[int]) Array[int] = work match {
+    case Array(id, rest...) => {
+        val next = if (id == stop) EmptyArray[int]() else a.State(id).Out.Map(nextState)
+        val fresh = next.Distinct().Filter((n) => !seen.Contains(n))
+        explore(a, stop, rest.AppendAll(fresh), seen.AppendAll(fresh))
+    }
+    case _ => seen
+}
+
+// nextState is where a transition continues within its rule: the follow
+// state for a rule call, the target otherwise.
+func nextState(t atn.Transition) int = t match {
+    case atn.RuleCall(_, _, follow) => follow
+    case atn.Epsilon(target) => target
+    case atn.Atom(target, _) => target
+    case atn.SetMatch(target, _) => target
+    case atn.LexerActions(target, _) => target
+    case atn.Predicate(target, _, _) => target
+    case atn.Action(target, _, _) => target
+}
+
+func stateLine(s atn.State, stop int) string {
+    val name = s"s${s.Id}"
+    if s.Id == stop {
+        return s"${name}[fontsize=11, label=\"${s.Id}\", shape=doublecircle, fixedsize=true, width=.6];"
+    }
+    val label = s.Decision match {
+        case Some(d) => s"${s.Id}\\nd=$d"
+        case None() => s"${s.Id}"
+    }
+    s"${name}[fontsize=11, label=\"$label\", shape=circle, fixedsize=true, width=.55, peripheries=1];"
+}
+
+func edgeLine(a atn.ATN, from int, t atn.Transition) string {
+    val to = nextState(t)
+    val edge = (label string) =>
+        s"s$from -> s$to [fontsize=11, fontname=\"Courier\", arrowsize=.7, label = \"${dotEscape(label)}\"];"
+    t match {
+        case atn.Epsilon(_) => s"s$from -> s$to [fontname=\"Times-Italic\", label=\"&epsilon;\"];"
+        case atn.RuleCall(_, r, _) => edge(s"<${a.RuleNames.Get(r)}>")
+        case atn.Atom(_, symbol) => edge(symbolText(a, symbol))
+        case atn.SetMatch(_, set) => edge(setText(a, set))
+        case atn.LexerActions(_, cmds) => edge("-> " + cmds.Map(commandText).MkString(", "))
+        case atn.Predicate(_, _, body) => edge(s"{$body}?")
+        case atn.Action(_, _, body) => edge(s"{$body}")
+    }
+}
+
+// symbolText shows a token (by its literal or name) in a parser network and
+// a character in a lexer network.
+func symbolText(a atn.ATN, symbol int) string = a.Kind match {
+    case atn.ParserATN() => a.Vocab.Display(symbol)
+    case atn.LexerATN() => charText(symbol)
+}
+
+func setText(a atn.ATN, set atn.IntervalSet) string = a.Kind match {
+    case atn.ParserATN() => {
+        val types = set.Ranges.FlatMap((r) => ArrayTabulate(r.Hi - r.Lo + 1, (i) => r.Lo + i))
+        "{" + types.Map((t) => a.Vocab.Display(t)).MkString(", ") + "}"
+    }
+    case atn.LexerATN() => "[" + set.Ranges.Map(rangeText).MkString(", ") + "]"
+}
+
+// rangeText is a character range as in a grammar: 'a' or 'a'..'z'.
+func rangeText(r atn.Interval) string = if (r.Lo == r.Hi) charText(r.Lo) else charText(r.Lo) + ".." + charText(r.Hi)
+
+// commandText is a lexer command as written after `->`.
+func commandText(c g4.LexerCommand) string = c.Arg.Map((arg) => s"${c.Name}($arg)").GetOrElse(c.Name)
+
+// charText is a code point as a quoted grammar literal: 'a', '\n', 'é'.
+func charText(cp int) string = cp match {
+    case 10 => "'\\n'"
+    case 13 => "'\\r'"
+    case 9 => "'\\t'"
+    case 39 => "'\\''"
+    case 92 => "'\\\\'"
+    case _ if cp >= 32 && cp < 127 => "'" + string(rune(cp)) + "'"
+    case _ if cp <= 0xFFFF => f"'\\u$cp%04X'"
+    case _ => f"'\\u{$cp%X}'"
+}
+
+// dotEscape makes text safe inside a quoted Graphviz label.
+func dotEscape(text string) string = strings.ReplaceAll(strings.ReplaceAll(text, "\\", "\\\\"), "\"", "\\\"")

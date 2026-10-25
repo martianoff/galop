@@ -13,6 +13,7 @@ gala_library(
     importpath = "github.com/martianoff/galop/atn",
     visibility = ["//visibility:public"],
     deps = [
+        "//diag",
         "//g4",
         "@gala//collection_immutable",
         "@gala//go_interop",
@@ -33,6 +34,7 @@ gala_test(
     ],
     pkg = "atn",
     deps = [
+        "//diag",
         "//g4",
         "@gala//collection_immutable",
         "@gala//go_builtins",

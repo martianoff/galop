@@ -3,16 +3,18 @@ package atn
 import (
     . "martianoff/gala/collection_immutable"
     . "martianoff/gala/go_interop"
+
+    "github.com/martianoff/galop/diag"
 )
 
 // DecodeLiteral turns a literal body as written in a grammar (escapes kept,
 // quotes removed) into its code points. Escapes are ANTLR's: \n \r \t \b \f
 // \\ \' \" \uXXXX \u{X...}.
-func DecodeLiteral(body string) Either[string, Array[int]] {
+func DecodeLiteral(body string) Either[diag.Diagnostic, Array[int]] {
     val rs = ToRunes(body)
     var i = 0
     var out = EmptyArray[int]()
-    var err = None[string]()
+    var err = None[diag.Diagnostic]()
     for err.IsEmpty() && i < rs.Size() {
         if rs[i] == '\\' {
             decodeEscape(rs, i, false) match {
@@ -20,7 +22,7 @@ func DecodeLiteral(body string) Either[string, Array[int]] {
                     out = out.Append(step.V1)
                     i = step.V2
                 }
-                case Left(msg) => err = Some(msg)
+                case Left(d) => err = Some(d)
             }
         } else {
             out = out.Append(int(rs[i]))
@@ -28,31 +30,32 @@ func DecodeLiteral(body string) Either[string, Array[int]] {
         }
     }
     err match {
-        case Some(msg) => Left(s"invalid escape in '$body': $msg")
+        case Some(d) => Left(d)
         case None() => Right(out)
     }
 }
 
 // DecodeCharSet turns the body of a lexer set `[...]` into the set it
 // denotes. `a-z` is a range; inside a set `\]`, `\-` and `\\` are escapes too.
-func DecodeCharSet(body string) Either[string, IntervalSet] {
+func DecodeCharSet(body string) Either[diag.Diagnostic, IntervalSet] {
     val rs = ToRunes(body)
     var i = 0
     var acc = EmptyArray[Interval]()
-    var err = None[string]()
+    var err = None[diag.Diagnostic]()
     // next reads one possibly escaped character at i.
-    val next = (at int) => if (rs[at] == '\\') decodeEscape(rs, at, true) else Right[string, Tuple[int, int]](Tuple(int(rs[at]), at + 1))
+    val next = (at int) => if (rs[at] == '\\') decodeEscape(rs, at, true) else Right[diag.Diagnostic, Tuple[int, int]](Tuple(int(rs[at]), at + 1))
     for err.IsEmpty() && i < rs.Size() {
         next(i) match {
-            case Left(msg) => err = Some(msg)
+            case Left(d) => err = Some(d)
             case Right(first) => {
                 val isRange = first.V2 + 1 < rs.Size() && rs[first.V2] == '-'
                 if isRange {
                     next(first.V2 + 1) match {
-                        case Left(msg) => err = Some(msg)
+                        case Left(d) => err = Some(d)
                         case Right(last) => {
                             if last.V1 < first.V1 {
-                                err = Some(s"range ${first.V1}..${last.V1} is reversed")
+                                val reversed = string(rune(first.V1)) + "-" + string(rune(last.V1))
+                                err = Some(diag.ReversedRange.New(reversed, body))
                             }
                             acc = acc.Append(Interval(first.V1, last.V1))
                             i = last.V2
@@ -66,16 +69,16 @@ func DecodeCharSet(body string) Either[string, IntervalSet] {
         }
     }
     err match {
-        case Some(msg) => Left(s"invalid set [$body]: $msg")
+        case Some(d) => Left(d)
         case None() => Right(normalize(acc))
     }
 }
 
 // decodeEscape decodes the escape starting with the backslash at rs[at] and
 // returns (code point, index after the escape).
-func decodeEscape(rs []rune, at int, inSet bool) Either[string, Tuple[int, int]] {
+func decodeEscape(rs []rune, at int, inSet bool) Either[diag.Diagnostic, Tuple[int, int]] {
     if at + 1 >= rs.Size() {
-        return Left("dangling backslash")
+        return Left(diag.InvalidEscapeSequence.New("\\"))
     }
     val c = rs[at + 1]
     val simple = c match {
@@ -94,13 +97,13 @@ func decodeEscape(rs []rune, at int, inSet bool) Either[string, Tuple[int, int]]
     simple match {
         case Some(cp) => Right(Tuple(cp, at + 2))
         case None() if c == 'u' => decodeUnicode(rs, at + 2)
-        case None() if c == 'p' || c == 'P' => Left("unicode property escapes (\\p{...}) are not supported yet")
-        case None() => Left(s"unknown escape \\${string(c)}")
+        case None() if c == 'p' || c == 'P' => Left(diag.Unsupported.New("unicode property escapes (\\p{...})"))
+        case None() => Left(diag.InvalidEscapeSequence.New(escapeText(rs, at, at + 2)))
     }
 }
 
 // decodeUnicode decodes the digits of \uXXXX or \u{X...} starting at rs[at].
-func decodeUnicode(rs []rune, at int) Either[string, Tuple[int, int]] {
+func decodeUnicode(rs []rune, at int) Either[diag.Diagnostic, Tuple[int, int]] {
     val braced = at < rs.Size() && rs[at] == '{'
     val start = if (braced) at + 1 else at
     var end = start
@@ -112,8 +115,10 @@ func decodeUnicode(rs []rune, at int) Either[string, Tuple[int, int]] {
     val count = end - start
     val closeOk = !braced || (end < rs.Size() && rs[end] == '}')
     val lengthOk = if (braced) count >= 1 else count == 4
-    if (!closeOk || !lengthOk) Left("malformed \\u escape")
-    else if (value > MaxCodePoint) Left("\\u escape is not a code point")
+    // The escape's text, for messages: from its backslash to where decoding stopped.
+    val text = escapeText(rs, at - 2, if (braced && closeOk) end + 1 else end)
+    if (!closeOk || !lengthOk) Left(diag.InvalidEscapeSequence.New(text))
+    else if (value > MaxCodePoint) Left(diag.InvalidEscapeSequence.New(text))
     else Right(Tuple(value, if (braced) end + 1 else end))
 }
 
@@ -124,3 +129,7 @@ func hexValue(c rune) Option[int] = c match {
     case _ if c >= 'A' && c <= 'F' => Some(int(c - 'A') + 10)
     case _ => None[int]()
 }
+
+// escapeText is the source text of rs from index from up to (not including) to.
+func escapeText(rs []rune, from int, to int) string =
+    ArrayTabulate(to - from, (i) => string(rs[from + i])).MkString("")

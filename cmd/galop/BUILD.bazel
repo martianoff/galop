@@ -4,8 +4,8 @@ gala_binary(
     name = "galop",
     srcs = ["main.gala"],
     deps = [
-        "//g4",
+        "//codegen",
+        "//tool",
         "@gala//collection_immutable",
-        "@gala//fs",
     ],
 )

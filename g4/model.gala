@@ -10,7 +10,21 @@ sealed type GrammarKind {
     case ParserOnly()
 }
 
-// Grammar is a parsed .g4 file. Comments are not part of the model.
+// Pos is a 1-based source position. NoPos (line 0) marks a model built in
+// code rather than parsed.
+struct Pos(Line int, Col int)
+
+// NoPos is the position of something that did not come from a source file.
+val NoPos = Pos(0, 0)
+
+// IsKnown reports whether p is a real source position.
+func (p Pos) IsKnown() bool = p.Line > 0
+
+// Grammar is a parsed .g4 file. Comments are not part of the model. Pos is
+// where the grammar's name is declared.
+//
+// Positions do not change what a grammar means: two grammars that differ
+// only in positions are the same grammar. Compare StripPositions of each.
 struct Grammar(
     Kind GrammarKind,
     Name string,
@@ -19,25 +33,70 @@ struct Grammar(
     Channels Array[string] = EmptyArray[string](),
     Actions Array[NamedAction] = EmptyArray[NamedAction](),
     Rules Array[Rule] = EmptyArray[Rule](),
+    Pos Pos = NoPos,
 )
 
 // OptionEntry is one `name = value;` inside an `options { ... }` block.
 // Value keeps its source spelling (an identifier, a quoted string or a number).
-struct OptionEntry(Name string, Value string)
+// Pos is where the name is.
+struct OptionEntry(Name string, Value string, Pos Pos = NoPos)
 
 // NamedAction is a top-level `@name { ... }` or `@scope::name { ... }` block.
 // Body is the text between the braces, unchanged.
 struct NamedAction(Scope Option[string], Name string, Body string)
 
 // Rule is a parser rule (lowercase name) or a lexer rule (uppercase name).
+// Pos is where the rule's name is. NodePos holds the start of every element
+// of the rule, in the order Nodes lists them; it is empty for a rule built
+// in code.
 struct Rule(
     Name string,
     Fragment bool,
     Alts Array[Alt],
+    Pos Pos = NoPos,
+    NodePos Array[Pos] = EmptyArray[Pos](),
 )
 
 // IsLexer reports whether r is a lexer rule: its name starts with an uppercase letter.
 func (r Rule) IsLexer() bool = IsTokenName(r.Name)
+
+// Nodes lists every element of r, nested ones included, in source order: an
+// element comes before the elements inside it (`x=a*` gives the Repeat, then
+// the Labeled, then the RuleRef).
+func (r Rule) Nodes() Array[Element] = r.Alts.FlatMap(altNodes)
+
+// Located pairs every element of r (in Nodes order) with its source position,
+// or NoPos when r has no positions.
+func (r Rule) Located() Array[Located] {
+    val nodes = r.Nodes()
+    if (nodes.Size() == r.NodePos.Size()) nodes.Zip(r.NodePos).Map((p) => Located(p.V1, p.V2))
+    else nodes.Map((e) => Located(e, NoPos))
+}
+
+// Located is an element with the position where it starts.
+struct Located(Element Element, Pos Pos)
+
+func altNodes(a Alt) Array[Element] = a.Elements.FlatMap(ElementNodes)
+
+// ElementNodes lists e and every element nested inside it, e first.
+func ElementNodes(e Element) Array[Element] = ArrayOf(e).AppendAll(e match {
+    case Not(inner) => ElementNodes(inner)
+    case Block(alts) => alts.FlatMap(altNodes)
+    case Repeat(inner, _) => ElementNodes(inner)
+    case Labeled(_, _, inner) => ElementNodes(inner)
+    case _ => EmptyArray[Element]()
+})
+
+// StripPositions returns g with every position cleared, so grammars that
+// differ only in where things were written compare equal.
+func StripPositions(g Grammar) Grammar = g.Copy(
+    Pos = NoPos,
+    Options = g.Options.Map(_.Copy(Pos = NoPos)),
+    Rules = g.Rules.Map(StripRulePositions),
+)
+
+// StripRulePositions returns r with its positions cleared.
+func StripRulePositions(r Rule) Rule = r.Copy(Pos = NoPos, NodePos = EmptyArray[Pos]())
 
 // Alt is one alternative of a rule or a block: a sequence of elements, an
 // optional `# Label`, and the lexer commands after `->`.
@@ -89,9 +148,3 @@ sealed type Element {
 // with an uppercase ASCII letter.
 func IsTokenName(name string) bool =
     name.ByteSize() > 0 && name[0] >= 'A' && name[0] <= 'Z'
-
-// Diagnostic is an error at a source position (1-based line and column).
-struct Diagnostic(Line int, Col int, Message string)
-
-// String renders d as `line:col: message`.
-func (d Diagnostic) String() string = s"${d.Line}:${d.Col}: ${d.Message}"
