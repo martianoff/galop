@@ -24,11 +24,22 @@ genrule(
     tools = ["@antlr4_tool//jar"],
 )
 
+# galop's lexer for gala.g4 (the companion flavor), generated at build time
+# like ANTLR's, by the lexgen tool until the galop CLI writes it.
+genrule(
+    name = "galop_lexer",
+    srcs = ["//testdata/grammars:gala.g4"],
+    outs = ["gala_galop_lexer.go"],
+    cmd = "$(location //tools/lexgen) $(location //testdata/grammars:gala.g4) $@ antlrgala galaGalopLexer",
+    tools = ["//tools/lexgen"],
+)
+
 go_library(
     name = "antlrgala",
     srcs = [
         "companions.go",
         ":antlr_go",
+        ":galop_lexer",
     ],
     importpath = "github.com/martianoff/galop/differential/antlrgala",
     visibility = ["//differential:__subpackages__"],

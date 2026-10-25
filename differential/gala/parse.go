@@ -44,6 +44,13 @@ func Tokens(src string) *antlr.CommonTokenStream {
 	return tokens(src, nil)
 }
 
+// GalopTokens is Tokens with galop's generated lexer in place of ANTLR's.
+func GalopTokens(src string) *antlr.CommonTokenStream {
+	lexer := antlrgala.NewgalaGalopLexer(antlr.NewInputStream(StripBOM(src)))
+	lexer.RemoveErrorListeners()
+	return newTokenStream(lexer)
+}
+
 func tokens(src string, errs antlr.ErrorListener) *antlr.CommonTokenStream {
 	lexer := antlrgala.NewgalaLexer(antlr.NewInputStream(StripBOM(src)))
 	isolateLexerCaches(lexer.BaseLexer)

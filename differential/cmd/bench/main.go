@@ -1,8 +1,8 @@
 // Command bench times ANTLR's lexer and parser for gala.g4 on a corpus.
 //
-// It measures two phases, lex (the token stream a parse reads, GALA's
-// re-typing included) and parse (lex plus the GALA compiler's SLL-then-LL
-// parse), each:
+// It measures three phases: lex (the token stream a parse reads, GALA's
+// re-typing included), lex-galop (the same stream from galop's generated
+// lexer) and parse (lex plus the GALA compiler's SLL-then-LL parse), each:
 //
 //   - warm: in this process, after one untimed pass has built ANTLR's DFA
 //     caches, timed with testing.Benchmark; per file for the largest files,
@@ -35,11 +35,12 @@ import (
 
 // phases are the measured operations, by name.
 var phases = map[string]func(src string){
-	"lex":   func(src string) { gala.Tokens(src).Fill() },
-	"parse": func(src string) { gala.Lenient(gala.Tokens(src)) },
+	"lex":       func(src string) { gala.Tokens(src).Fill() },
+	"lex-galop": func(src string) { gala.GalopTokens(src).Fill() },
+	"parse":     func(src string) { gala.Lenient(gala.Tokens(src)) },
 }
 
-var phaseOrder = []string{"lex", "parse"}
+var phaseOrder = []string{"lex", "lex-galop", "parse"}
 
 // sample is one measurement.
 type sample struct {
