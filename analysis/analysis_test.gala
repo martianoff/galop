@@ -329,5 +329,7 @@ e : X e Y Q | X e Y W | Z ;
     val t2 = Eq(t1, runAutomaton(a, states, ArrayOf("X", "X", "Z", "Y", "Q", "Y", "W")), "predict 2")
     val t3 = Eq(t2, runAutomaton(a, states, ArrayOf("Z")), "predict 3")
     val t4 = Eq(t3, runAutomaton(a, states, ArrayOf("X", "Q")), "syntax error")
-    Less(t4, states.Size(), dfaStateLimit)
+    // The budget bounds the states still reading tokens; the shared final
+    // states come on top.
+    LessOrEq(t4, states.Count(_.Final.IsEmpty()), dfaStateLimit)
 }

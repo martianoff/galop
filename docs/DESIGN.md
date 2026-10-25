@@ -136,7 +136,7 @@ lazily at runtime, built ahead of time by subset construction:
   edge is a syntax error.
 - The SLL DFA is infinite under recursion, since each nesting deepens the
   contexts. An edge into a state whose contexts are deeper than 64 frames, or
-  into a new state once the automaton has 1000, ends in `FinalFullLL(None)`:
+  into a new state once the automaton has 50, ends in `FinalFullLL(None)`:
   the runtime goes on predicting, SLL first and then LL as needed.
 
 **Why this is ANTLR's answer.** The automaton is the DFA of ANTLR's SLL stage:
