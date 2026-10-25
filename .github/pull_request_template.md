@@ -9,7 +9,7 @@
 ## Checklist
 
 - [ ] `gala test` passes
-- [ ] `./galop check --roundtrip testdata/grammars/*.g4` passes
+- [ ] `./galop -check -roundtrip testdata/grammars/*.g4` passes
 - [ ] `bazel test //...` passes
 - [ ] `bazel run //:gazelle` run (if files added/removed)
 - [ ] README / ROADMAP updated (if behaviour or scope changed)
