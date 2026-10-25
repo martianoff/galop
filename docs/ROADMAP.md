@@ -78,7 +78,7 @@ is good enough for editor use, a consumer can fall back to ANTLR on a syntax err
 | M1 | Analysis and conflict report | The report names every decision static lookahead cannot settle, including the six above | **done**: gala.g4 has 107 decisions, 86 static (LL(1)–LL(3)) and 21 adaptive |
 | M2 | Codegen spike | Within 2× of the hand-written parser, and at least 2× faster than ANTLR warm | in progress: the corpus is 3× faster than ANTLR warm, `array.gala` 1.5× (4.7 ms vs 7.2 ms; hand-written 0.74 ms) |
 | M3 | Codegen: all of `gala.g4`, recognizer and tree | Every corpus file gives a tree identical to ANTLR's | **done**: 722/722 (ANTLR rejects the 723rd), checked in CI by the Bazel differential test |
-| B1 | Bazel: a `galop_parser` rule in rules_gala, using galop's release binaries | A Bazel build generates the same files as the CLI, with no GALA toolchain needed to run galop | in progress: rules_gala#91 is ready and waits for the galop 0.1.0 binaries |
+| B1 | Bazel: a `galop_parser` rule in rules_gala, using galop's release binaries | A Bazel build generates the same files as the CLI, with no GALA toolchain needed to run galop | **done**: rules_gala 0.5.0 with galop 0.1.0 (`galop.toolchain(version = "0.1.0")`) |
 | M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | |
 | M5 | Expression entry points on the generated parser | No ANTLR call on the success path | |
 | M6 | Generated error recovery | Editor diagnostics match ANTLR on a broken-input corpus | |
