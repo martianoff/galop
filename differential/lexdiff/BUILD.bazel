@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Lexes the GALA corpus with ANTLR's lexer and galop's and requires identical
+# tokens; also holds the lexer benchmarks:
+#   bazel run -c opt //differential/lexdiff:lexdiff_test -- -test.run='^$' -test.bench=. -test.benchmem
+go_test(
+    name = "lexdiff_test",
+    size = "medium",
+    srcs = ["lexdiff_test.go"],
+    args = ["-manifest=$(rlocationpath //differential:corpus)"],
+    data = ["//differential:corpus"],
+    deps = [
+        "//differential/antlrgala",
+        "//differential/corpus",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)

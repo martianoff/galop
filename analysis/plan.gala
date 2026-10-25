@@ -1,0 +1,95 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// The analysis decides, at generation time, how generated code picks an
+// alternative at every decision of a parser ATN. A decision whose
+// alternatives differ within the first K tokens (K <= MaxK) becomes a static
+// switch on the lookahead. Any other decision is "adaptive": generated code
+// asks the runtime to simulate the ATN with the parser's actual call stack,
+// which gives exactly the alternative ANTLR's full-context (LL) prediction
+// picks. The conflict report lists the adaptive decisions.
+
+// Lookahead is how generated code picks an alternative at one decision.
+sealed type Lookahead {
+    // Predict picks Alt without looking at more tokens.
+    case Predict(Alt int)
+    // Switch looks at token LA(Depth) (1-based) and continues with the first
+    // case whose Tokens contain it. A token in no case means no alternative
+    // can match: a syntax error.
+    case Switch(Depth int, Cases Array[LookaheadCase])
+    // Adaptive asks the runtime predictor to choose among Alts by simulating
+    // the ATN from the decision with the real call stack (ANTLR's LL mode).
+    case Adaptive(Alts Array[int])
+    // Automaton is ANTLR's SLL prediction DFA for the decision, built ahead of
+    // time. It replaces the whole decision's lookahead (it starts at the
+    // decision, reading LA(1) in state 0). From a state without Final, read
+    // the next token and follow the edge whose Tokens contain it; no such
+    // edge is a syntax error. A state with Final consumes nothing more: it
+    // predicts an alternative, or stops without one (see FinalFullLL).
+    case Automaton(States Array[DFAState])
+}
+
+// DFAState is one state of an Automaton.
+struct DFAState(Edges Array[DFAEdge], Final Option[DFAFinal])
+
+// DFAEdge moves to state Target on any token in Tokens.
+struct DFAEdge(Tokens atn.IntervalSet, Target int)
+
+// DFAFinal is what an Automaton decides when it stops.
+sealed type DFAFinal {
+    // FinalPredict picks Alt.
+    case FinalPredict(Alt int)
+    // FinalFullLL stops the automaton without a unique alternative. MinAlt is
+    // set when ANTLR's SLL prediction stops here with a conflict
+    // (hasSLLConflictTerminatingPrediction): it is the alternative ANTLR
+    // predicts in pure SLL mode (D.prediction, the smallest conflicting
+    // alternative); full-context (LL) prediction from the decision's start
+    // decides in LL mode. MinAlt is None where the automaton stopped at a
+    // bound (stack depth or state budget) rather than a conflict: prediction
+    // goes on at runtime, SLL first and then LL as needed.
+    case FinalFullLL(MinAlt Option[int])
+}
+
+// LookaheadCase is one branch of a Switch.
+struct LookaheadCase(Tokens atn.IntervalSet, Then Lookahead)
+
+// DecisionClass summarizes a decision for the report.
+sealed type DecisionClass {
+    // LL1: one token of lookahead always decides.
+    case LL1()
+    // LLk: K tokens of lookahead always decide (1 < K <= MaxK).
+    case LLk(K int)
+    // NeedsAdaptive: some lookahead prefixes are only decided at runtime.
+    case NeedsAdaptive()
+}
+
+// Conflict is a lookahead prefix (token types) that the alternatives Alts all
+// accept up to the analysis depth, so static lookahead cannot choose.
+struct Conflict(Alts Array[int], Example Array[int])
+
+// DecisionPlan is the analysis result for one decision.
+struct DecisionPlan(
+    Decision atn.Decision,
+    Class DecisionClass,
+    Lookahead Lookahead,
+    Conflicts Array[Conflict],
+)
+
+// Analysis is the result for a whole parser ATN.
+struct Analysis(
+    // Plans is indexed by decision id.
+    Plans Array[DecisionPlan],
+    // First, Follow and Nullable are indexed by rule. Follow is the global
+    // (context-free) FOLLOW set; EOF (-1) is in Follow of the start rules.
+    First Array[atn.IntervalSet],
+    Follow Array[atn.IntervalSet],
+    Nullable Array[bool],
+)
+
+// MaxK is the deepest static lookahead the analysis tries by default.
+val MaxK = 3

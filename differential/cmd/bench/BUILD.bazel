@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+# `bazel run -c opt //differential/cmd/bench` times ANTLR on the GALA corpus;
+# pass -dir or files after `--` to time other input.
+go_binary(
+    name = "bench",
+    srcs = ["main.go"],
+    args = ["-manifest=$(rlocationpath //differential:corpus)"],
+    data = ["//differential:corpus"],
+    deps = [
+        "//differential/corpus",
+        "//differential/gala",
+    ],
+)

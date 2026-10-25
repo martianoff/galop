@@ -1,0 +1,65 @@
+package golang
+
+import (
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/strings"
+)
+
+// Names of things in Go code, spelled the way ANTLR's Go target spells them,
+// so generated code can live next to ANTLR's output and refer to its types.
+
+// reservedWords are the identifiers ANTLR's Go target escapes with a trailing
+// underscore (GoTarget.reservedWords in ANTLR 4.13.1).
+val reservedWords = ArrayOf(
+    "break", "default", "func", "interface", "select",
+    "case", "defer", "go", "map", "struct",
+    "chan", "else", "goto", "package", "switch",
+    "const", "fallthrough", "if", "range", "type",
+    "continue", "for", "import", "return", "var",
+    "bool", "byte", "complex64", "complex128", "error", "float32", "float64",
+    "int", "int8", "int16", "int32", "int64", "rune", "string",
+    "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+    "true", "false", "iota", "nil",
+    "append", "cap", "close", "complex", "copy", "delete", "imag", "len",
+    "make", "new", "panic", "print", "println", "real", "recover",
+    "Accept", "GetAltNumber", "GetBaseRuleContext", "GetChild", "GetChildCount",
+    "GetChildren", "GetInvokingState", "GetParent", "GetPayload", "GetRuleContext",
+    "GetRuleIndex", "GetSourceInterval", "GetText", "IsEmpty", "SetAltNumber",
+    "SetInvokingState", "SetParent", "String",
+    "rule", "parserRule", "action",
+    "start", "stop", "exception",
+)
+
+// escape appends `_` to a reserved identifier, as ANTLR does.
+func escape(name string) string = if (reservedWords.Contains(name)) name + "_" else name
+
+// capitalize upper-cases the first character, as ANTLR's `format="cap"` does;
+// it may be any Unicode letter, not only ASCII.
+func capitalize(name string) string = strings.S(name).Capitalize().ToString()
+
+// Names derives the Go identifiers of one grammar; Combined says whether it
+// is a combined grammar rather than a parser grammar.
+struct Names(Grammar string, Combined bool = true)
+
+// ParserType is ANTLR's parser struct name, its recognizer name: the grammar
+// name, with `Parser` appended for a combined grammar (`galaParser`) but not
+// for a parser grammar (`parser grammar ExprParser` gives `ExprParser`).
+func (n Names) ParserType() string = if (n.Combined) n.Grammar + "Parser" else n.Grammar
+
+// TokenConst is ANTLR's constant for a token: `galaParserIDENTIFIER`.
+func (n Names) TokenConst(token string) string = n.ParserType() + token
+
+// RuleConst is ANTLR's rule index constant: `galaParserRULE_sourceFile`.
+func (n Names) RuleConst(rule string) string = n.ParserType() + "RULE_" + rule
+
+// Context is the context struct of a rule or labeled alternative: `CaseClauseContext`.
+func (n Names) Context(ruleOrLabel string) string = capitalize(ruleOrLabel) + "Context"
+
+// ContextInterface is the context interface: `ICaseClauseContext`.
+func (n Names) ContextInterface(rule string) string = "I" + n.Context(rule)
+
+// RuleMethod is the public method that parses a rule: `SourceFile`, `Type_`.
+func (n Names) RuleMethod(rule string) string = capitalize(escape(rule))
+
+// LabelField is the context field a label is stored in.
+func (n Names) LabelField(label string) string = escape(label)

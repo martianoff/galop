@@ -1,0 +1,215 @@
+package lexgen
+
+import (
+    "strconv"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+)
+
+// The lexer model is the lexer ATN prepared for simulation: every consuming
+// transition is resolved to the alphabet classes it matches, every lexer
+// command to an Action, and each state carries the three facts ANTLR's
+// LexerATNSimulator asks of it (rule stop, non-greedy decision, epsilon only).
+
+// TypeSkip is the type a `skip` command gives a token (ANTLR's Lexer.SKIP).
+val TypeSkip = -3
+
+// TypeMore is the type a `more` command gives a token (ANTLR's Lexer.MORE).
+val TypeMore = -2
+
+// TypeInvalid is ANTLR's invalid token type.
+val TypeInvalid = 0
+
+// ChannelDefault is ANTLR's default token channel.
+val ChannelDefault = 0
+
+// ChannelHidden is ANTLR's predefined hidden channel.
+val ChannelHidden = 1
+
+// Action is a lexer command resolved against the grammar: what it does to the
+// token being built when its alternative is the one accepted.
+sealed type Action {
+    // SkipAction drops the token (`skip`).
+    case SkipAction()
+    // MoreAction keeps the text for the next token (`more`).
+    case MoreAction()
+    // TypeAction sets the token type (`type(X)`).
+    case TypeAction(Type int)
+    // ChannelAction sets the token channel (`channel(X)`).
+    case ChannelAction(Channel int)
+}
+
+// Key renders a for interning; equal actions have equal keys, as ANTLR's
+// lexer actions compare by value.
+func (a Action) Key() string = a match {
+    case SkipAction() => "skip"
+    case MoreAction() => "more"
+    case TypeAction(t) => s"type($t)"
+    case ChannelAction(c) => s"channel($c)"
+}
+
+// Edge is a transition of the model.
+sealed type Edge {
+    // Eps moves to Target consuming nothing.
+    case Eps(Target int)
+    // Call enters a rule at Target; Follow is pushed as the return state.
+    case Call(Target int, Follow int)
+    // Consume matches one code point; InClass[c] says whether class c matches.
+    case Consume(Target int, Set atn.IntervalSet, InClass Array[bool])
+    // Act moves to Target and, at the outermost rule, appends Actions (ids into Model.Actions).
+    case Act(Target int, Actions Array[int])
+}
+
+// Model is a lexer ATN prepared for DFA construction and simulation.
+struct Model(
+    ATN atn.ATN,
+    // StartTargets are the token rules' start states in priority order;
+    // alternative i+1 starts at StartTargets[i].
+    StartTargets Array[int],
+    // Out holds each state's transitions in ATN order.
+    Out Array[Array[Edge]],
+    IsStop Array[bool],
+    // NonGreedy marks the decision states of non-greedy quantifiers.
+    NonGreedy Array[bool],
+    // EpsilonOnly marks states whose transitions all consume nothing (ANTLR's
+    // epsilonOnlyTransitions); a state with no transitions is not one.
+    EpsilonOnly Array[bool],
+    // Classes partitions the code points 0..MaxCodePoint: every consuming
+    // transition matches all of a class or none of it.
+    Classes Array[atn.IntervalSet],
+    // Actions are the distinct lexer actions, by id.
+    Actions Array[Action],
+)
+
+// NewModel prepares the lexer ATN a. channels are the grammar's `channels {}`
+// names, numbered from 2 as ANTLR numbers them. It fails on what galop's
+// lexers do not support yet: modes, predicates and embedded actions.
+func NewModel(a atn.ATN, channels Array[string]) Either[Array[string], Model] = a.TokensStart match {
+    case Some(start) => newModel(a, start, channels)
+    case None() => Left(ArrayOf("not a lexer ATN: it has no tokens start state"))
+}
+
+func newModel(a atn.ATN, start int, channels Array[string]) Either[Array[string], Model] {
+    val classes = Partition(a.States.FlatMap((st) => st.Out.Collect({
+        case atn.Atom(_, label) => atn.SetOf(label)
+        case atn.SetMatch(_, set) => set
+    })))
+    val resolve = (c g4.LexerCommand) Either[string, Action] => resolveCommand(c, a.Vocab, channels)
+    val resolved = a.States.FlatMap((st) => st.Out.Collect({ case atn.LexerActions(_, cmds) => cmds }))
+        .FlatMap((cmds) => cmds.Map(resolve))
+    val errors = resolved.Collect({ case Left(msg) => msg })
+        .AppendAll(a.States.FlatMap((st) => st.Out.Collect({
+            case atn.Predicate(_, rule, _) => s"rule ${a.RuleNames.Get(rule)}: semantic predicates in lexer rules are not supported"
+            case atn.Action(_, rule, _) => s"rule ${a.RuleNames.Get(rule)}: embedded actions in lexer rules are not supported"
+        })))
+        .Distinct()
+    if errors.NonEmpty() {
+        return Left(errors)
+    }
+    val actions = resolved.Collect({ case Right(act) => act })
+        .FoldLeft(EmptyArray[Action](), (acc, act) => if (acc.Exists(_.Key() == act.Key())) acc else acc.Append(act))
+    val actionKeys = actions.Map(_.Key())
+    val actionIds = (cmds Array[g4.LexerCommand]) Array[int] =>
+        cmds.Map(resolve).Collect({ case Right(act) => actionKeys.IndexOf(act.Key()) })
+    val nonGreedy = a.Decisions.Collect({ case d if !d.Greedy => d.State })
+    Right(Model(
+        ATN = a,
+        StartTargets = a.State(start).Out.Collect({ case atn.Epsilon(target) => target }),
+        Out = a.States.Map((st) => st.Out.Map((t) => toEdge(t, classes, actionIds))),
+        IsStop = a.States.Map(_.IsRuleStop()),
+        NonGreedy = nonGreedy.FoldLeft(ArrayFill(a.States.Size(), false), (acc, s) => acc.Updated(s, true)),
+        EpsilonOnly = a.States.Map(_.EpsilonOnly()),
+        Classes = classes,
+        Actions = actions,
+    ))
+}
+
+// toEdge resolves one ATN transition. Predicates and embedded actions were
+// rejected by NewModel; they are epsilon here only to keep the match exhaustive.
+func toEdge(t atn.Transition, classes Array[atn.IntervalSet], actionIds func(Array[g4.LexerCommand]) Array[int]) Edge = t match {
+    case atn.Epsilon(target) => Eps(target)
+    case atn.RuleCall(target, _, follow) => Call(target, follow)
+    case atn.Atom(target, label) => consumeEdge(target, atn.SetOf(label), classes)
+    case atn.SetMatch(target, set) => consumeEdge(target, set, classes)
+    case atn.LexerActions(target, cmds) => Act(target, actionIds(cmds))
+    case atn.Predicate(target, _, _) => Eps(target)
+    case atn.Action(target, _, _) => Eps(target)
+}
+
+func consumeEdge(target int, set atn.IntervalSet, classes Array[atn.IntervalSet]) Edge =
+    Consume(target, set, classes.Map((c) => set.Contains(c.Ranges.Head().Lo)))
+
+// resolveCommand turns a `-> name(arg)` command into an Action.
+func resolveCommand(c g4.LexerCommand, v atn.Vocabulary, channels Array[string]) Either[string, Action] =
+    (c.Name, c.Arg) match {
+        case ("skip", None()) => Right(SkipAction())
+        case ("more", None()) => Right(MoreAction())
+        case ("type", Some(name)) => tokenTypeNumber(name, v) match {
+            case Some(t) => Right(TypeAction(t))
+            case None() => Left(s"lexer command type($name): unknown token type")
+        }
+        case ("channel", Some(name)) => channelNumber(name, channels) match {
+            case Some(ch) => Right(ChannelAction(ch))
+            case None() => Left(s"lexer command channel($name): unknown channel")
+        }
+        case ("mode" | "pushMode" | "popMode", _) => Left(s"lexer command ${c.Name}: lexer modes are not supported")
+        case _ => Left(s"lexer command ${c.Name}: not supported")
+    }
+
+// tokenTypeNumber is the type `type(name)` sets: a token name or a plain number.
+func tokenTypeNumber(name string, v atn.Vocabulary) Option[int] = v.TypeOf(name) match {
+    case Some(t) if t > 0 => Some(t)
+    case _ => intArg(name)
+}
+
+// channelNumber numbers a channel the way ANTLR does: the two predefined
+// channels, then the grammar's `channels {}` from 2, or a plain number.
+func channelNumber(name string, channels Array[string]) Option[int] = name match {
+    case "DEFAULT_TOKEN_CHANNEL" => Some(ChannelDefault)
+    case "HIDDEN" => Some(ChannelHidden)
+    case _ => if (channels.Contains(name)) Some(channels.IndexOf(name) + 2) else intArg(name)
+}
+
+func intArg(s string) Option[int] = strconv.Atoi(s).ToOption()
+
+// Partition splits 0..MaxCodePoint into classes such that every set in sets
+// contains either all of a class or none of it. Classes are numbered by their
+// smallest code point, so the numbering is deterministic.
+func Partition(sets Array[atn.IntervalSet]) Array[atn.IntervalSet] {
+    val distinct = sets.FoldLeft((EmptyHashSet[string](), EmptyArray[atn.IntervalSet]()), (acc, set) => {
+        val key = set.String()
+        if (acc.V1.Contains(key)) acc else (acc.V1.Add(key), acc.V2.Append(set))
+    }).V2
+    val bounds = distinct.FlatMap((set) => set.Ranges.FlatMap((r) => ArrayOf(r.Lo, r.Hi + 1)))
+        .AppendAll(ArrayOf(0, atn.MaxCodePoint + 1))
+        .Filter((p) => p >= 0 && p <= atn.MaxCodePoint + 1)
+        .Distinct()
+        .Sorted()
+    val pieces = bounds.Zip(bounds.Drop(1)).Map((p) => atn.Interval(p.V1, p.V2 - 1))
+    val grouped = pieces.FoldLeft(
+        Tuple(EmptyHashMap[string, int](), EmptyArray[Array[atn.Interval]]()),
+        (acc, piece) => {
+            val sig = distinct.ZipWithIndex().Collect({ case (set, i) if set.Contains(piece.Lo) => s"$i" }).MkString(",")
+            acc.V1.Get(sig) match {
+                case Some(id) => Tuple(acc.V1, acc.V2.Updated(id, acc.V2.Get(id).Append(piece)))
+                case None() => Tuple(acc.V1.Put(sig, acc.V2.Size()), acc.V2.Append(ArrayOf(piece)))
+            }
+        },
+    )
+    grouped.V2.Map((ranges) => atn.IntervalSet(ranges))
+}
+
+// ClassRange is a run of code points Lo..Hi that all belong to class Class.
+struct ClassRange(Lo int, Hi int, Class int)
+
+// ClassRanges lists the classes as ascending, disjoint runs covering every code point.
+func (m Model) ClassRanges() Array[ClassRange] =
+    m.Classes.ZipWithIndex()
+        .FlatMap((ci) => ci.V1.Ranges.Map((r) => ClassRange(r.Lo, r.Hi, ci.V2)))
+        .SortWith((a, b) => a.Lo < b.Lo)
+
+// TokenType is the token type of the rule that owns stop state s.
+func (m Model) TokenType(s int) int = m.ATN.RuleTokenType.Get(m.ATN.State(s).Rule).GetOrElse(TypeInvalid)

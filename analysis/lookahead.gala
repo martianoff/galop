@@ -1,0 +1,515 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+    m "martianoff/gala/collection_mutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// Static lookahead for one decision. Each alternative is followed through the
+// ATN with an explicit rule-call stack, one token at a time:
+//
+//   - a rule call pushes its return (follow) state and enters the rule;
+//   - at a rule's stop state a non-empty stack pops and continues at the
+//     return state; an empty stack continues at the return state of every
+//     call of the rule (global FOLLOW), and at the end of a start rule the
+//     only continuation is EOF;
+//   - predicates and actions are passed through like epsilon edges.
+//
+// The configurations reachable in any calling context are thus a superset of
+// those ANTLR's full-context (LL) prediction reaches with the real stack.
+//
+// On input it parses, ANTLR's LL prediction picks the smallest alternative
+// that can parse the rest of the input in the real context: it stops as soon
+// as every group of configurations with the same state and the same full
+// stack has the same smallest alternative. The analysis applies that rule
+// statically, which needs configurations that exist at runtime either all or
+// none, whatever the calling context:
+//
+//   - a configuration still inside the decision's rule (it never returned past
+//     the rule's end) exists in every calling context, so configurations of
+//     different alternatives with equal state and stack are such a group;
+//   - every alternative that reaches the end of the decision's rule after the
+//     same number of tokens is in the same runtime configuration there (the
+//     rule's stop state with the caller's stack), so from then on it reaches
+//     exactly the same configurations. Configurations record that number
+//     (Exit), and those with equal state, stack and Exit are such a group.
+//
+// When every group has the same smallest alternative Y, Y is what ANTLR
+// predicts. A token sequence only one alternative accepts is the special case
+// of a single group. Whatever is still undecided after maxK tokens, or at EOF,
+// is left to adaptive prediction.
+
+// config is a position reached while computing lookahead: an ATN state, the
+// return states of the rule calls entered on the way (a context, see
+// contextTable), how many tokens had been consumed when it returned past the
+// end of the decision's rule (Exit, or inside while it has not), and the
+// decision alternative it belongs to. State endOfInput stands for "past the
+// end of a start rule", where only EOF can follow.
+struct config(State int, Stack int, Exit int, Alt int)
+
+val endOfInput = -1
+
+// inside is the Exit of a configuration that has not left the decision's rule.
+val inside = -1
+
+// emptyStack is the id of the empty context: no rule call entered since the
+// decision, the caller's context below it unknown (a wildcard, as in ANTLR's
+// SLL prediction).
+val emptyStack = 0
+
+// maxStack bounds the call stack of a configuration. Only a left-recursive
+// rule (which ANTLR rejects or rewrites) can enter calls without bound before
+// consuming a token; a decision that hits the bound is left to adaptive
+// prediction.
+val maxStack = 1000
+
+// Packing a configuration into an int64 key: these bound the fields.
+val stateSpan = int64(1) << 22
+val altSpan = int64(1) << 10
+val exitSpan = int64(1) << 6
+
+// contextTable interns call-stack contexts, the way ANTLR's prediction
+// contexts are graph-structured: a context is a set of (return state, parent
+// context) entries sorted by return state, and id 0 is the empty context. A
+// plain stack is a chain of single entries; merging the contexts of two
+// configurations with the same state and alternative shares their common
+// structure instead of listing every stack. Equal contexts get equal ids, so
+// a configuration is four ints and its key one int64.
+struct contextTable(
+    ids Ptr[m.HashMap[string, int]],
+    entries Ptr[m.Array[Array[Tuple[int, int]]]],
+    depths Ptr[m.Array[int]],
+    merges Ptr[m.HashMap[int64, int]],
+)
+
+func newContextTable() contextTable =
+    contextTable(
+        m.EmptyHashMap[string, int](),
+        m.ArrayOf(EmptyArray[Tuple[int, int]]()),
+        m.ArrayOf(0),
+        m.EmptyHashMap[int64, int](),
+    )
+
+// intern is the id of the context with these entries (sorted by return state).
+func (t contextTable) intern(es Array[Tuple[int, int]]) int {
+    val k = es.Map((e) => s"${e.V1}/${e.V2}").MkString(",")
+    t.ids.Get(k) match {
+        case Some(id) => id
+        case None() => {
+            val id = t.entries.Size()
+            t.entries.Append(es)
+            t.depths.Append(1 + es.FoldLeft(0, (acc, e) => atn.MaxInt(acc, t.depths.Get(e.V2))))
+            t.ids.Put(k, id)
+            id
+        }
+    }
+}
+
+// push is the context with return state ret on top of ctx.
+func (t contextTable) push(ret int, ctx int) int = t.intern(ArrayOf((ret, ctx)))
+
+// merge is the union of two contexts. The empty context is a wildcard (the
+// caller's context is unknown), so it absorbs whatever it is merged with, at
+// any depth, as ANTLR's SLL merge does.
+func (t contextTable) merge(a int, b int) int {
+    if (a == b) {
+        return a
+    }
+    if (a == emptyStack || b == emptyStack) {
+        return emptyStack
+    }
+    val k = int64(atn.MinInt(a, b)) * stateSpan * altSpan + int64(atn.MaxInt(a, b))
+    t.merges.Get(k) match {
+        case Some(known) => known
+        case None() => {
+            val ea = t.entries.Get(a)
+            val eb = t.entries.Get(b)
+            val rets = unique(ea.Map(_.V1).AppendAll(eb.Map(_.V1))).Sorted()
+            val merged = rets.Map((r) => {
+                val pa = ea.Find(_.V1 == r).Map(_.V2)
+                val pb = eb.Find(_.V1 == r).Map(_.V2)
+                val parent = (pa, pb) match {
+                    case (Some(x), Some(y)) => t.merge(x, y)
+                    case (Some(x), None()) => x
+                    case (_, Some(y)) => y
+                    case _ => emptyStack
+                }
+                (r, parent)
+            })
+            val id = t.intern(merged)
+            t.merges.Put(k, id)
+            id
+        }
+    }
+}
+
+// group identifies the runtime configuration c stands for, regardless of its
+// alternative: configurations of different alternatives in the same group
+// parse exactly the same continuations.
+func (c config) group() int64 =
+    ((int64(c.Stack) * exitSpan + int64(c.Exit + 1)) * altSpan) * stateSpan + int64(c.State + 1)
+
+// key identifies c, alternative included.
+func (c config) key() int64 = c.group() + int64(c.Alt) * stateSpan
+
+// move is a consuming step: any token in Symbols advances to Next. Group is
+// the group of the configuration the step starts from.
+struct move(Symbols atn.IntervalSet, Group int64, Next config)
+
+// closureResult is what an epsilon closure reaches: the consuming moves, and
+// whether it passed a predicate or gave up on a runaway call stack.
+struct closureResult(Moves Array[move], Predicated bool, Overflow bool)
+
+// expansion is the closure of one configuration without its alternative,
+// with the distinct groups its moves start from.
+struct expansion(Moves Array[move], Groups Array[int64], Predicated bool, Overflow bool)
+
+// grammarInfo is what every decision's analysis shares: the ATN and, per rule,
+// the return states of its call sites and whether it is a start rule.
+struct grammarInfo(
+    a atn.ATN,
+    callerFollows Array[Array[int]],
+    startRule Array[bool],
+)
+
+func newGrammarInfo(a atn.ATN, sites Array[callSite], starts Array[bool]) grammarInfo =
+    grammarInfo(
+        a,
+        ArrayTabulate(a.RuleNames.Size(), (r) => sites.Collect({ case cs if cs.Callee == r => cs.Follow })),
+        starts,
+    )
+
+val eofSet = atn.SetOf(atn.TokenEOF)
+
+// exitAfter is the Exit of a configuration returning past the end of a rule
+// with an empty stack after consumed tokens: only the decision's own rule can
+// be left that way while the configuration is still inside.
+func exitAfter(exit int, consumed int) int = if (exit == inside) consumed else exit
+
+// decider builds one decision's lookahead tree. It owns the decision's stack
+// table, memoizes subtrees by the configurations they start from, and
+// memoizes the closure of single configurations (see expand).
+struct decider(
+    g grammarInfo,
+    maxK int,
+    stacks contextTable,
+    memo Ptr[m.HashMap[string, Lookahead]],
+    expanded Ptr[m.Array[Ptr[m.HashMap[int64, expansion]]]],
+    expanding Ptr[m.HashSet[int64]],
+    // trackExit records Exit on configurations leaving the decision's rule;
+    // the SLL automaton does not need it.
+    trackExit bool,
+)
+
+func newDecider(g grammarInfo, maxK int, trackExit bool = true) decider =
+    decider(
+        g,
+        maxK,
+        newContextTable(),
+        m.EmptyHashMap[string, Lookahead](),
+        m.ArrayTabulate(maxK + 2, (_) => m.EmptyHashMap[int64, expansion]()),
+        m.EmptyHashSet[int64](),
+        trackExit,
+    )
+
+// closure follows every non-consuming path from the start configurations,
+// reached after consumed tokens, and returns the consuming moves found at
+// their ends.
+func (d decider) closure(start Array[config], consumed int) closureResult {
+    val seen = m.EmptyHashSet[int64]()
+    val moves = m.EmptyArray[move]()
+    var predicated = false
+    var overflow = false
+    start.ForEach((c) => {
+        val e = d.expand(config(c.State, c.Stack, c.Exit, 0), consumed)
+        predicated = predicated || e.Predicated
+        overflow = overflow || e.Overflow
+        e.Moves.ForEach((mv) => {
+            val next = config(mv.Next.State, mv.Next.Stack, mv.Next.Exit, c.Alt)
+            if seen.Add(next.key()) {
+                moves.Append(move(mv.Symbols, mv.Group, next))
+            }
+        })
+    })
+    closureResult(ArrayFromSlice(moves.ToGoSlice()), predicated, overflow)
+}
+
+// expand is the closure of one configuration without its alternative (Alt 0).
+// Results are memoized per decision, and every rule end it meets is expanded
+// on its own and reused: configurations that share a stack suffix share the
+// closure of the rules they return to, and global FOLLOW is computed once.
+// A configuration's closure depends on consumed only while it is inside the
+// decision's rule (it decides the Exit of whatever leaves it).
+func (d decider) expand(c0 config, consumed int) expansion {
+    val cache = d.expanded.Get(if (c0.Exit == inside) consumed else d.maxK + 1)
+    val k0 = c0.key()
+    if cache.Contains(k0) {
+        return cache.Get(k0).Get()
+    }
+    d.expanding.Add(k0)
+    val busy = m.EmptyHashSet[int64]()
+    val seen = m.EmptyHashSet[int64]()
+    val moves = m.EmptyArray[move]()
+    var work = EmptyList[config]()
+    var predicated = false
+    var overflow = false
+    val visit = (c config) => {
+        if busy.Add(c.key()) {
+            work = work.Prepend(c)
+        }
+    }
+    val emit = (mv move) => {
+        if seen.Add(mv.Next.key()) {
+            moves.Append(mv)
+        }
+    }
+    visit(c0)
+    // A worklist: visiting a configuration queues its successors, so the
+    // traversal itself decides when it ends. It is the analysis's hot path.
+    for work.NonEmpty() {
+        val c = work.Head()
+        work = work.Tail()
+        if c.State == endOfInput {
+            emit(move(eofSet, c.group(), c))
+        } else {
+            val s = d.g.a.State(c.State)
+            if c != c0 && s.IsRuleStop() && !d.expanding.Contains(c.key()) {
+                val e = d.expand(c, consumed)
+                predicated = predicated || e.Predicated
+                overflow = overflow || e.Overflow
+                e.Moves.ForEach(emit)
+            } else {
+                if s.IsRuleStop() {
+                    if c.Stack != emptyStack {
+                        d.stacks.entries.Get(c.Stack).ForEach((e) => visit(config(e.V1, e.V2, c.Exit, c.Alt)))
+                    } else {
+                        val exit = if (d.trackExit) exitAfter(c.Exit, consumed) else inside
+                        d.g.callerFollows.Get(s.Rule).ForEach((ret) => visit(config(ret, emptyStack, exit, c.Alt)))
+                        if d.g.startRule.Get(s.Rule) {
+                            visit(config(endOfInput, emptyStack, exit, c.Alt))
+                        }
+                    }
+                }
+                s.Out.ForEach((t) => t match {
+                    case atn.Epsilon(target) => visit(config(target, c.Stack, c.Exit, c.Alt))
+                    case atn.RuleCall(target, _, follow) => {
+                        if d.stacks.depths.Get(c.Stack) >= maxStack {
+                            overflow = true
+                        } else {
+                            visit(config(target, d.stacks.push(follow, c.Stack), c.Exit, c.Alt))
+                        }
+                    }
+                    case atn.Atom(target, label) => emit(move(atn.SetOf(label), c.group(), config(target, c.Stack, c.Exit, c.Alt)))
+                    case atn.SetMatch(target, set) => emit(move(set, c.group(), config(target, c.Stack, c.Exit, c.Alt)))
+                    case atn.LexerActions(target, _) => visit(config(target, c.Stack, c.Exit, c.Alt))
+                    case atn.Predicate(target, _, _) => {
+                        predicated = true
+                        visit(config(target, c.Stack, c.Exit, c.Alt))
+                    }
+                    case atn.Action(target, _, _) => visit(config(target, c.Stack, c.Exit, c.Alt))
+                })
+            }
+        }
+    }
+    val all = ArrayFromSlice(moves.ToGoSlice())
+    val result = expansion(all, unique(all.Map(_.Group)), predicated, overflow)
+    d.expanding.Remove(k0)
+    cache.Put(k0, result)
+    result
+}
+
+// resolved applies ANTLR's stopping rule to the configurations the moves start
+// from: the alternative that is the smallest of every group, if there is one.
+func resolved(moves Array[move]) Option[int] {
+    val smallest = m.EmptyHashMap[int64, int]()
+    moves.ForEach((mv) => {
+        if smallest.Get(mv.Group).GetOrElse(mv.Next.Alt + 1) > mv.Next.Alt {
+            smallest.Put(mv.Group, mv.Next.Alt)
+        }
+    })
+    agreed(smallest.ValueArray())
+}
+
+// agreed is the alternative every group's smallest alternative is, if they
+// all agree.
+func agreed(mins Ptr[m.Array[int]]) Option[int] = mins.HeadOption().Filter((h) => mins.ForAll(_ == h))
+
+// altsOf lists the alternatives the moves belong to, in increasing order.
+func altsOf(moves Array[move]) Array[int] = unique(moves.Map(_.Next.Alt)).Sorted()
+
+// tokenClass is a set of tokens that exactly the same moves accept.
+struct tokenClass(Tokens atn.IntervalSet, Moves Array[move])
+
+// tokenClasses partitions the tokens the moves accept into classes.
+func tokenClasses(moves Array[move]) Array[tokenClass] {
+    val sets = moves.Map(_.Symbols)
+    val seenSets = m.EmptyHashSet[string]()
+    val distinct = sets.Filter((s) => seenSets.Add(s.String()))
+    val points = unique(distinct.FlatMap((s) => s.Ranges.FlatMap((r) => ArrayOf(r.Lo, r.Hi + 1)))).Sorted()
+    if points.Size() < 2 {
+        return EmptyArray[tokenClass]()
+    }
+    // Between two consecutive boundary points every set either contains all
+    // tokens or none, so each such piece has one membership signature.
+    val pieces = ArrayTabulate(points.Size() - 1, (i) => atn.RangeSet(points.Get(i), points.Get(i + 1) - 1))
+    val labeled = pieces.Collect((piece) => {
+        val lo = piece.Min().Get()
+        val members = distinct.ZipWithIndex().Collect({ case (s, i) if s.Contains(lo) => i })
+        When(members.NonEmpty(), (members.MkString(","), piece))
+    })
+    val signatures = unique(labeled.Map(_.V1))
+    signatures.Map((sig) => {
+        val tokens = labeled.Filter(_.V1 == sig).FoldLeft(atn.EmptySet(), (acc, p) => acc.Union(p.V2))
+        val lo = tokens.Min().Get()
+        tokenClass(tokens, moves.Filter(_.Symbols.Contains(lo)))
+    })
+}
+
+// decide picks among the alternatives of moves at token LA(depth).
+func (d decider) decide(moves Array[move], depth int) Lookahead {
+    val alts = altsOf(moves)
+    if alts.Size() == 1 {
+        return Predict(alts.Head())
+    }
+    resolved(moves) match {
+        case Some(alt) => Predict(alt)
+        case None() => Switch(depth, mergeCases(tokenClasses(moves).Map((cls) => {
+            val clsAlts = altsOf(cls.Moves)
+            val then Lookahead =
+                if (clsAlts.Size() == 1) Predict(clsAlts.Head())
+                else d.after(cls.Moves.Map(_.Next), depth, cls.Tokens.Contains(atn.TokenEOF))
+            LookaheadCase(cls.Tokens, then)
+        })))
+    }
+}
+
+// after decides once LA(depth) has been consumed into the configurations next.
+// Predicates met from here on are passed through: ANTLR only evaluates the
+// ones before the first token.
+// Past EOF there are no more tokens to look at: every alternative sees EOF again.
+func (d decider) after(next Array[config], depth int, atEOF bool) Lookahead {
+    val key = s"$depth|$atEOF|" + unique(next.Map(_.key())).Sorted().MkString(" ")
+    d.memo.Get(key) match {
+        case Some(known) => known
+        case None() => {
+            val alts = unique(next.Map(_.Alt)).Sorted()
+            val result =
+                if (atEOF || depth >= d.maxK) d.settle(next, depth, alts)
+                else {
+                    val r = d.closure(next, depth)
+                    if (r.Overflow) Adaptive(alts) else d.decide(r.Moves, depth + 1)
+                }
+            d.memo.Put(key, result)
+            result
+        }
+    }
+}
+
+// settle decides with no more tokens to look at: the stopping rule applied to
+// the closure of next, or adaptive prediction among alts. Only the groups of
+// the closure matter here, so no moves are built.
+func (d decider) settle(next Array[config], consumed int, alts Array[int]) Lookahead {
+    val smallest = m.EmptyHashMap[int64, int]()
+    var overflow = false
+    next.ForEach((c) => {
+        val e = d.expand(config(c.State, c.Stack, c.Exit, 0), consumed)
+        overflow = overflow || e.Overflow
+        e.Groups.ForEach((g) => {
+            if smallest.Get(g).GetOrElse(c.Alt + 1) > c.Alt {
+                smallest.Put(g, c.Alt)
+            }
+        })
+    })
+    agreed(smallest.ValueArray()) match {
+        case Some(alt) if !overflow => Predict(alt)
+        case _ => Adaptive(alts)
+    }
+}
+
+// mergeCases joins the cases that continue the same way and orders them by
+// their smallest token.
+func mergeCases(cases Array[LookaheadCase]) Array[LookaheadCase] {
+    val keyed = cases.Map((c) => (render(c.Then), c))
+    unique(keyed.Map(_.V1)).Map((k) => {
+        val group = keyed.Collect({ case (key, c) if key == k => c })
+        LookaheadCase(group.FoldLeft(atn.EmptySet(), (acc, c) => acc.Union(c.Tokens)), group.Head().Then)
+    }).SortWith((x, y) => x.Tokens.Min().Get() < y.Tokens.Min().Get())
+}
+
+// render is a canonical text form of a lookahead tree, with token types as numbers.
+func render(l Lookahead) string = l match {
+    case Predict(alt) => s"$alt"
+    case Adaptive(alts) => s"adaptive(${alts.MkString(",")})"
+    case Automaton(states) => s"automaton(${states.Size()})"
+    case Switch(depth, cases) => s"LA$depth{" + cases.Map((c) => c.Tokens.String() + ":" + render(c.Then)).MkString(" ") + "}"
+}
+
+// planDecision analyzes one decision. The static lookahead tree comes first;
+// when part of it would be left to adaptive prediction, the whole decision
+// gets its SLL automaton instead (class and conflicts still describe the
+// tree). A decision whose alternatives start with a predicate stays Adaptive:
+// ANTLR evaluates those predicates while it predicts.
+func (g grammarInfo) planDecision(dec atn.Decision, maxK int) DecisionPlan {
+    val (tree, static) = g.lookaheadTree(dec, maxK)
+    val lookahead =
+        if (static && hasAdaptive(tree)) g.buildAutomaton(dec).GetOrElse(allAdaptive(dec))
+        else tree
+    DecisionPlan(dec, classify(tree), lookahead, conflictsOf(tree, EmptyArray[int]()))
+}
+
+// lookaheadTree is the static lookahead tree of dec, and whether static
+// lookahead applies at all (no predicate before the first token, no runaway
+// call stack); when it does not, the tree is Adaptive over every alternative.
+func (g grammarInfo) lookaheadTree(dec atn.Decision, maxK int) Tuple[Lookahead, bool] {
+    val d = newDecider(g, maxK)
+    val start = decisionSeed(g, dec, d)
+    val r = d.closure(start.Starts, 0)
+    if (start.Predicated || r.Predicated || r.Overflow) (allAdaptive(dec), false)
+    else (d.decide(start.Moves.AppendAll(r.Moves), 1), true)
+}
+
+// allAdaptive leaves every alternative of dec to adaptive prediction.
+func allAdaptive(dec atn.Decision) Lookahead = Adaptive(ArrayTabulate(dec.AltCount, (i) => i + 1))
+
+// classify summarizes a lookahead tree.
+func classify(l Lookahead) DecisionClass =
+    if (hasAdaptive(l)) NeedsAdaptive()
+    else depthOf(l) match {
+        case 0 | 1 => LL1()
+        case k => LLk(k)
+    }
+
+func hasAdaptive(l Lookahead) bool = l match {
+    case Predict(_) => false
+    case Adaptive(_) => true
+    case Automaton(_) => true
+    case Switch(_, cases) => cases.Exists((c) => hasAdaptive(c.Then))
+}
+
+// depthOf is the deepest token a lookahead tree looks at.
+func depthOf(l Lookahead) int = l match {
+    case Switch(depth, cases) => cases.FoldLeft(depth, (acc, c) => atn.MaxInt(acc, depthOf(c.Then)))
+    case _ => 0
+}
+
+// conflictsOf lists the adaptive leaves of a lookahead tree, each with an
+// example of the token prefix that leads to it.
+func conflictsOf(l Lookahead, prefix Array[int]) Array[Conflict] = l match {
+    case Predict(_) => EmptyArray[Conflict]()
+    case Adaptive(alts) => ArrayOf(Conflict(alts, prefix))
+    case Automaton(_) => EmptyArray[Conflict]()
+    case Switch(_, cases) => cases.FlatMap((c) => conflictsOf(c.Then, prefix.Append(exampleToken(c.Tokens))))
+}
+
+// exampleToken picks a representative of a token set: its smallest real
+// token, or EOF when that is all it holds.
+func exampleToken(s atn.IntervalSet) int =
+    s.Ranges.Find(_.Hi >= 1).Map((r) => atn.MaxInt(r.Lo, 1)).GetOrElse(atn.TokenEOF)
+
+// unique drops repeated elements and keeps the first of each, in order.
+func unique[T comparable](xs Array[T]) Array[T] {
+    val seen = m.EmptyHashSet[T]()
+    xs.Filter((x) => seen.Add(x))
+}

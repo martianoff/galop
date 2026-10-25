@@ -1,0 +1,49 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "golang",
+    srcs = [
+        "names.gala",
+        "parser_emit.gala",
+        "runtime_go.gala",
+        "tables.gala",
+        "target.gala",
+    ],
+    importpath = "github.com/martianoff/galop/golang",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//analysis",
+        "//atn",
+        "//codegen",
+        "//g4",
+        "//lexgen",
+        "@gala//collection_immutable",
+        "@gala//concurrent",
+        "@gala//strings",
+    ],
+)
+
+gala_test(
+    name = "golang_test",
+    srcs = ["golang_test.gala"],
+    importpath = "github.com/martianoff/galop/golang",
+    lib_srcs = [
+        "names.gala",
+        "parser_emit.gala",
+        "runtime_go.gala",
+        "tables.gala",
+        "target.gala",
+    ],
+    pkg = "golang",
+    deps = [
+        "//analysis",
+        "//atn",
+        "//codegen",
+        "//g4",
+        "//lexgen",
+        "@gala//collection_immutable",
+        "@gala//concurrent",
+        "@gala//go_builtins",
+        "@gala//strings",
+    ],
+)

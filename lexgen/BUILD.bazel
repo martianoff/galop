@@ -1,0 +1,46 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "lexgen",
+    srcs = [
+        "dfa.gala",
+        "emit_go.gala",
+        "model.gala",
+        "tokenize.gala",
+    ],
+    importpath = "github.com/martianoff/galop/lexgen",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//atn",
+        "//codegen",
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//concurrent",
+        "@gala//go_interop",
+        "@gala//strings",
+    ],
+)
+
+gala_test(
+    name = "lexgen_test",
+    srcs = ["lexgen_test.gala"],
+    importpath = "github.com/martianoff/galop/lexgen",
+    lib_srcs = [
+        "dfa.gala",
+        "emit_go.gala",
+        "model.gala",
+        "tokenize.gala",
+    ],
+    pkg = "lexgen",
+    deps = [
+        "//atn",
+        "//codegen",
+        "//diag",
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//concurrent",
+        "@gala//go_builtins",
+        "@gala//go_interop",
+        "@gala//strings",
+    ],
+)

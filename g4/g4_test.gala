@@ -55,11 +55,11 @@ func TestLexErrors(t T) T = RunCases[string, string](t,
     (sub, in, want) => Eq(sub, kinds(in), want),
     Case[string, string](Name = "string", Input = "a 'b", Expected = "error: 1:3: unterminated string literal"),
     Case[string, string](Name = "string newline", Input = "'b\n'", Expected = "error: 1:1: unterminated string literal"),
-    Case[string, string](Name = "comment", Input = "\n  /* x", Expected = "error: 2:3: unterminated comment"),
-    Case[string, string](Name = "set", Input = "[abc", Expected = "error: 1:1: unterminated character set"),
-    Case[string, string](Name = "action", Input = "{ { }", Expected = "error: 1:1: unterminated action"),
-    Case[string, string](Name = "comment in action", Input = "{ a /* }", Expected = "error: 1:5: unterminated comment"),
-    Case[string, string](Name = "character", Input = "a $", Expected = "error: 1:3: unexpected character '$'"),
+    Case[string, string](Name = "comment", Input = "\n  /* x", Expected = "error: 2:3: syntax error: unterminated comment"),
+    Case[string, string](Name = "set", Input = "[abc", Expected = "error: 1:1: syntax error: unterminated character set"),
+    Case[string, string](Name = "action", Input = "{ { }", Expected = "error: 1:1: syntax error: unterminated action"),
+    Case[string, string](Name = "comment in action", Input = "{ a /* }", Expected = "error: 1:5: syntax error: unterminated comment"),
+    Case[string, string](Name = "character", Input = "a $", Expected = "error: 1:3: syntax error: unexpected character '$'"),
 )
 
 func TestParseModel(t T) T {
@@ -80,7 +80,7 @@ func TestParseModel(t T) T {
             Rule("D", true, ArrayOf(Alt(ArrayOf[Element](Range("0", "9")), None(), EmptyArray[LexerCommand]()))),
         ),
     )
-    Eq(t1, g, want)
+    Eq(t1, StripPositions(g), want)
 }
 
 func TestParsePrintsElements(t T) T = RunCases[string, string](t,
@@ -99,32 +99,93 @@ func TestParsePrintsElements(t T) T = RunCases[string, string](t,
 
 func TestParseErrors(t T) T = RunCases[string, string](t,
     (sub, in, want) => Eq(sub, errorOf(in), want),
-    Case[string, string](Name = "no header", Input = "a: b;", Expected = "1:1: expected 'grammar', found 'a'"),
-    Case[string, string](Name = "missing semicolon", Input = "grammar g;\na: b\nc: d;", Expected = "3:2: expected ';', found ':'"),
-    Case[string, string](Name = "unbalanced paren", Input = "grammar g;\na: (b;", Expected = "2:6: expected ')', found ';'"),
-    Case[string, string](Name = "lowercase fragment", Input = "grammar g;\nfragment a: 'x';", Expected = "2:10: fragment rule 'a' must be a lexer rule (uppercase name)"),
-    Case[string, string](Name = "rule arguments", Input = "grammar g;\na[int x]: b;", Expected = "2:2: rule 'a': rule arguments are not supported yet"),
-    Case[string, string](Name = "returns", Input = "grammar g;\na returns [int x]: b;", Expected = "2:3: rule 'a': 'returns' is not supported yet"),
-    Case[string, string](Name = "element options", Input = "grammar g;\na: <assoc=right> b;", Expected = "2:4: element options are not supported yet"),
-    Case[string, string](Name = "imports", Input = "grammar g;\nimport Other;", Expected = "2:1: grammar imports are not supported yet"),
-    Case[string, string](Name = "bad range", Input = "grammar g;\nA: 'a'..B;", Expected = "2:9: expected a literal after '..', found 'B'"),
+    Case[string, string](Name = "no header", Input = "a: b;", Expected = "1:1: syntax error: expected 'grammar', found 'a'"),
+    Case[string, string](Name = "missing semicolon", Input = "grammar g;\na: b\nc: d;", Expected = "3:2: syntax error: expected ';', found ':'"),
+    Case[string, string](Name = "unbalanced paren", Input = "grammar g;\na: (b;", Expected = "2:6: syntax error: expected ')', found ';'"),
+    Case[string, string](Name = "lowercase fragment", Input = "grammar g;\nfragment a: 'x';", Expected = "2:10: syntax error: fragment rule 'a' must be a lexer rule (uppercase name)"),
+    Case[string, string](Name = "rule arguments", Input = "grammar g;\na[int x]: b;", Expected = "2:2: galop does not support rule arguments yet"),
+    Case[string, string](Name = "returns", Input = "grammar g;\na returns [int x]: b;", Expected = "2:3: galop does not support 'returns' yet"),
+    Case[string, string](Name = "element options", Input = "grammar g;\na: <assoc=right> b;", Expected = "2:4: galop does not support element options yet"),
+    Case[string, string](Name = "imports", Input = "grammar g;\nimport Other;", Expected = "2:1: galop does not support grammar imports yet"),
+    Case[string, string](Name = "bad range", Input = "grammar g;\nA: 'a'..B;", Expected = "2:9: syntax error: expected a literal after '..', found 'B'"),
     Case[string, string](Name = "lex error surfaces", Input = "grammar g;\nA: 'a", Expected = "2:4: unterminated string literal"),
 )
 
-func TestCheck(t T) T = RunCases[string, string](t,
+func TestParseErrorCodes(t T) T = RunCases[string, int](t,
     (sub, in, want) => Eq(sub, Parse(in) match {
-        case Right(g) => Check(g).MkString("; ")
-        case Left(d) => "parse error: " + d.String()
+        case Left(d) => d.Code
+        case Right(_) => 0
     }, want),
-    Case[string, string](Name = "valid", Input = "grammar g;\ntokens { T }\na: B T EOF 'x';\nB: F;\nfragment F: 'f';", Expected = ""),
-    Case[string, string](Name = "undefined rule", Input = "grammar g;\na: b;", Expected = "rule 'a' references undefined rule 'b'"),
-    Case[string, string](Name = "undefined token", Input = "grammar g;\na: B;", Expected = "rule 'a' references undefined token 'B'"),
-    Case[string, string](Name = "duplicate", Input = "grammar g;\na: 'x';\na: 'y';", Expected = "rule 'a' is defined more than once"),
-    Case[string, string](Name = "lexer refs parser", Input = "grammar g;\na: 'x';\nB: a;", Expected = "lexer rule 'B' references parser rule 'a'"),
-    Case[string, string](Name = "parser refs fragment", Input = "grammar g;\na: F;\nfragment F: 'f';", Expected = "parser rule 'a' references fragment 'F'"),
-    Case[string, string](Name = "parser rule in lexer grammar", Input = "lexer grammar g;\na: 'x';", Expected = "parser rule 'a' in a lexer grammar"),
-    Case[string, string](Name = "parser grammar tokens come from elsewhere", Input = "parser grammar g;\na: B;", Expected = ""),
+    Case[string, int](Name = "syntax error", Input = "a: b;", Expected = 50),
+    Case[string, int](Name = "unterminated string", Input = "grammar g;\nA: 'a", Expected = 152),
+    Case[string, int](Name = "unsupported", Input = "grammar g;\nimport Other;", Expected = 500),
 )
+
+// checkText runs Check on src and renders each diagnostic as `code line:col: message`.
+func checkText(src string) string = Parse(src) match {
+    case Right(g) => Check(g).Map((d) => s"${d.Code} ${d.String()}").MkString("; ")
+    case Left(d) => "parse error: " + d.String()
+}
+
+func TestCheck(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, checkText(in), want),
+    Case[string, string](Name = "valid", Input = "grammar g;\ntokens { T }\na: B T EOF 'x';\nB: F;\nfragment F: 'f';", Expected = ""),
+    Case[string, string](Name = "undefined rule", Input = "grammar g;\na: b;", Expected = "56 2:4: reference to undefined rule: b"),
+    Case[string, string](Name = "every undefined use", Input = "grammar g;\na: b x=b;", Expected = "56 2:4: reference to undefined rule: b; 56 2:8: reference to undefined rule: b"),
+    Case[string, string](
+        Name = "implicit token, once per name",
+        Input = "grammar g;\na: B (B | C)*;",
+        Expected = "125 2:4: implicit definition of token B in parser; 125 2:11: implicit definition of token C in parser",
+    ),
+    Case[string, string](Name = "undefined lexer rule", Input = "grammar g;\nA: B;", Expected = "56 2:4: reference to undefined rule: B"),
+    Case[string, string](Name = "duplicate", Input = "grammar g;\na: 'x';\na: 'y';", Expected = "51 3:1: rule a redefinition; previous at line 2"),
+    Case[string, string](Name = "lexer refs parser", Input = "grammar g;\na: 'x';\nB: a;", Expected = "160 3:4: reference to parser rule a in lexer rule B"),
+    Case[string, string](Name = "parser refs fragment", Input = "grammar g;\na: F;\nfragment F: 'f';", Expected = "501 2:4: reference to fragment rule F in parser rule a"),
+    Case[string, string](Name = "parser rule in lexer grammar", Input = "lexer grammar g;\na: 'x';", Expected = "53 2:1: parser rule a not allowed in lexer"),
+    Case[string, string](Name = "lexer rule in parser grammar", Input = "parser grammar g;\nA: 'x';", Expected = "52 2:1: lexer rule A not allowed in parser"),
+    Case[string, string](Name = "parser grammar without a vocabulary", Input = "parser grammar g;\na: B;", Expected = "125 2:4: implicit definition of token B in parser"),
+    Case[string, string](Name = "tokenVocab supplies the tokens", Input = "parser grammar g;\noptions { tokenVocab = L; }\na: B;", Expected = ""),
+    Case[string, string](Name = "no rules", Input = "lexer grammar Empty;", Expected = "99 1:15: grammar Empty has no rules"),
+    Case[string, string](Name = "results in source order", Input = "grammar g;\nb: y;\na: x;\nb: 'z';", Expected = "56 2:4: reference to undefined rule: y; 56 3:4: reference to undefined rule: x; 51 4:1: rule b redefinition; previous at line 2"),
+)
+
+func TestCheckSeverity(t T) T = Parse("grammar g;\na: B;") match {
+    case Right(g) => Eq(t, Check(g).Map(_.IsError()), ArrayOf(false))
+    case Left(d) => Fail(t, d.String())
+}
+
+func TestPositions(t T) T {
+    val (t1, g) = parseOrFail(t, "grammar P;\noptions { k = 2; }\nexpr\n    : x=atom ('+' atom)* # Sum\n    | ~(A | B)\n    ;\nfragment F: 'a'..'z' .;\n")
+    val expr = g.Rules.Get(0)
+    val located = expr.Located().Map((l) => s"${FormatElement(l.Element)}@${l.Pos.Line}:${l.Pos.Col}")
+    val t2 = Eq(t1, g.Pos, Pos(1, 9))
+    val t3 = Eq(t2, g.Options.Map(_.Pos), ArrayOf(Pos(2, 11)))
+    val t4 = Eq(t3, expr.Pos, Pos(3, 1))
+    val t5 = Eq(t4, g.Rules.Get(1).Pos, Pos(7, 10))
+    val t6 = Eq(t5, located, ArrayOf(
+        "x=atom@4:7", "atom@4:9", "('+' atom)*@4:14", "('+' atom)@4:14", "'+'@4:15", "atom@4:19",
+        "~(A | B)@5:7", "(A | B)@5:8", "A@5:9", "B@5:13",
+    ))
+    Eq(t6, g.Rules.Get(1).Located().Map((l) => l.Pos), ArrayOf(Pos(7, 13), Pos(7, 22)))
+}
+
+func TestLabeledRepeatPositions(t T) T {
+    val (t1, g) = parseOrFail(t, "grammar P;\na: xs+=b* c;\n")
+    val located = g.Rules.Get(0).Located().Map((l) => s"${FormatElement(l.Element)}@${l.Pos.Col}")
+    Eq(t1, located, ArrayOf("xs+=b*@4", "xs+=b@4", "b@8", "c@11"))
+}
+
+func TestPositionsDoNotAffectEquality(t T) T {
+    val (t1, a) = parseOrFail(t, "grammar g;\na: b;\nb: 'x';\n")
+    val (t2, b) = parseOrFail(t1, "grammar g;\n\n\na  :  b ;   b : 'x' ;\n")
+    val t3 = IsFalse(t2, std.Equal(a, b))
+    IsTrue(t3, std.Equal(StripPositions(a), StripPositions(b)))
+}
+
+func TestCodeBuiltRulesHaveNoPositions(t T) T {
+    val r = Rule("a", false, ArrayOf(Alt(ArrayOf[Element](RuleRef("b")), None(), EmptyArray[LexerCommand]())))
+    Eq(t, r.Located().Map(_.Pos), ArrayOf(NoPos))
+}
 
 
 // featureGrammar uses every construct the reader supports.

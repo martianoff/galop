@@ -13,6 +13,7 @@ gala_library(
     importpath = "github.com/martianoff/galop/g4",
     visibility = ["//visibility:public"],
     deps = [
+        "//diag",
         "@gala//collection_immutable",
         "@gala//go_interop",
         "@gala//stream",
@@ -33,6 +34,7 @@ gala_test(
     ],
     pkg = "g4",
     deps = [
+        "//diag",
         "@gala//collection_immutable",
         "@gala//go_interop",
         "@gala//stream",

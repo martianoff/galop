@@ -13,7 +13,7 @@ for the Bazel build.
 ```sh
 gala test                                        # unit tests
 gala build -o galop ./cmd/galop                  # the CLI
-./galop check --roundtrip testdata/grammars/*.g4 # the grammar corpus
+./galop -check -roundtrip testdata/grammars/*.g4 # the grammar corpus
 bazel test //...                                 # the same suite under Bazel
 bazel run //:gazelle                             # after adding or removing a .gala file
 ```

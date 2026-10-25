@@ -1,0 +1,113 @@
+package diag
+
+// The kinds of problem galop reports. Codes below 500 and their texts are
+// ANTLR 4.13.1's (org.antlr.v4.tool.ErrorType), used only where galop reports
+// the same problem ANTLR does. Codes from 500 up are galop's own.
+
+// --- tool errors (no grammar position) ---
+
+// CannotWriteFile: an output file could not be written.
+val CannotWriteFile = Kind(1, Error(), "cannot write file <arg>: <arg2>")
+
+// InvalidCmdlineArg: an option galop does not know.
+val InvalidCmdlineArg = Kind(2, Error(), "unknown command-line option <arg>")
+
+// DirNotFound: the -lib directory does not exist.
+val DirNotFound = Kind(5, Error(), "directory not found: <arg>")
+
+// OutputDirIsFile: -o names an existing file.
+val OutputDirIsFile = Kind(6, Error(), "output directory is a file: <arg>")
+
+// CannotOpenFile: a grammar file could not be read.
+val CannotOpenFile = Kind(7, Error(), "cannot find or open file: <arg>")
+
+// FileAndGrammarNameDiffer: `grammar X;` in a file not called X.g4.
+val FileAndGrammarNameDiffer = Kind(8, Error(), "grammar name <arg> and file name <arg2> differ")
+
+// BadOptionSetSyntax: a -D argument that is not -Dname=value.
+val BadOptionSetSyntax = Kind(9, Error(), "invalid -Dname=value syntax: <arg>")
+
+// WarningTreatedAsError: reported once, after the first warning, under -Werror.
+val WarningTreatedAsError = Kind(10, Error(), "warning treated as error")
+
+// InternalError: a bug in galop.
+val InternalError = Kind(20, Error(), "internal error: <arg>")
+
+// CannotCreateTargetGenerator: no code generator for the `language` option.
+val CannotCreateTargetGenerator = Kind(31, Error(), "galop cannot generate <arg> code as of version <arg2>")
+
+// --- grammar errors and warnings ---
+
+// SyntaxError: the grammar file does not parse.
+val SyntaxError = Kind(50, Error(), "syntax error: <arg>")
+
+// RuleRedefinition: two rules with one name.
+val RuleRedefinition = Kind(51, Error(), "rule <arg> redefinition; previous at line <arg2>")
+
+// LexerRulesNotAllowed: a lexer rule in a parser grammar.
+val LexerRulesNotAllowed = Kind(52, Error(), "lexer rule <arg> not allowed in parser")
+
+// ParserRulesNotAllowed: a parser rule in a lexer grammar.
+val ParserRulesNotAllowed = Kind(53, Error(), "parser rule <arg> not allowed in lexer")
+
+// UndefinedRuleRef: a reference to a rule that does not exist.
+val UndefinedRuleRef = Kind(56, Error(), "reference to undefined rule: <arg>")
+
+// IllegalOption: an option galop does not know.
+val IllegalOption = Kind(83, Warning(), "unsupported option <arg>")
+
+// IllegalOptionValue: a known option with a value galop does not accept.
+val IllegalOptionValue = Kind(84, Warning(), "unsupported option value <arg>=<arg2>")
+
+// NoRules: a grammar with no rules.
+val NoRules = Kind(99, Error(), "grammar <arg> has no rules")
+
+// ImplicitTokenDefinition: a parser rule uses a token no rule or `tokens {}` defines.
+val ImplicitTokenDefinition = Kind(125, Warning(), "implicit definition of token <arg> in parser")
+
+// ImplicitStringDefinition: a literal in a parser grammar that its lexer does not define.
+val ImplicitStringDefinition = Kind(126, Error(), "cannot create implicit token for string literal in non-combined grammar: <arg>")
+
+// LabelBlockNotASet: a label on a block that matches more than one token.
+val LabelBlockNotASet = Kind(130, Error(), "label <arg> assigned to a block which is not a set")
+
+// UnterminatedStringLiteral: a quoted literal with no closing quote.
+val UnterminatedStringLiteral = Kind(152, Error(), "unterminated string literal")
+
+// InvalidEscapeSequence: a literal or set with an escape galop cannot decode.
+val InvalidEscapeSequence = Kind(156, Error(), "invalid escape sequence <arg>")
+
+// ParserRuleRefInLexerRule: a lexer rule that references a parser rule.
+val ParserRuleRefInLexerRule = Kind(160, Error(), "reference to parser rule <arg> in lexer rule <arg2>")
+
+// EmptyStringsAndSetsNotAllowed: `''` or `[]`.
+val EmptyStringsAndSetsNotAllowed = Kind(174, Error(), "string literals and sets cannot be empty: <arg>")
+
+// TokenRangeInParser: `'a'..'z'` in a parser rule.
+val TokenRangeInParser = Kind(181, Error(), "token ranges not allowed in parser: <arg>..<arg2>")
+
+// --- galop's own ---
+
+// Unsupported: a construct galop does not handle yet.
+val Unsupported = Kind(500, Error(), "galop does not support <arg> yet")
+
+// FragmentRefInParserRule: a parser rule that references a fragment rule.
+val FragmentRefInParserRule = Kind(501, Error(), "reference to fragment rule <arg> in parser rule <arg2>")
+
+// RoundTripFailed: -check -roundtrip found a grammar the formatter does not preserve.
+val RoundTripFailed = Kind(502, Error(), "grammar does not round-trip through the formatter: <arg>")
+
+// NotAllowedHere: an element that cannot appear in this kind of rule.
+val NotAllowedHere = Kind(503, Error(), "<arg> is not allowed in a <arg2> rule")
+
+// EmptySet: a set that matches no symbol at all.
+val EmptySet = Kind(504, Error(), "set matches nothing: <arg>")
+
+// CodeGenerationFailed: the target rejected the grammar.
+val CodeGenerationFailed = Kind(505, Error(), "<arg> code generation failed: <arg2>")
+
+// BadCommandLine: a command line galop cannot act on.
+val BadCommandLine = Kind(506, Error(), "<arg>")
+
+// ReversedRange: a lexer set range whose end comes before its start.
+val ReversedRange = Kind(507, Error(), "reversed range <arg> in set [<arg2>]")

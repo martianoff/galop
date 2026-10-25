@@ -1,0 +1,43 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "atn",
+    srcs = [
+        "atn.gala",
+        "build.gala",
+        "escape.gala",
+        "intervals.gala",
+        "ir.gala",
+        "vocab.gala",
+    ],
+    importpath = "github.com/martianoff/galop/atn",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//diag",
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//go_interop",
+    ],
+)
+
+gala_test(
+    name = "atn_test",
+    srcs = ["atn_test.gala"],
+    importpath = "github.com/martianoff/galop/atn",
+    lib_srcs = [
+        "atn.gala",
+        "build.gala",
+        "escape.gala",
+        "intervals.gala",
+        "ir.gala",
+        "vocab.gala",
+    ],
+    pkg = "atn",
+    deps = [
+        "//diag",
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//go_builtins",
+        "@gala//go_interop",
+    ],
+)

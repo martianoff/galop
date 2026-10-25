@@ -3,9 +3,11 @@ load("@rules_gala//gala:defs.bzl", "gala_binary")
 gala_binary(
     name = "galop",
     srcs = ["main.gala"],
+    visibility = ["//visibility:public"],
     deps = [
-        "//g4",
+        "//codegen",
+        "//golang",
+        "//tool",
         "@gala//collection_immutable",
-        "@gala//fs",
     ],
 )

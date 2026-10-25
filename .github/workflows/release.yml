@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  GALA_VERSION: "0.92.1"
+  GALA_VERSION: "0.93.1"
 
 jobs:
   build:
@@ -19,14 +19,22 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            goflags: -p=2
             gala: gala-linux-amd64
             target: galop-linux-amd64
           - os: macos-latest
+            goflags: -p=1
             gala: gala-darwin-arm64
             target: galop-darwin-arm64
           - os: windows-latest
+            goflags: -p=2
             gala: gala-windows-amd64.exe
             target: galop-windows-amd64.exe
+    timeout-minutes: 60
+    # Same memory limits as CI; see the comment in ci.yml.
+    env:
+      GOFLAGS: ${{ matrix.goflags }}
+      GOGC: "25"
     defaults:
       run:
         shell: bash

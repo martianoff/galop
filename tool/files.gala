@@ -1,0 +1,72 @@
+package tool
+
+import (
+    "path/filepath"
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/fs"
+)
+
+// PathKind is what is at a path.
+sealed type PathKind {
+    case Missing()
+    case RegularFile()
+    case Directory()
+}
+
+// Files is the file system as the pipeline sees it, so tests can run it in memory.
+type Files interface {
+    // Read returns a file's contents.
+    Read(path string) Try[string]
+    // Write replaces a file's contents, creating its directory if needed.
+    Write(path string, content string) Try[Void]
+    // Kind says what is at path.
+    Kind(path string) PathKind
+}
+
+// OSFiles is the real file system.
+func OSFiles() Files = Files(
+    Read = (path) => fs.ReadFileString(path),
+    Write = (path, content) =>
+        fs.MkdirAll(filepath.Dir(path), 0o755).FlatMap((_) => fs.WriteFileString(path, content, 0o644)),
+    Kind = (path) => fs.Stat(path) match {
+        case Success(info) => if (info.IsDir) Directory() else RegularFile()
+        case Failure(_) => Missing()
+    },
+)
+
+// OutputDir is the directory a grammar's generated files go to, as ANTLR
+// decides it. Without -o, files go next to the grammar. With -o, they go to
+// the -o directory plus the grammar's own relative directory
+// (`-o out sub/T.g4` writes to out/sub), unless the grammar's directory is
+// absolute or -Xexact-output-dir is given, when they go straight to -o.
+func OutputDir(cfg Config, grammarPath string) string {
+    val grammarDir = dirOf(grammarPath)
+    cfg.OutputDir match {
+        case None() => grammarDir
+        case Some(out) if cfg.ExactOutputDir || isAbsolute(grammarDir) || grammarDir == "." => out
+        case Some(out) => filepath.Join(out, grammarDir)
+    }
+}
+
+// OutputPath is where generated file name (relative to the output directory) is written.
+func OutputPath(cfg Config, grammarPath string, name string) string {
+    val dir = OutputDir(cfg, grammarPath)
+    if (dir == ".") filepath.Clean(name) else filepath.Join(dir, name)
+}
+
+// dirOf is the directory part of path, or "." when there is none.
+func dirOf(path string) string = filepath.Dir(path)
+
+// isAbsolute reports whether dir is rooted, counting ANTLR's `~` special case.
+func isAbsolute(dir string) bool = filepath.IsAbs(dir) || strings.HasPrefix(dir, "~")
+
+// baseName is a file's name without its directory and extension: `T` for `sub/T.g4`.
+func baseName(path string) string {
+    val file = filepath.Base(path)
+    strings.TrimSuffix(file, filepath.Ext(file))
+}
+
+// fileName is the last element of path: `T.g4` for `sub/T.g4`.
+func fileName(path string) string = filepath.Base(path)

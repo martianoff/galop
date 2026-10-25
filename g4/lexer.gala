@@ -6,6 +6,8 @@ import (
     . "martianoff/gala/collection_immutable"
     . "martianoff/gala/go_interop"
     "martianoff/gala/stream"
+
+    "github.com/martianoff/galop/diag"
 )
 
 // TokKind classifies a token of the .g4 language itself.
@@ -54,12 +56,12 @@ type lexer struct {
     // inDecls is set inside an options/tokens/channels block, where `}` is punctuation.
     var inDecls bool
     var toks Array[Token]
-    var err Option[Diagnostic]
+    var err Option[diag.Diagnostic]
 }
 
 // Lex splits a .g4 source into tokens. Comments and whitespace are dropped.
 // The stream always ends with a TokEOF token.
-func Lex(src string) Either[Diagnostic, Array[Token]] {
+func Lex(src string) Either[diag.Diagnostic, Array[Token]] {
     val l = &lexer{
         data: ToBytes(src),
         pos: 0,
@@ -67,7 +69,7 @@ func Lex(src string) Either[Diagnostic, Array[Token]] {
         col: 1,
         inDecls: false,
         toks: EmptyArray[Token](),
-        err: None[Diagnostic](),
+        err: None[diag.Diagnostic](),
     }
     l.skipTrivia()
     for l.err.IsEmpty() && l.pos < l.data.Size() {
@@ -80,9 +82,9 @@ func Lex(src string) Either[Diagnostic, Array[Token]] {
     }
 }
 
-func (l Ptr[lexer]) fail(line int, col int, msg string) {
+func (l Ptr[lexer]) fail(line int, col int, d diag.Diagnostic) {
     if l.err.IsEmpty() {
-        l.err = Some(Diagnostic(line, col, msg))
+        l.err = Some(d.At(line, col))
     }
 }
 
@@ -139,7 +141,7 @@ func (l Ptr[lexer]) blockComment() {
         l.advance()
     }
     if l.atEnd() {
-        l.fail(line, col, "unterminated comment")
+        l.fail(line, col, diag.SyntaxError.New("unterminated comment"))
     } else {
         l.advance()
         l.advance()
@@ -186,7 +188,7 @@ func (l Ptr[lexer]) punct(line int, col int) {
             l.emit(TokPunct(), p, line, col)
             stream.Range(0, p.ByteSize()).ForEach((_) => l.advance())
         }
-        case None() => l.fail(line, col, s"unexpected character '${l.text(l.pos, l.pos + 1)}'")
+        case None() => l.fail(line, col, diag.SyntaxError.New(s"unexpected character '${l.text(l.pos, l.pos + 1)}'"))
     }
 }
 
@@ -217,7 +219,7 @@ func (l Ptr[lexer]) quoted(line int, col int) {
     l.advance()
     l.scanDelimited('\'', true) match {
         case Some(body) => l.emit(TokString(), body, line, col)
-        case None() => l.fail(line, col, "unterminated string literal")
+        case None() => l.fail(line, col, diag.UnterminatedStringLiteral.New())
     }
 }
 
@@ -226,7 +228,7 @@ func (l Ptr[lexer]) charSet(line int, col int) {
     l.advance()
     l.scanDelimited(']', false) match {
         case Some(body) => l.emit(TokSet(), body, line, col)
-        case None() => l.fail(line, col, "unterminated character set")
+        case None() => l.fail(line, col, diag.SyntaxError.New("unterminated character set"))
     }
 }
 
@@ -261,7 +263,7 @@ func (l Ptr[lexer]) action(line int, col int) {
         }
     }
     if depth > 0 {
-        l.fail(line, col, "unterminated action")
+        l.fail(line, col, diag.SyntaxError.New("unterminated action"))
         return
     }
     val body = l.text(start, l.pos)

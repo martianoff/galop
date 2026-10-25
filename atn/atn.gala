@@ -1,0 +1,162 @@
+package atn
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/g4"
+)
+
+// The ATN (augmented transition network) is the grammar as a graph: one
+// sub-network per rule, joined by rule-call transitions. galop builds it the
+// way ANTLR does, so that decisions, their alternative numbers and the
+// "first viable alternative" resolution order are the same as ANTLR's.
+
+// ATNKind says whether an ATN recognizes tokens (parser) or characters (lexer).
+sealed type ATNKind {
+    case ParserATN()
+    case LexerATN()
+}
+
+// StateKind is the role of a state in the network.
+sealed type StateKind {
+    case BasicState()
+    // RuleStartState and RuleStopState bracket a rule's sub-network.
+    case RuleStartState()
+    case RuleStopState()
+    // BlockStartState starts a block of alternatives (a decision when it has more than one).
+    case BlockStartState()
+    case BlockEndState()
+    // StarLoopEntryState decides between entering a `*` loop and leaving it.
+    case StarLoopEntryState()
+    case StarLoopBackState()
+    // PlusLoopBackState decides between another `+` iteration and leaving the loop.
+    case PlusLoopBackState()
+    case LoopEndState()
+    // TokensStartState is a lexer's start state; it has one alternative per token rule.
+    case TokensStartState()
+}
+
+// Transition is an edge from one state to Target.
+sealed type Transition {
+    // Epsilon consumes nothing.
+    case Epsilon(Target int)
+    // RuleCall enters rule Rule at its start state Target; matching resumes at Follow after the rule.
+    case RuleCall(Target int, Rule int, Follow int)
+    // Atom matches one symbol: a token type in a parser, a code point in a lexer.
+    case Atom(Target int, Label int)
+    // SetMatch matches any symbol in Set. Negated sets and wildcards are stored already
+    // complemented over the vocabulary (1..MaxType in a parser, 0..MaxCodePoint in a lexer).
+    case SetMatch(Target int, Set IntervalSet)
+    // LexerActions consumes nothing and attaches the alternative's lexer commands.
+    case LexerActions(Target int, Commands Array[g4.LexerCommand])
+    // Predicate consumes nothing; generated code evaluates Body to allow the path.
+    case Predicate(Target int, Rule int, Body string)
+    // Action consumes nothing; generated code runs Body when the path is taken.
+    case Action(Target int, Rule int, Body string)
+}
+
+// Target is the state the transition leads to.
+func (t Transition) Target() int = t match {
+    case Epsilon(target) => target
+    case RuleCall(target, _, _) => target
+    case Atom(target, _) => target
+    case SetMatch(target, _) => target
+    case LexerActions(target, _) => target
+    case Predicate(target, _, _) => target
+    case Action(target, _, _) => target
+}
+
+// IsEpsilon reports whether the transition consumes no symbol. A rule call
+// counts as epsilon: it moves into another rule without consuming.
+func (t Transition) IsEpsilon() bool = t match {
+    case Atom(_, _) => false
+    case SetMatch(_, _) => false
+    case _ => true
+}
+
+// Symbols is the set of symbols a consuming transition accepts (empty for epsilon).
+func (t Transition) Symbols() IntervalSet = t match {
+    case Atom(_, label) => SetOf(label)
+    case SetMatch(_, set) => set
+    case _ => EmptySet()
+}
+
+// State is a node of the network. Out is ordered: for a decision state the
+// i-th transition leads into alternative i+1.
+struct State(
+    Id int,
+    Rule int,
+    Kind StateKind,
+    Out Array[Transition],
+    Decision Option[int],
+)
+
+// IsRuleStop reports whether s is the end of its rule.
+func (s State) IsRuleStop() bool = s.Kind match {
+    case RuleStopState() => true
+    case _ => false
+}
+
+// EpsilonOnly reports whether every transition out of s consumes nothing (and
+// there is at least one): ANTLR leaves such states out of configuration sets.
+func (s State) EpsilonOnly() bool = s.Out.NonEmpty() && s.Out.ForAll(_.IsEpsilon())
+
+// DecisionKind is the construct a decision comes from.
+sealed type DecisionKind {
+    // AltBlock picks one alternative of a rule body or a `( a | b )` block.
+    case AltBlock()
+    // OptionalBlock is `x?` or `(a | b)?`: the alternatives plus an exit alternative.
+    case OptionalBlock()
+    // StarEntry is a `*` loop's enter-or-exit choice.
+    case StarEntry()
+    // PlusBack is a `+` loop's repeat-or-exit choice, made after each iteration.
+    case PlusBack()
+}
+
+// Decision is a state with more than one way forward. Alternatives are
+// numbered from 1 in the order of the state's transitions; when lookahead
+// cannot tell them apart, the lowest number wins, as in ANTLR. A non-greedy
+// quantifier puts its exit alternative first.
+struct Decision(
+    Id int,
+    State int,
+    Rule int,
+    Kind DecisionKind,
+    Greedy bool,
+    AltCount int,
+    // Text is the decision's source, formatted: `x?`, `(a | b)*`, or `rule : alts` for a rule body.
+    Text string,
+)
+
+// ATN is a whole grammar network.
+struct ATN(
+    Kind ATNKind,
+    GrammarName string,
+    States Array[State],
+    RuleNames Array[string],
+    RuleStart Array[int],
+    RuleStop Array[int],
+    Decisions Array[Decision],
+    Vocab Vocabulary,
+    // Lexer only: the start state, and the token type of each rule (None for fragments).
+    TokensStart Option[int],
+    RuleTokenType Array[Option[int]],
+)
+
+// State returns state id.
+func (a ATN) State(id int) State = a.States.Get(id)
+
+// RuleIndex is the index of the rule called name.
+func (a ATN) RuleIndex(name string) Option[int] {
+    val index = a.RuleNames.IndexOf(name)
+    When(index >= 0, index)
+}
+
+// CallSite is a rule-call transition from state From whose return state is Follow.
+struct CallSite(From int, Follow int)
+
+// Callers lists every call of rule.
+func (a ATN) Callers(rule int) Array[CallSite] =
+    a.States.FlatMap((s) => s.Out.Collect({
+        case RuleCall(_, r, follow) if r == rule => CallSite(s.Id, follow)
+    }))
