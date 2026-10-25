@@ -17,7 +17,7 @@ concurrency:
 # galop is built with a pinned GALA release. Bump GALA_VERSION together with
 # `gala` in gala.mod and the `gala` bazel_dep in MODULE.bazel.
 env:
-  GALA_VERSION: "0.93.0"
+  GALA_VERSION: "0.93.1"
 
 jobs:
   cli:
@@ -85,7 +85,9 @@ jobs:
           repository-cache: true
 
       - name: Build and test
-        run: bazel test //...
+        # The generated parsers make a few Go compiles very large; running four of
+        # them at once ran the 16 GB runner out of memory.
+        run: bazel test //... --jobs=2
 
       # BUILD files are generated; a stale one means someone added or removed a
       # .gala file without running gazelle.

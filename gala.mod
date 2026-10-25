@@ -1,3 +1,3 @@
 module github.com/martianoff/galop
 
-gala 0.93.0
+gala 0.93.1
