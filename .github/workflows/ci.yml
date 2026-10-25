@@ -28,11 +28,15 @@ env:
 # differential, the grammar corpus check) and `gala test` on Linux. The full CLI
 # lanes on macOS and Windows run on pushes to main and on demand, until #872
 # makes cold compiles cheap enough for pull requests.
+#
+# Pull requests can only read caches saved on main, so pushes to main get
+# longer limits: they run cold when the cache is stale and fill it for the
+# pull requests after them. Pull requests stay within 10 minutes.
 jobs:
   bazel:
     name: bazel test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 30 }}
     steps:
       - uses: actions/checkout@v5
 
@@ -59,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":45,"tests":40},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":30,"tests":25}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":30,"tests":25},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":45,"tests":40},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":30,"tests":25}]') }}
     defaults:
       run:
         shell: bash
