@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  GALA_VERSION: "0.92.1"
+  GALA_VERSION: "0.93.0"
 
 jobs:
   build:

@@ -17,7 +17,7 @@ concurrency:
 # galop is built with a pinned GALA release. Bump GALA_VERSION together with
 # `gala` in gala.mod and the `gala` bazel_dep in MODULE.bazel.
 env:
-  GALA_VERSION: "0.92.1"
+  GALA_VERSION: "0.93.0"
 
 jobs:
   cli:
