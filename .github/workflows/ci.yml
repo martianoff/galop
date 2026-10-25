@@ -43,11 +43,23 @@ jobs:
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}
           repository-cache: true
 
+      # Bazel's disk cache. setup-bazel's own disk cache keeps the first copy of
+      # a key forever, so it went stale; this one gets a fresh key per run,
+      # restores the newest copy, and is saved even when the job fails or times
+      # out. Bazel trims it to 2 GB.
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ github.run_id }}
+          restore-keys: bazel-disk-
+
       - name: Build and test
-        run: bazel test //... --jobs=2
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 8 || 25 }}
+        run: |
+          echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
+          bazel test //... --jobs=2
 
       # BUILD files are generated; a stale one means someone added or removed a
       # .gala file without running gazelle.
@@ -55,6 +67,12 @@ jobs:
         run: |
           bazel run //:gazelle
           git diff --exit-code -- '*.bazel'
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ github.run_id }}
 
   cli:
     name: gala test (${{ matrix.os }})
