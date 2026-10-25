@@ -83,6 +83,13 @@ type PARSER struct {
 // NewPARSER reads the on-channel tokens of input for parsing.
 func NewPARSER(input antlr.TokenStream) *PARSER {
 	p := &PARSER{input: input}
+	if cts, ok := input.(*antlr.CommonTokenStream); ok {
+		// Buffer the whole input first: its size bounds the on-channel tokens,
+		// so the slices below are allocated once instead of grown.
+		cts.Fill()
+		p.toks = make([]antlr.Token, 0, cts.Size())
+		p.types = make([]int32, 0, cts.Size())
+	}
 	for {
 		t := input.LT(1)
 		p.toks = append(p.toks, t)

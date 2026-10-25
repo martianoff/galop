@@ -302,8 +302,9 @@ func (l *@T@) NextToken() antlr.Token {
 		start := at
 		channel := antlr.TokenDefaultChannel
 		ttype := antlr.LexerMore
+		var m @P@Result
 		for ttype == antlr.LexerMore {
-			m := @P@Match(data, at)
+			@P@Match(data, at, &m)
 			switch {
 			case m.accepted:
 				at = m.end
@@ -402,11 +403,13 @@ func @P@Class(c rune) int {
 	return int(@P@RangeClass[lo])
 }
 
-// @P@Match runs the DFA from from: ANTLR's LexerATNSimulator.execATN.
-func @P@Match(data string, from @P@Pos) @P@Result {
-	var r @P@Result
+// @P@Match runs the DFA from from and stores the outcome in r: ANTLR's
+// LexerATNSimulator.execATN. The scan keeps the longest match in locals and
+// writes r once: the result is too big to return by value on every token.
+func @P@Match(data string, from @P@Pos, r *@P@Result) {
+	accepted, ttype, channel, end := false, int32(0), int32(0), from
 	if t := @P@AccType[0]; t != 0 {
-		r = @P@Result{accepted: true, ttype: int32(t), channel: int32(@P@AccChannel[0]), end: from}
+		accepted, ttype, channel = true, int32(t), int32(@P@AccChannel[0])
 	}
 	s := 0
 	index, off, line, colBase := from.index, from.off, from.line, from.colBase
@@ -422,7 +425,8 @@ func @P@Match(data string, from @P@Pos) @P@Result {
 		next := int(@P@Edges[s*@P@NumClasses+class])
 		if next < 0 {
 			if next == @P@Dynamic {
-				return @P@MatchATN(data, from)
+				*r = @P@MatchATN(data, from)
+				return
 			}
 			break
 		}
@@ -434,14 +438,11 @@ func @P@Match(data string, from @P@Pos) @P@Result {
 		off += size
 		s = next
 		if t := @P@AccType[s]; t != 0 {
-			r.accepted = true
-			r.ttype = int32(t)
-			r.channel = int32(@P@AccChannel[s])
-			r.end = @P@Pos{index, off, line, colBase}
+			accepted, ttype, channel = true, int32(t), int32(@P@AccChannel[s])
+			end = @P@Pos{index, off, line, colBase}
 		}
 	}
-	r.stop = @P@Pos{index, off, line, colBase}
-	return r
+	*r = @P@Result{accepted: accepted, ttype: ttype, channel: channel, end: end, stop: @P@Pos{index, off, line, colBase}}
 }
 `
 
