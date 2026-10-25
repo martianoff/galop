@@ -14,25 +14,21 @@ func DecodeLiteral(body string) Either[diag.Diagnostic, Array[int]] {
     val rs = ToRunes(body)
     var i = 0
     var out = EmptyArray[int]()
-    var err = None[diag.Diagnostic]()
-    for err.IsEmpty() && i < rs.Size() {
+    for i < rs.Size() {
         if rs[i] == '\\' {
             decodeEscape(rs, i, false) match {
                 case Right(step) => {
                     out = out.Append(step.V1)
                     i = step.V2
                 }
-                case Left(d) => err = Some(d)
+                case Left(d) => { return Left(d) }
             }
         } else {
             out = out.Append(int(rs[i]))
             i = i + 1
         }
     }
-    err match {
-        case Some(d) => Left(d)
-        case None() => Right(out)
-    }
+    Right(out)
 }
 
 // DecodeCharSet turns the body of a lexer set `[...]` into the set it
@@ -41,21 +37,20 @@ func DecodeCharSet(body string) Either[diag.Diagnostic, IntervalSet] {
     val rs = ToRunes(body)
     var i = 0
     var acc = EmptyArray[Interval]()
-    var err = None[diag.Diagnostic]()
     // next reads one possibly escaped character at i.
     val next = (at int) => if (rs[at] == '\\') decodeEscape(rs, at, true) else Right[diag.Diagnostic, Tuple[int, int]](Tuple(int(rs[at]), at + 1))
-    for err.IsEmpty() && i < rs.Size() {
+    for i < rs.Size() {
         next(i) match {
-            case Left(d) => err = Some(d)
+            case Left(d) => { return Left(d) }
             case Right(first) => {
                 val isRange = first.V2 + 1 < rs.Size() && rs[first.V2] == '-'
                 if isRange {
                     next(first.V2 + 1) match {
-                        case Left(d) => err = Some(d)
+                        case Left(d) => { return Left(d) }
                         case Right(last) => {
                             if last.V1 < first.V1 {
                                 val reversed = string(rune(first.V1)) + "-" + string(rune(last.V1))
-                                err = Some(diag.ReversedRange.New(reversed, body))
+                                return Left(diag.ReversedRange.New(reversed, body))
                             }
                             acc = acc.Append(Interval(first.V1, last.V1))
                             i = last.V2
@@ -68,10 +63,7 @@ func DecodeCharSet(body string) Either[diag.Diagnostic, IntervalSet] {
             }
         }
     }
-    err match {
-        case Some(d) => Left(d)
-        case None() => Right(normalize(acc))
-    }
+    Right(normalize(acc))
 }
 
 // decodeEscape decodes the escape starting with the backslash at rs[at] and

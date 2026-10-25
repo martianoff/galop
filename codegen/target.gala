@@ -17,7 +17,7 @@ import (
 struct Input(
     Grammar g4.Grammar,
     Compiled atn.Compiled,
-    // Plans is empty for a lexer grammar.
+    // Analysis is None for a grammar without parser rules.
     Analysis Option[analysis.Analysis],
 )
 

@@ -114,7 +114,7 @@ func newModel(a atn.ATN, start int, channels Array[string]) Either[Array[string]
     val actionKeys = actions.Map(_.Key())
     val actionIds = (cmds Array[g4.LexerCommand]) Array[int] =>
         cmds.Map(resolve).Collect({ case Right(act) => actionKeys.IndexOf(act.Key()) })
-    val nonGreedy = a.Decisions.Filter((d) => !d.Greedy).Map(_.State)
+    val nonGreedy = a.Decisions.Collect({ case d if !d.Greedy => d.State })
     Right(Model(
         ATN = a,
         StartTargets = a.State(start).Out.Collect({ case atn.Epsilon(target) => target }),
@@ -123,7 +123,7 @@ func newModel(a atn.ATN, start int, channels Array[string]) Either[Array[string]
             case atn.RuleStopState() => true
             case _ => false
         }),
-        NonGreedy = ArrayTabulate(a.States.Size(), (i) => nonGreedy.Contains(i)),
+        NonGreedy = nonGreedy.FoldLeft(ArrayFill(a.States.Size(), false), (acc, s) => acc.Updated(s, true)),
         EpsilonOnly = a.States.Map((st) => st.Out.NonEmpty() && st.Out.ForAll(_.IsEpsilon())),
         Classes = classes,
         Actions = actions,
@@ -194,7 +194,7 @@ func Partition(sets Array[atn.IntervalSet]) Array[atn.IntervalSet] {
     val grouped = pieces.FoldLeft(
         Tuple(EmptyHashMap[string, int](), EmptyArray[Array[atn.Interval]]()),
         (acc, piece) => {
-            val sig = distinct.ZipWithIndex().Filter((si) => si.V1.Contains(piece.Lo)).Map((si) => s"${si.V2}").MkString(",")
+            val sig = distinct.ZipWithIndex().Collect({ case (set, i) if set.Contains(piece.Lo) => s"$i" }).MkString(",")
             acc.V1.Get(sig) match {
                 case Some(id) => Tuple(acc.V1, acc.V2.Updated(id, acc.V2.Get(id).Append(piece)))
                 case None() => Tuple(acc.V1.Put(sig, acc.V2.Size()), acc.V2.Append(ArrayOf(piece)))

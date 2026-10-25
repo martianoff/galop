@@ -269,29 +269,23 @@ func showAutomaton(a atn.ATN, states Array[DFAState]) string =
     }).MkString(" | ")
 
 // runAutomaton feeds token names to an automaton until it decides.
-func runAutomaton(a atn.ATN, states Array[DFAState], input Array[string]) string {
-    var state = 0
-    var rest = input
-    var verdict = ""
-    for verdict == "" {
-        val st = states.Get(state)
-        st.Final match {
-            case Some(FinalPredict(alt)) => verdict = s"predict $alt"
-            case Some(FinalFullLL(Some(alt))) => verdict = s"conflict $alt"
-            case Some(FinalFullLL(None())) => verdict = "bound"
-            case None() => rest.HeadOption().FlatMap((name) => a.Vocab.TypeOf(name)) match {
-                case Some(tok) => st.Edges.Find(_.Tokens.Contains(tok)) match {
-                    case Some(e) => {
-                        state = e.Target
-                        rest = rest.Drop(1)
-                    }
-                    case None() => verdict = "syntax error"
-                }
-                case None() => verdict = "out of input"
+func runAutomaton(a atn.ATN, states Array[DFAState], input Array[string]) string = runFrom(a, states, 0, input)
+
+// runFrom runs the automaton from state on the remaining input.
+func runFrom(a atn.ATN, states Array[DFAState], state int, rest Array[string]) string {
+    val st = states.Get(state)
+    st.Final match {
+        case Some(FinalPredict(alt)) => s"predict $alt"
+        case Some(FinalFullLL(Some(alt))) => s"conflict $alt"
+        case Some(FinalFullLL(None())) => "bound"
+        case None() => rest.HeadOption().FlatMap((name) => a.Vocab.TypeOf(name)) match {
+            case Some(tok) => st.Edges.Find(_.Tokens.Contains(tok)) match {
+                case Some(e) => runFrom(a, states, e.Target, rest.Drop(1))
+                case None() => "syntax error"
             }
+            case None() => "out of input"
         }
     }
-    verdict
 }
 
 func TestAutomatonLoopsBack(t T) T {

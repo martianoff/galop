@@ -49,9 +49,13 @@ func Compile(g g4.Grammar) Either[Array[diag.Diagnostic], Compiled] {
 // literals (`T__0: '=';`). They come before the grammar's own lexer rules, so
 // they win a tie on match length.
 func implicitLexerRules(v Vocabulary) Array[g4.Rule] =
-    ArrayTabulate(v.Names.Size(), (t) => t).Filter((t) => v.Implicit.Get(t)).Map((t) =>
-        g4.Rule(v.Names.Get(t), false, ArrayOf(g4.Alt(ArrayOf(g4.Literal(v.Literals.Get(t).Get())), None[string](), EmptyArray[g4.LexerCommand]())))
-    )
+    v.Literals.ZipWithIndex().Collect({
+        case (Some(lit), t) if v.Implicit.Get(t) => g4.Rule(
+            v.Names.Get(t),
+            false,
+            ArrayOf(g4.Alt(ArrayOf(g4.Literal(lit)), None[string](), EmptyArray[g4.LexerCommand]())),
+        )
+    })
 
 // Frag is the entry and exit state of a compiled piece of grammar.
 struct Frag(Entry int, Exit int)
@@ -192,20 +196,17 @@ func (b Ptr[builder]) rule(index int, r g4.Rule) RuleIR {
 // alt compiles one alternative: its elements in sequence, then its lexer commands.
 func (b Ptr[builder]) alt(rule int, a g4.Alt) Piece {
     val entry = b.state(rule, BasicState())
-    var cur = entry
-    var steps = EmptyArray[Step]()
-    a.Elements.ForEach((e) => {
+    val (last, steps) = a.Elements.FoldLeft((entry, EmptyArray[Step]()), (acc, e) => {
         val p = b.element(rule, e, None[LabelRef]())
-        b.eps(cur, p.Frag.Entry)
-        cur = p.Frag.Exit
-        steps = steps.AppendAll(p.Steps)
+        b.eps(acc.V1, p.Frag.Entry)
+        (p.Frag.Exit, acc.V2.AppendAll(p.Steps))
     })
-    if a.Commands.NonEmpty() {
+    val exit = if (a.Commands.NonEmpty()) {
         val after = b.state(rule, BasicState())
-        b.edge(cur, LexerActions(after, a.Commands))
-        cur = after
-    }
-    Piece(Frag(entry, cur), steps)
+        b.edge(last, LexerActions(after, a.Commands))
+        after
+    } else last
+    Piece(Frag(entry, exit), steps)
 }
 
 // block compiles a group of alternatives; a single alternative is inlined.

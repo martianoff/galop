@@ -1,9 +1,8 @@
 package golang
 
 import (
-    "strings"
-
     . "martianoff/gala/collection_immutable"
+    "martianoff/gala/strings"
 )
 
 // Names of things in Go code, spelled the way ANTLR's Go target spells them,
@@ -34,11 +33,9 @@ val reservedWords = ArrayOf(
 // escape appends `_` to a reserved identifier, as ANTLR does.
 func escape(name string) string = if (reservedWords.Contains(name)) name + "_" else name
 
-// capitalize upper-cases the first letter.
-func capitalize(name string) string = if (name.ByteSize() == 0) name else {
-    val first = string(rune(name[0]))
-    strings.ToUpper(first) + strings.TrimPrefix(name, first)
-}
+// capitalize upper-cases the first character, as ANTLR's `format="cap"` does;
+// it may be any Unicode letter, not only ASCII.
+func capitalize(name string) string = strings.S(name).Capitalize().ToString()
 
 // Names derives the Go identifiers of one grammar.
 struct Names(Grammar string)

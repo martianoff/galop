@@ -48,7 +48,7 @@ func companion(in codegen.Input, opts codegen.Options, version string) Either[Ar
     val base = fileBase(in.Grammar)
     val parser = companionParserFile(in, opts, version, base + "_galop_parser.go")
     val lexer = in.Compiled.Lexer match {
-        case Some(_) => lexgen.GoLexerFile(in, opts, in.Grammar.Name + "GalopLexer").Map((f) => ArrayOf(f.Copy(Name = base + "_galop_lexer.go")))
+        case Some(_) => lexgen.GoLexerFile(in, opts, base + "_galop_lexer.go", in.Grammar.Name + "GalopLexer").Map((f) => ArrayOf(f))
         case None() => Right[Array[string], Array[codegen.OutputFile]](EmptyArray[codegen.OutputFile]())
     }
     parser match {

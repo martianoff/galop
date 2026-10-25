@@ -1,8 +1,6 @@
 package tool
 
 import (
-    "strings"
-
     . "martianoff/gala/collection_immutable"
 )
 
@@ -39,10 +37,7 @@ val galopOptions = ArrayOf(
 // Usage is the help text, laid out like ANTLR's: a header, then one
 // ` %-19s %s` line per option.
 func Usage(version string) string {
-    val line = (o OptionHelp) => {
-        val pad = if (o.Name.Size() < 19) strings.Repeat(" ", 19 - o.Name.Size()) else ""
-        return " " + o.Name + pad + " " + o.Description + "\n"
-    }
+    val line = (o OptionHelp) => f" ${o.Name}%-19s ${o.Description}\n"
     val header = s"galop $version, a parser generator for ANTLR 4 grammars\nusage: galop [options] grammar.g4...\n"
     header + antlrOptions.Map(line).MkString("") + "galop options:\n" + galopOptions.Map(line).MkString("")
 }

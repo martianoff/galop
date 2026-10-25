@@ -78,12 +78,27 @@ func TestStaticGrammarHasNoPredictor(t T) T {
     IsTrue(t1, strings.Contains(code, "func (p *ExprGalopParser) decide0() int"))
 }
 
-func TestAdaptiveGrammarEmitsPredictor(t T) T {
+func TestAutomatonSettlesLoopWithoutPredictor(t T) T {
+    // Telling a from b needs any number of X, but the SLL automaton loops over
+    // them and decides on the token after: no runtime predictor is needed.
     val code = parserOf(generate(`grammar A;
 s : a | b ;
 a : X* Y ;
 b : X* Z ;
 X : 'x' ; Y : 'y' ; Z : 'z' ;
+`, EmptyArray[g4.OptionEntry]()))
+    val t1 = IsFalse(t, strings.Contains(code, "adaptivePredict"))
+    IsTrue(t1, strings.Contains(code, "goto s0"))
+}
+
+func TestAdaptiveGrammarEmitsPredictor(t T) T {
+    // Nesting deepens the contexts without bound, so the automaton stops at its
+    // bound and the runtime predictor takes over from there.
+    val code = parserOf(generate(`grammar A;
+s : a | b ;
+a : '(' a ')' | X ;
+b : '(' b ')' | Y ;
+X : 'x' ; Y : 'y' ;
 `, EmptyArray[g4.OptionEntry]()))
     val t1 = IsTrue(t, strings.Contains(code, "p.adaptivePredict("))
     val t2 = IsTrue(t1, strings.Contains(code, "var AGalopTransStart = []int32{"))
@@ -102,5 +117,8 @@ func TestNames(t T) T {
     val t2 = Eq(t1, n.RuleMethod("sourceFile"), "SourceFile")
     val t3 = Eq(t2, n.Context("caseClause"), "CaseClauseContext")
     val t4 = Eq(t3, n.TokenConst("T__4"), "galaParserT__4")
-    Eq(t4, n.RuleConst("type"), "galaParserRULE_type")
+    val t5 = Eq(t4, n.RuleConst("type"), "galaParserRULE_type")
+    // ANTLR allows Unicode rule names; the first character is upper-cased as a whole.
+    val t6 = Eq(t5, n.Context("éclair"), "ÉclairContext")
+    Eq(t6, n.RuleMethod("ärger"), "Ärger")
 }

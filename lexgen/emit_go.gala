@@ -16,20 +16,16 @@ import (
 // DepthOption is the `-D` option that sets the static DFA's rule-call depth.
 val DepthOption = "lexerDepth"
 
-// GoLexerFileName is the companion lexer's file name for grammar name: ANTLR's
-// Go file naming (lowercased grammar name) with a `_galop_lexer.go` suffix.
-func GoLexerFileName(grammar string) string = strings.ToLower(grammar) + "_galop_lexer.go"
-
-// GoLexerFile generates the companion Go lexer of in's grammar, as type
-// typeName in package opts.Package (ANTLR's default, `parser`, when empty).
+// GoLexerFile generates the companion Go lexer of in's grammar as file name,
+// declaring type typeName in package opts.Package (ANTLR's default, `parser`, when empty).
 // The DFA keeps rule-call stacks up to the `lexerDepth` define (default 12).
-func GoLexerFile(in codegen.Input, opts codegen.Options, typeName string) Either[Array[string], codegen.OutputFile] {
+func GoLexerFile(in codegen.Input, opts codegen.Options, name string, typeName string) Either[Array[string], codegen.OutputFile] {
     val depth = opts.Define(DepthOption).FlatMap((v) => intArg(v)).GetOrElse(Options().MaxDepth)
     val pkg = if (opts.Package == "") "parser" else opts.Package
     in.Compiled.Lexer match {
         case Some(lexer) => NewModel(lexer, in.Grammar.Channels)
             .FlatMap((m) => Build(m, Options(MaxDepth = depth)))
-            .Map((d) => codegen.OutputFile(GoLexerFileName(in.Grammar.Name), EmitGo(d, pkg, in.Grammar.Name, typeName)))
+            .Map((d) => codegen.OutputFile(name, EmitGo(d, pkg, in.Grammar.Name, typeName)))
         case None() => Left(ArrayOf(s"grammar ${in.Grammar.Name} has no lexer rules"))
     }
 }
@@ -93,12 +89,12 @@ func fill(template string, prefix string, typeName string) string =
 // atnTables renders the lexer ATN for the runtime simulator.
 func atnTables(m Model, prefix string) string {
     val sets = m.Out.FlatMap((out) => out.Collect({ case Consume(_, _, in) => bitString(in) })).Distinct()
-    val actLists = m.Out.FlatMap((out) => out.Collect({ case Act(_, acts) => acts.Map((a) => s"$a").MkString(",") })).Distinct()
+    val actLists = m.Out.FlatMap((out) => out.Collect({ case Act(_, acts) => acts.MkString(",") })).Distinct()
     val trans = m.Out.Map((out) => out.Map((e) => e match {
         case Eps(target) => s"{0, $target, 0}"
         case Call(target, follow) => s"{1, $target, $follow}"
         case Consume(target, _, in) => s"{2, $target, ${sets.IndexOf(bitString(in))}}"
-        case Act(target, acts) => s"{3, $target, ${actLists.IndexOf(acts.Map((a) => s"$a").MkString(","))}}"
+        case Act(target, acts) => s"{3, $target, ${actLists.IndexOf(acts.MkString(","))}}"
     }))
     val starts = trans.FoldLeft(ArrayOf(0), (acc, out) => acc.Append(acc.Last() + out.Size()))
     val flags = ArrayTabulate(m.Out.Size(), (s) =>
@@ -142,7 +138,7 @@ func bitString(in Array[bool]) string = in.Map((b) => if (b) "1" else "0").MkStr
 func goTable(name string, goType string, values Array[int], doc string) string = values match {
     case Array() => s"// $name $doc\nvar $name = []$goType{}\n"
     case _ => s"// $name $doc\nvar $name = []$goType{\n" +
-        values.Grouped(16).Map((row) => "\t" + row.Map((v) => s"$v").MkString(", ") + ",").MkString("\n") + "\n}\n"
+        values.Grouped(16).Map((row) => "\t" + row.MkString(", ") + ",").MkString("\n") + "\n}\n"
 }
 
 // goStrings renders values as a Go []string variable.

@@ -32,14 +32,14 @@ func (v Vocabulary) MaxType() int = v.Names.Size() - 1
 
 // TypeOf is the type of a token name; EOF is TokenEOF.
 func (v Vocabulary) TypeOf(name string) Option[int] =
-    if (name == "EOF") Some(TokenEOF)
-    else v.Names.Drop(1).Find(_ == name).Map((n) => v.Names.IndexOf(n))
+    if (name == "EOF") Some(TokenEOF) else tokenType(v.Names.IndexOf(name))
 
 // LiteralType is the type whose literal body is value.
-func (v Vocabulary) LiteralType(value string) Option[int] {
-    val index = v.Literals.IndexOf(Some(value))
-    if (index > 0) Some(index) else None[int]()
-}
+func (v Vocabulary) LiteralType(value string) Option[int] = tokenType(v.Literals.IndexOf(Some(value)))
+
+// tokenType is a token type found by IndexOf: -1 means absent, and type 0 is
+// <INVALID>, never a real token.
+func tokenType(index int) Option[int] = When(index > 0, index)
 
 // Name is the constant name of type t; EOF is "EOF".
 func (v Vocabulary) Name(t int) string =
@@ -55,14 +55,14 @@ func (v Vocabulary) Display(t int) string =
 func BuildVocabulary(g g4.Grammar) Vocabulary {
     val aliases = literalAliases(g)
     val implicitLits = g.Rules.Filter((r) => !r.IsLexer())
-        .FlatMap((r) => r.Alts.FlatMap((a) => a.Elements.FlatMap(Walk)))
+        .FlatMap(_.Nodes())
         .Collect({ case g4.Literal(v) => v })
         .Distinct()
         .Filter((v) => !aliases.Exists((al) => al.V1 == v))
     val implicitCount = implicitLits.Size()
     val lexerNames = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Map(_.Name)
     val declared = lexerNames.AppendAll(g.Tokens.Filter((t) => !lexerNames.Contains(t)))
-    val referenced = g.Rules.FlatMap((r) => r.Alts.FlatMap((a) => a.Elements.FlatMap(Walk)))
+    val referenced = g.Rules.FlatMap(_.Nodes())
         .Collect({ case g4.TokenRef(n) if n != "EOF" => n })
         .Distinct()
         .Filter((n) => !declared.Contains(n) && !g.Rules.Exists(_.Name == n))
@@ -93,12 +93,3 @@ func literalAliases(g g4.Grammar) Array[Tuple[string, string]] {
         if (acc.Exists(_.V1 == p.V1)) acc else acc.Append(p)
     )
 }
-
-// Walk lists e and every element nested in it, in source order (pre-order).
-func Walk(e g4.Element) Array[g4.Element] = ArrayOf(e).AppendAll(e match {
-    case g4.Not(inner) => Walk(inner)
-    case g4.Block(alts) => alts.FlatMap((a) => a.Elements.FlatMap(Walk))
-    case g4.Repeat(inner, _) => Walk(inner)
-    case g4.Labeled(_, _, inner) => Walk(inner)
-    case _ => EmptyArray[g4.Element]()
-})

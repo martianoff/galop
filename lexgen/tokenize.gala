@@ -27,7 +27,7 @@ struct Effect(Type Option[int], Channel Option[int])
 
 // EffectOf folds the actions with ids actions.
 func (m Model) EffectOf(actions Array[int]) Effect =
-    actions.FoldLeft(Effect(None[int](), None[int]()), (e, id) => m.Actions.Get(id) match {
+    actions.FoldLeft(Effect(None(), None()), (e, id) => m.Actions.Get(id) match {
         case SkipAction() => e.Copy(Type = Some(TypeSkip))
         case MoreAction() => e.Copy(Type = Some(TypeMore))
         case TypeAction(t) => e.Copy(Type = Some(t))

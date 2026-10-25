@@ -56,12 +56,12 @@ struct Kind(Code int, Severity Severity, Template string)
 // New makes a diagnostic of kind k with no position.
 // args: the values for `<arg>`, `<arg2>` and `<arg3>`, in order.
 func (k Kind) New(args ...string) Diagnostic {
-    val values = ArrayOf(args...)
-    val text = values.ZipWithIndex().FoldLeft(k.Template, (acc, pair) => {
+    // One pass, so an argument whose text contains `<arg2>` stays as written.
+    val pairs = ArrayOf(args...).ZipWithIndex().FlatMap((pair) => {
         val (value, i) = pair
-        val name = if (i == 0) "<arg>" else s"<arg${i + 1}>"
-        strings.ReplaceAll(acc, name, value)
+        ArrayOf(if (i == 0) "<arg>" else s"<arg${i + 1}>", value)
     })
+    val text = strings.NewReplacer(pairs.ToGoSlice()...).Replace(k.Template)
     Diagnostic(k.Code, k.Severity, "", 0, 0, text)
 }
 

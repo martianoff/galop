@@ -176,7 +176,7 @@ func (s Sim) row(configs Array[Config]) Array[rowTarget] {
     val numClasses = s.M.Classes.Size()
     val consumes = configs.FlatMap((cfg) => s.M.Out.Get(cfg.State).Collect({ case Consume(_, _, in) => in }))
     val signature = (cls int) string =>
-        consumes.ZipWithIndex().Filter((ci) => ci.V1.Get(cls)).Map((ci) => s"${ci.V2}").MkString(",")
+        consumes.ZipWithIndex().Collect({ case (in, i) if in.Get(cls) => s"$i" }).MkString(",")
     val sigs = ArrayTabulate(numClasses, signature)
     val reaches = sigs.Distinct().Filter(_ != "").FoldLeft(EmptyHashMap[string, rowTarget](), (acc, sig) => {
         val reach = s.Reach(configs, sigs.IndexOf(sig))

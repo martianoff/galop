@@ -46,8 +46,7 @@ func (s IntervalSet) Size() int = s.Ranges.FoldLeft(0, (n, r) => n + r.Hi - r.Lo
 func (s IntervalSet) Contains(v int) bool {
     var lo = 0
     var hi = s.Ranges.Size() - 1
-    var found = false
-    for !found && lo <= hi {
+    for lo <= hi {
         val mid = (lo + hi) / 2
         val r = s.Ranges.Get(mid)
         if v < r.Lo {
@@ -55,10 +54,10 @@ func (s IntervalSet) Contains(v int) bool {
         } else if v > r.Hi {
             lo = mid + 1
         } else {
-            found = true
+            return true
         }
     }
-    found
+    false
 }
 
 // Union is the set of values in s or o.

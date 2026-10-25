@@ -191,6 +191,5 @@ ID : [a-z]+ ;
 `
     val src = EmitGo(dfaOf(g), "k", "K", "kLexer")
     val t1 = IsTrue(t, strings.Contains(src, "galop: dynamic DFA edge without an ATN"))
-    val t2 = IsFalse(t1, strings.Contains(src, "Reach("))
-    Eq(t2, GoLexerFileName("MyGrammar"), "mygrammar_galop_lexer.go")
+    IsFalse(t1, strings.Contains(src, "Reach("))
 }

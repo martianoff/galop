@@ -23,19 +23,10 @@ func Report(a atn.ATN, an Analysis) string {
     val llk = ArrayTabulate(deepest - 1, (i) => i + 2).Map((k) => s"${depths.Count(_ == k)} LL($k)")
     val summary = s"${plans.Size()} decisions: " +
         ArrayOf(ll1).AppendAll(llk).Append(s"${depths.Count(_ == 0)} adaptive").MkString(", ")
-    val deep = plans.Filter((p) => p.Class match {
-        case LLk(_) => true
-        case _ => false
-    })
+    val deep = plans.Map((p) => (p, p.Class)).Collect({ case (p, LLk(k)) => s"  LL($k) ${heading(a, p.Decision)}" })
     val deepSection = deep match {
         case Array() => EmptyArray[string]()
-        case _ => ArrayOf("", "Decisions that need more than one token:").AppendAll(deep.Map((p) => {
-            val k = p.Class match {
-                case LLk(n) => n
-                case _ => 1
-            }
-            s"  LL($k) ${heading(a, p.Decision)}"
-        }))
+        case _ => ArrayOf("", "Decisions that need more than one token:").AppendAll(deep)
     }
     val adaptive = plans.Filter((p) => p.Class match {
         case NeedsAdaptive() => true

@@ -273,46 +273,46 @@ func (d decider) expand(c0 config, consumed int) expansion {
     for work.NonEmpty() {
         val c = work.Head()
         work = work.Tail()
-        val st = if (c.State == endOfInput) None[atn.State]() else Some(d.g.a.State(c.State))
-        val sharedEnd = c != c0 && st.Map(isRuleStop).GetOrElse(false) && !d.expanding.Contains(c.key())
         if c.State == endOfInput {
             emit(move(eofSet, c.group(), c))
-        } else if sharedEnd {
-            val e = d.expand(c, consumed)
-            predicated = predicated || e.Predicated
-            overflow = overflow || e.Overflow
-            e.Moves.ForEach(emit)
         } else {
-            val s = st.Get()
-            if isRuleStop(s) {
-                if c.Stack != emptyStack {
-                    d.stacks.entries.Get(c.Stack).ForEach((e) => visit(config(e.V1, e.V2, c.Exit, c.Alt)))
-                } else {
-                    val exit = if (d.trackExit) exitAfter(c.Exit, consumed) else inside
-                    d.g.callerFollows.Get(s.Rule).ForEach((ret) => visit(config(ret, emptyStack, exit, c.Alt)))
-                    if d.g.startRule.Get(s.Rule) {
-                        visit(config(endOfInput, emptyStack, exit, c.Alt))
-                    }
-                }
-            }
-            s.Out.ForEach((t) => t match {
-                case atn.Epsilon(target) => visit(config(target, c.Stack, c.Exit, c.Alt))
-                case atn.RuleCall(target, _, follow) => {
-                    if d.stacks.depths.Get(c.Stack) >= maxStack {
-                        overflow = true
+            val s = d.g.a.State(c.State)
+            if c != c0 && isRuleStop(s) && !d.expanding.Contains(c.key()) {
+                val e = d.expand(c, consumed)
+                predicated = predicated || e.Predicated
+                overflow = overflow || e.Overflow
+                e.Moves.ForEach(emit)
+            } else {
+                if isRuleStop(s) {
+                    if c.Stack != emptyStack {
+                        d.stacks.entries.Get(c.Stack).ForEach((e) => visit(config(e.V1, e.V2, c.Exit, c.Alt)))
                     } else {
-                        visit(config(target, d.stacks.push(follow, c.Stack), c.Exit, c.Alt))
+                        val exit = if (d.trackExit) exitAfter(c.Exit, consumed) else inside
+                        d.g.callerFollows.Get(s.Rule).ForEach((ret) => visit(config(ret, emptyStack, exit, c.Alt)))
+                        if d.g.startRule.Get(s.Rule) {
+                            visit(config(endOfInput, emptyStack, exit, c.Alt))
+                        }
                     }
                 }
-                case atn.Atom(target, label) => emit(move(atn.SetOf(label), c.group(), config(target, c.Stack, c.Exit, c.Alt)))
-                case atn.SetMatch(target, set) => emit(move(set, c.group(), config(target, c.Stack, c.Exit, c.Alt)))
-                case atn.LexerActions(target, _) => visit(config(target, c.Stack, c.Exit, c.Alt))
-                case atn.Predicate(target, _, _) => {
-                    predicated = true
-                    visit(config(target, c.Stack, c.Exit, c.Alt))
-                }
-                case atn.Action(target, _, _) => visit(config(target, c.Stack, c.Exit, c.Alt))
-            })
+                s.Out.ForEach((t) => t match {
+                    case atn.Epsilon(target) => visit(config(target, c.Stack, c.Exit, c.Alt))
+                    case atn.RuleCall(target, _, follow) => {
+                        if d.stacks.depths.Get(c.Stack) >= maxStack {
+                            overflow = true
+                        } else {
+                            visit(config(target, d.stacks.push(follow, c.Stack), c.Exit, c.Alt))
+                        }
+                    }
+                    case atn.Atom(target, label) => emit(move(atn.SetOf(label), c.group(), config(target, c.Stack, c.Exit, c.Alt)))
+                    case atn.SetMatch(target, set) => emit(move(set, c.group(), config(target, c.Stack, c.Exit, c.Alt)))
+                    case atn.LexerActions(target, _) => visit(config(target, c.Stack, c.Exit, c.Alt))
+                    case atn.Predicate(target, _, _) => {
+                        predicated = true
+                        visit(config(target, c.Stack, c.Exit, c.Alt))
+                    }
+                    case atn.Action(target, _, _) => visit(config(target, c.Stack, c.Exit, c.Alt))
+                })
+            }
         }
     }
     val all = ArrayFromSlice(moves.ToGoSlice())
@@ -331,9 +331,12 @@ func resolved(moves Array[move]) Option[int] {
             smallest.Put(mv.Group, mv.Next.Alt)
         }
     })
-    val mins = smallest.ValueArray()
-    if (mins.NonEmpty() && mins.ForAll(_ == mins.Head())) Some(mins.Head()) else None()
+    agreed(smallest.ValueArray())
 }
+
+// agreed is the alternative every group's smallest alternative is, if they
+// all agree.
+func agreed(mins Ptr[m.Array[int]]) Option[int] = mins.HeadOption().Filter((h) => mins.ForAll(_ == h))
 
 // altsOf lists the alternatives the moves belong to, in increasing order.
 func altsOf(moves Array[move]) Array[int] = unique(moves.Map(_.Next.Alt)).Sorted()
@@ -356,8 +359,7 @@ func tokenClasses(moves Array[move]) Array[tokenClass] {
     val labeled = pieces.Collect((piece) => {
         val lo = piece.Min().Get()
         val members = distinct.ZipWithIndex().Collect({ case (s, i) if s.Contains(lo) => i })
-        if (members.IsEmpty()) None[Tuple[string, atn.IntervalSet]]()
-        else Some((members.MkString(","), piece))
+        When(members.NonEmpty(), (members.MkString(","), piece))
     })
     val signatures = unique(labeled.Map(_.V1))
     signatures.Map((sig) => {
@@ -422,8 +424,10 @@ func (d decider) settle(next Array[config], consumed int, alts Array[int]) Looka
             }
         })
     })
-    val mins = smallest.ValueArray()
-    if (!overflow && mins.NonEmpty() && mins.ForAll(_ == mins.Head())) Predict(mins.Head()) else Adaptive(alts)
+    agreed(smallest.ValueArray()) match {
+        case Some(alt) if !overflow => Predict(alt)
+        case _ => Adaptive(alts)
+    }
 }
 
 // mergeCases joins the cases that continue the same way and orders them by
@@ -452,7 +456,7 @@ func render(l Lookahead) string = l match {
 func (g grammarInfo) planDecision(dec atn.Decision, maxK int) DecisionPlan {
     val (tree, static) = g.lookaheadTree(dec, maxK)
     val lookahead =
-        if (static && hasAdaptive(tree)) g.buildAutomaton(dec).GetOrElse(Adaptive(ArrayTabulate(dec.AltCount, (i) => i + 1)))
+        if (static && hasAdaptive(tree)) g.buildAutomaton(dec).GetOrElse(allAdaptive(dec))
         else tree
     DecisionPlan(dec, classify(tree), lookahead, conflictsOf(tree, EmptyArray[int]()))
 }
@@ -464,9 +468,12 @@ func (g grammarInfo) lookaheadTree(dec atn.Decision, maxK int) Tuple[Lookahead, 
     val d = newDecider(g, maxK)
     val start = decisionSeed(g, dec, d)
     val r = d.closure(start.Starts, 0)
-    if (start.Predicated || r.Predicated || r.Overflow) (Adaptive(ArrayTabulate(dec.AltCount, (i) => i + 1)), false)
+    if (start.Predicated || r.Predicated || r.Overflow) (allAdaptive(dec), false)
     else (d.decide(start.Moves.AppendAll(r.Moves), 1), true)
 }
+
+// allAdaptive leaves every alternative of dec to adaptive prediction.
+func allAdaptive(dec atn.Decision) Lookahead = Adaptive(ArrayTabulate(dec.AltCount, (i) => i + 1))
 
 // classify summarizes a lookahead tree.
 func classify(l Lookahead) DecisionClass =

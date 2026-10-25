@@ -69,7 +69,9 @@ func TestTemplateArguments(t T) T {
     val t1 = Eq(t, RuleRedefinition.New("expr", "4").Message, "rule expr redefinition; previous at line 4")
     val t2 = Eq(t1, TokenRangeInParser.New("'a'", "'z'").Message, "token ranges not allowed in parser: 'a'..'z'")
     val t3 = Eq(t2, NoRules.New("G").String(), "0:0: grammar G has no rules")
-    Eq(t3, ImplicitTokenDefinition.New("ID").IsError(), false)
+    val t4 = Eq(t3, ImplicitTokenDefinition.New("ID").IsError(), false)
+    // Arguments are user text: a placeholder inside one is not substituted again.
+    Eq(t4, TokenRangeInParser.New("'<arg2>'", "'z'").Message, "token ranges not allowed in parser: '<arg2>'..'z'")
 }
 
 func TestParseFormat(t T) T = RunCases[string, Option[Format]](t,

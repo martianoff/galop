@@ -87,10 +87,10 @@ func Run(args Array[string], kit Toolkit) Outcome {
 // finish renders diagnostics in the chosen message format. Under -Werror the
 // first warning is followed by ANTLR's one-time "warning treated as error".
 func finish(cfg Config, ds Array[diag.Diagnostic], stdout string) Outcome {
-    val firstWarning = ds.ZipWithIndex().Find((p) => !p.V1.IsError()).Map(_.V2).GetOrElse(-1)
-    val all = if (cfg.Werror && firstWarning >= 0)
-        ds.Take(firstWarning + 1).Append(diag.WarningTreatedAsError.New()).AppendAll(ds.Drop(firstWarning + 1))
-        else ds
+    val all = ds.ZipWithIndex().Find((p) => !p.V1.IsError()) match {
+        case Some((_, i)) if cfg.Werror => ds.Take(i + 1).Append(diag.WarningTreatedAsError.New()).AppendAll(ds.Drop(i + 1))
+        case _ => ds
+    }
     val stderr = all.Map((d) => d.Render(cfg.MessageFormat) + "\n").MkString("")
     Outcome(stdout, stderr, if (diag.HasErrors(all)) 1 else 0)
 }
@@ -145,11 +145,11 @@ func nameProblems(path string, g g4.Grammar) Array[diag.Diagnostic] =
 
 // optionProblems checks the grammar's own `options {}`: an option galop does
 // not know is ANTLR's warning 83; tokenVocab is not supported yet.
-func optionProblems(g g4.Grammar) Array[diag.Diagnostic] = g.Options.Collect((o) =>
-    if (!GrammarOptions.Contains(o.Name)) Some(diag.IllegalOption.New(o.Name).At(o.Pos.Line, o.Pos.Col))
-    else if (o.Name == "tokenVocab") Some(diag.Unsupported.New("the tokenVocab option").At(o.Pos.Line, o.Pos.Col))
-    else None()
-)
+func optionProblems(g g4.Grammar) Array[diag.Diagnostic] = g.Options.Collect((o) => o.Name match {
+    case "tokenVocab" => Some(diag.Unsupported.New("the tokenVocab option").At(o.Pos.Line, o.Pos.Col))
+    case name if !GrammarOptions.Contains(name) => Some(diag.IllegalOption.New(name).At(o.Pos.Line, o.Pos.Col))
+    case _ => None[diag.Diagnostic]()
+})
 
 // validated is -check: everything up to compilation passed; with -roundtrip
 // the grammar must also survive the formatter.
