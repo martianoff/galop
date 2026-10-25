@@ -4,6 +4,7 @@ import (
     . "martianoff/gala/collection_immutable"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
 )
 
 // Transition kinds in the emitted tables. Actions and predicates are epsilon
@@ -33,19 +34,16 @@ func tables(e env) string {
     val states = e.parser.States
     val sets = states.FlatMap((s) => s.Out.Collect({ case atn.SetMatch(_, set) => set })).Distinct()
     val flat = states.Map((s) => s.Out.Map((t) => flatten(t, sets)))
-    val starts = flat.FoldLeft(ArrayOf(0), (acc, out) => acc.Append(acc.Last() + out.Size()))
+    val starts = codegen.Offsets(flat.Map(_.Size()))
     val all = flat.FlatMap((out) => out)
-    val isStop = states.Map((s) => s.Kind match {
-        case atn.RuleStopState() => true
-        case _ => false
-    })
-    val epsOnly = states.Map((s) => s.Out.NonEmpty() && s.Out.ForAll(_.IsEpsilon()))
+    val isStop = states.Map(_.IsRuleStop())
+    val epsOnly = states.Map(_.EpsilonOnly())
     // Every rule's call sites' follow states: where SLL prediction continues after a
     // rule when the caller is unknown (ANTLR's rule-stop follow links).
     val follows = ArrayTabulate(e.parser.RuleNames.Size(), (r) => e.parser.Callers(r).Map(_.Follow))
-    val followStarts = follows.FoldLeft(ArrayOf(0), (acc, fs) => acc.Append(acc.Last() + fs.Size()))
+    val followStarts = codegen.Offsets(follows.Map(_.Size()))
     val closures = states.Map((s) => staticClosure(e.parser, s.Id))
-    val closStarts = closures.FoldLeft(ArrayOf(0), (acc, c) => acc.Append(acc.Last() + c.Size()))
+    val closStarts = codegen.Offsets(closures.Map(_.Size()))
     val closAll = closures.FlatMap((c) => c)
     val x = e.pfx
     ArrayOf(
@@ -113,14 +111,10 @@ func visitClosure(a atn.ATN, s int, acc Tuple[Array[closureItem], Array[int]]) T
     st.Kind match {
         case atn.RuleStopState() => Tuple(seen.V1.Append(closureItem(closStop, s, 0)), seen.V2)
         case _ => {
-            val epsOnly = st.Out.NonEmpty() && st.Out.ForAll(_.IsEpsilon())
-            val start = if (epsOnly) seen else Tuple(seen.V1.Append(closureItem(closAdd, s, 0)), seen.V2)
+            val start = if (st.EpsilonOnly()) seen else Tuple(seen.V1.Append(closureItem(closAdd, s, 0)), seen.V2)
             st.Out.FoldLeft(start, (next, t) => t match {
                 case atn.RuleCall(target, _, follow) => Tuple(next.V1.Append(closureItem(closCall, target, follow)), next.V2)
-                case atn.Epsilon(target) => visitClosure(a, target, next)
-                case atn.LexerActions(target, _) => visitClosure(a, target, next)
-                case atn.Predicate(target, _, _) => visitClosure(a, target, next)
-                case atn.Action(target, _, _) => visitClosure(a, target, next)
+                case _ if t.IsEpsilon() => visitClosure(a, t.Target(), next)
                 case _ => next
             })
         }

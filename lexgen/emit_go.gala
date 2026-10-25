@@ -2,6 +2,7 @@ package lexgen
 
 import (
     "strconv"
+    gostrings "strings"
     . "martianoff/gala/collection_immutable"
     "martianoff/gala/strings"
 
@@ -72,19 +73,24 @@ func EmitGo(d DFA, pkg string, grammar string, typeName string) string {
             if (t == 0 || vocab.Implicit.Get(t)) "" else vocab.Names.Get(t)
         ), "are the token types' symbolic names, as in ANTLR's lexer."),
     )
-    val sim = if (d.HasDynamicEdges()) atnTables(m, prefix) + fill(goSimTemplate, prefix, typeName) else fill(goNoSimTemplate, prefix, typeName)
+    val sim = if (d.HasDynamicEdges()) atnTables(m, prefix) + fill(goSimTemplate, "@P@", prefix, "@T@", typeName)
+        else fill(goNoSimTemplate, "@P@", prefix, "@T@", typeName)
     val stats = s"${d.States.Size()} states, $numClasses input classes, rule calls up to ${d.MaxDepth} deep"
-    val header = ArrayOf(
-        Tuple("@PKG@", pkg),
-        Tuple("@GRAMMAR@", grammar),
-        Tuple("@GRAMMARFILE@", strconv.Quote(grammar + ".g4")),
-        Tuple("@STATS@", stats),
-    ).FoldLeft(fill(goLexerTemplate, prefix, typeName), (text, kv) => strings.ReplaceAll(text, kv.V1, kv.V2))
+    val header = fill(
+        goLexerTemplate,
+        "@P@", prefix,
+        "@T@", typeName,
+        "@PKG@", pkg,
+        "@GRAMMAR@", grammar,
+        "@GRAMMARFILE@", strconv.Quote(grammar + ".g4"),
+        "@STATS@", stats,
+    )
     header + "\n" + tables.MkString("\n") + sim
 }
 
-func fill(template string, prefix string, typeName string) string =
-    strings.ReplaceAll(strings.ReplaceAll(template, "@P@", prefix), "@T@", typeName)
+// fill replaces each placeholder in template with its value, in one pass;
+// pairs alternate placeholder and value.
+func fill(template string, pairs ...string) string = gostrings.NewReplacer(pairs...).Replace(template)
 
 // atnTables renders the lexer ATN for the runtime simulator.
 func atnTables(m Model, prefix string) string {
@@ -96,7 +102,7 @@ func atnTables(m Model, prefix string) string {
         case Consume(target, _, in) => s"{2, $target, ${sets.IndexOf(bitString(in))}}"
         case Act(target, acts) => s"{3, $target, ${actLists.IndexOf(acts.MkString(","))}}"
     }))
-    val starts = trans.FoldLeft(ArrayOf(0), (acc, out) => acc.Append(acc.Last() + out.Size()))
+    val starts = codegen.Offsets(trans.Map(_.Size()))
     val flags = ArrayTabulate(m.Out.Size(), (s) =>
         (if (m.IsStop.Get(s)) 1 else 0) + (if (m.NonGreedy.Get(s)) 2 else 0) + (if (m.EpsilonOnly.Get(s)) 4 else 0)
     )
@@ -616,10 +622,4 @@ func @P@MatchATN(data string, from @P@Pos) @P@Result {
 	return r
 }
 `
-
-// Stats summarizes a DFA for reports: states, input classes, dynamic edges.
-func (d DFA) Stats() string {
-    val dynamic = d.Edges.FoldLeft(0, (n, row) => n + row.Count(_ == DynamicEdge))
-    s"${d.States.Size()} states, ${d.Model.Classes.Size()} classes, depth ${d.MaxDepth}, $dynamic dynamic edges"
-}
 

@@ -165,10 +165,9 @@ func sllFinal(moves Array[move]) Option[DFAFinal] {
     if alts.Size() == 1 {
         return Some(FinalPredict(alts.Head()))
     }
-    if moves.ForAll((mv) => sourceOf(mv).State == endOfInput) {
-        return Some(FinalFullLL(Some(alts.Head())))
-    }
-    if (sllConflict(moves)) Some(FinalFullLL(Some(alts.Head()))) else None()
+    // All at the end of a start rule, or an SLL conflict: the smallest alternative.
+    val stop = moves.ForAll((mv) => sourceOf(mv).State == endOfInput) || sllConflict(moves)
+    if (stop) Some(FinalFullLL(Some(alts.Head()))) else None()
 }
 
 // sllConflict is ANTLR's conflict heuristic: some group of configurations with

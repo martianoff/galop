@@ -59,12 +59,7 @@ func explore(a atn.ATN, stop int, work Array[int], seen Array[int]) Array[int] =
 // state for a rule call, the target otherwise.
 func nextState(t atn.Transition) int = t match {
     case atn.RuleCall(_, _, follow) => follow
-    case atn.Epsilon(target) => target
-    case atn.Atom(target, _) => target
-    case atn.SetMatch(target, _) => target
-    case atn.LexerActions(target, _) => target
-    case atn.Predicate(target, _, _) => target
-    case atn.Action(target, _, _) => target
+    case _ => t.Target()
 }
 
 func stateLine(s atn.State, stop int) string {
@@ -102,10 +97,7 @@ func symbolText(a atn.ATN, symbol int) string = a.Kind match {
 }
 
 func setText(a atn.ATN, set atn.IntervalSet) string = a.Kind match {
-    case atn.ParserATN() => {
-        val types = set.Ranges.FlatMap((r) => ArrayTabulate(r.Hi - r.Lo + 1, (i) => r.Lo + i))
-        "{" + types.Map((t) => a.Vocab.Display(t)).MkString(", ") + "}"
-    }
+    case atn.ParserATN() => "{" + set.Values().Map((t) => a.Vocab.Display(t)).MkString(", ") + "}"
     case atn.LexerATN() => "[" + set.Ranges.Map(rangeText).MkString(", ") + "]"
 }
 

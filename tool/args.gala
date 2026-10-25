@@ -49,10 +49,11 @@ struct Config(
 struct Parsed(Config Config, Problems Array[diag.Diagnostic])
 
 // GrammarOptions are the grammar-level options ANTLR 4 accepts (in `options {}`
-// or as -D), plus galop's `flavor`, which picks the Go target's output style.
+// or as -D), plus the Go target's own: `flavor` picks the output style and
+// `lexerDepth` the lexer DFA's rule-call depth.
 val GrammarOptions = ArrayOf(
     "superClass", "contextSuperClass", "TokenLabelType", "tokenVocab", "language",
-    "accessLevel", "exportMacro", "caseInsensitive", "flavor",
+    "accessLevel", "exportMacro", "caseInsensitive", "flavor", "lexerDepth",
 )
 
 // flagOptions are the options that take no value.

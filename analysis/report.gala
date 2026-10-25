@@ -18,7 +18,7 @@ func Report(a atn.ATN, an Analysis) string {
         case LLk(k) => k
         case NeedsAdaptive() => 0
     })
-    val deepest = depths.FoldLeft(MaxK, maxOf)
+    val deepest = depths.FoldLeft(MaxK, atn.MaxInt)
     val ll1 = s"${depths.Count(_ == 1)} LL(1)"
     val llk = ArrayTabulate(deepest - 1, (i) => i + 2).Map((k) => s"${depths.Count(_ == k)} LL($k)")
     val summary = s"${plans.Size()} decisions: " +

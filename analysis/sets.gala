@@ -30,7 +30,7 @@ func lookFrom(a atn.ATN, from int, first Array[atn.IntervalSet], nullable Array[
         work = work.Tail()
         if seen.Add(s) {
             val st = a.State(s)
-            if isRuleStop(st) {
+            if st.IsRuleStop() {
                 reachesEnd = true
             }
             st.Out.ForEach((t) => t match {
@@ -50,11 +50,6 @@ func lookFrom(a atn.ATN, from int, first Array[atn.IntervalSet], nullable Array[
         }
     }
     look(tokens, reachesEnd)
-}
-
-func isRuleStop(s atn.State) bool = s.Kind match {
-    case atn.RuleStopState() => true
-    case _ => false
 }
 
 // firstSets computes FIRST and nullability of every rule.

@@ -43,9 +43,6 @@ struct Names(Grammar string)
 // ParserType is ANTLR's parser struct name: `galaParser`.
 func (n Names) ParserType() string = n.Grammar + "Parser"
 
-// LexerType is ANTLR's lexer struct name: `galaLexer`.
-func (n Names) LexerType() string = n.Grammar + "Lexer"
-
 // TokenConst is ANTLR's constant for a token: `galaParserIDENTIFIER`.
 func (n Names) TokenConst(token string) string = n.ParserType() + token
 

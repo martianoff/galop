@@ -77,7 +77,7 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
   trees print identically with `antlr.TreesStringTree`.
 - **Lexing** follows ANTLR's lexer: longest match, the earlier rule wins a tie,
   non-greedy loops stop at the first exit, recursive fragments work, `skip`, `more`,
-  `type(...)`, `channel(...)`, modes.
+  `type(...)`, `channel(...)` (lexer modes are not supported yet, see [Lexer](#lexer-lexgen)).
 
 The differential harness (`differential/`) checks all of this against ANTLR
 4.13.1 on the GALA corpus.
@@ -260,6 +260,9 @@ lexers on different goroutines share no state and need no cache isolation.
 
 Generated parsers are safe to use from many goroutines at once: all tables are
 immutable package-level data and all parse state lives in the parser instance.
+The one shared structure is the SLL DFA cache of adaptive decisions (see
+[Compatibility](#compatibility-with-antlr)): reading it takes no lock, adding a
+state takes one.
 
 ## Command line (`cmd/galop`)
 
@@ -351,9 +354,10 @@ galop is written in GALA and uses `concurrent.Future`:
   concurrently. Generation and writes stay on the main goroutine: GALA's
   data-race check never lets an interface or a function value (an injected
   target or file system) cross into a `Future`;
-- for one grammar, parser analysis and lexer DFA construction run concurrently;
+- the lexer DFA computes the rows of each frontier of new states concurrently;
 - decisions are analyzed concurrently; rules are emitted concurrently and joined
   in rule order, so output is deterministic.
 
-Generated parsers have no shared mutable state, so callers can parse files in
+Generated lexers have no shared mutable state, and generated parsers share only
+the SLL DFA cache, which is safe for concurrent use; callers can parse files in
 parallel without the cache isolation ANTLR's Go runtime needs.

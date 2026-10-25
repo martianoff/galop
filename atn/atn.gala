@@ -74,13 +74,6 @@ func (t Transition) IsEpsilon() bool = t match {
     case _ => true
 }
 
-// Matches reports whether a consuming transition accepts symbol.
-func (t Transition) Matches(symbol int) bool = t match {
-    case Atom(_, label) => label == symbol
-    case SetMatch(_, set) => set.Contains(symbol)
-    case _ => false
-}
-
 // Symbols is the set of symbols a consuming transition accepts (empty for epsilon).
 func (t Transition) Symbols() IntervalSet = t match {
     case Atom(_, label) => SetOf(label)
@@ -97,6 +90,16 @@ struct State(
     Out Array[Transition],
     Decision Option[int],
 )
+
+// IsRuleStop reports whether s is the end of its rule.
+func (s State) IsRuleStop() bool = s.Kind match {
+    case RuleStopState() => true
+    case _ => false
+}
+
+// EpsilonOnly reports whether every transition out of s consumes nothing (and
+// there is at least one): ANTLR leaves such states out of configuration sets.
+func (s State) EpsilonOnly() bool = s.Out.NonEmpty() && s.Out.ForAll(_.IsEpsilon())
 
 // DecisionKind is the construct a decision comes from.
 sealed type DecisionKind {
@@ -148,9 +151,6 @@ func (a ATN) RuleIndex(name string) Option[int] {
     val index = a.RuleNames.IndexOf(name)
     When(index >= 0, index)
 }
-
-// DecisionAt returns the decision whose state is id.
-func (a ATN) DecisionAt(id int) Option[Decision] = a.State(id).Decision.Map((d) => a.Decisions.Get(d))
 
 // CallSite is a rule-call transition from state From whose return state is Follow.
 struct CallSite(From int, Follow int)

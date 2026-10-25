@@ -119,12 +119,9 @@ func newModel(a atn.ATN, start int, channels Array[string]) Either[Array[string]
         ATN = a,
         StartTargets = a.State(start).Out.Collect({ case atn.Epsilon(target) => target }),
         Out = a.States.Map((st) => st.Out.Map((t) => toEdge(t, classes, actionIds))),
-        IsStop = a.States.Map((st) => st.Kind match {
-            case atn.RuleStopState() => true
-            case _ => false
-        }),
+        IsStop = a.States.Map(_.IsRuleStop()),
         NonGreedy = nonGreedy.FoldLeft(ArrayFill(a.States.Size(), false), (acc, s) => acc.Updated(s, true)),
-        EpsilonOnly = a.States.Map((st) => st.Out.NonEmpty() && st.Out.ForAll(_.IsEpsilon())),
+        EpsilonOnly = a.States.Map(_.EpsilonOnly()),
         Classes = classes,
         Actions = actions,
     ))
@@ -182,9 +179,10 @@ func intArg(s string) Option[int] = strconv.Atoi(s).ToOption()
 // contains either all of a class or none of it. Classes are numbered by their
 // smallest code point, so the numbering is deterministic.
 func Partition(sets Array[atn.IntervalSet]) Array[atn.IntervalSet] {
-    val distinct = sets.FoldLeft(EmptyArray[atn.IntervalSet](), (acc, set) =>
-        if (acc.Exists(_.String() == set.String())) acc else acc.Append(set)
-    )
+    val distinct = sets.FoldLeft((EmptyHashSet[string](), EmptyArray[atn.IntervalSet]()), (acc, set) => {
+        val key = set.String()
+        if (acc.V1.Contains(key)) acc else (acc.V1.Add(key), acc.V2.Append(set))
+    }).V2
     val bounds = distinct.FlatMap((set) => set.Ranges.FlatMap((r) => ArrayOf(r.Lo, r.Hi + 1)))
         .AppendAll(ArrayOf(0, atn.MaxCodePoint + 1))
         .Filter((p) => p >= 0 && p <= atn.MaxCodePoint + 1)

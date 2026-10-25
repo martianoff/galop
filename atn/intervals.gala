@@ -28,7 +28,7 @@ func normalize(rs Array[Interval]) IntervalSet {
     val merged = rs.Filter((r) => r.Lo <= r.Hi).SortWith((a, b) => a.Lo < b.Lo).FoldLeft(
         EmptyArray[Interval](),
         (acc, r) => acc.LastOption() match {
-            case Some(last) if r.Lo <= last.Hi + 1 => acc.Init().Append(Interval(last.Lo, maxInt(last.Hi, r.Hi)))
+            case Some(last) if r.Lo <= last.Hi + 1 => acc.Init().Append(Interval(last.Lo, MaxInt(last.Hi, r.Hi)))
             case _ => acc.Append(r)
         },
     )
@@ -71,8 +71,8 @@ func (s IntervalSet) Intersect(o IntervalSet) IntervalSet {
     for i < s.Ranges.Size() && j < o.Ranges.Size() {
         val a = s.Ranges.Get(i)
         val b = o.Ranges.Get(j)
-        val lo = maxInt(a.Lo, b.Lo)
-        val hi = minInt(a.Hi, b.Hi)
+        val lo = MaxInt(a.Lo, b.Lo)
+        val hi = MinInt(a.Hi, b.Hi)
         if lo <= hi {
             out = out.Append(Interval(lo, hi))
         }
@@ -84,9 +84,6 @@ func (s IntervalSet) Intersect(o IntervalSet) IntervalSet {
     }
     IntervalSet(out)
 }
-
-// Overlaps reports whether s and o share a member.
-func (s IntervalSet) Overlaps(o IntervalSet) bool = s.Intersect(o).NonEmpty()
 
 // Complement is the set of values in lo..hi that are not in s.
 func (s IntervalSet) Complement(lo int, hi int) IntervalSet {
@@ -115,6 +112,8 @@ func (s IntervalSet) Values() Array[int] =
 func (s IntervalSet) String() string =
     "{" + s.Ranges.Map((r) => if (r.Lo == r.Hi) s"${r.Lo}" else s"${r.Lo}..${r.Hi}").MkString(", ") + "}"
 
-func maxInt(a int, b int) int = if (a > b) a else b
+// MaxInt is the larger of a and b.
+func MaxInt(a int, b int) int = if (a > b) a else b
 
-func minInt(a int, b int) int = if (a < b) a else b
+// MinInt is the smaller of a and b.
+func MinInt(a int, b int) int = if (a < b) a else b

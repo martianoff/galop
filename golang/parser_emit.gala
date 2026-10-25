@@ -47,7 +47,7 @@ func companionParser(e env, pkg string, version string, grammarFile string) stri
         ruleCode.MkString("\n"),
         decisionCode.MkString("\n"),
     )
-    val runtime = if (e.adaptive) ArrayOf(tables(e), strings.ReplaceAll(strings.ReplaceAll(predictorSource, "PARSER", e.parserType), "PFX", e.pfx)) else EmptyArray[string]()
+    val runtime = if (e.adaptive) ArrayOf(tables(e), fill(predictorSource, "PARSER", e.parserType, "PFX", e.pfx)) else EmptyArray[string]()
     parts.AppendAll(runtime).MkString("\n")
 }
 
@@ -278,10 +278,7 @@ func setTest(e env, set atn.IntervalSet, v string) string = set.Ranges.Map((r) =
 func emitDecision(e env, plan analysis.DecisionPlan) string {
     val d = plan.Decision.Id
     val text = strings.ReplaceAll(plan.Decision.Text, "\n", " ")
-    val body = plan.Lookahead match {
-        case analysis.Automaton(states) => emitAutomaton(e, d, states)
-        case other => emitLookahead(e, d, other, "\t")
-    }
+    val body = emitLookahead(e, d, plan.Lookahead, "\t")
     s"// decide$d decides ${e.ruleName(plan.Decision.Rule)}: $text\nfunc (p *${e.parserType}) decide$d() int {\n" + body.MkString("\n") + "\n}\n"
 }
 
@@ -290,7 +287,6 @@ func emitDecision(e env, plan analysis.DecisionPlan) string {
 func emitLookahead(e env, d int, la analysis.Lookahead, ind string) Array[string] = la match {
     case analysis.Predict(alt) => ArrayOf(s"${ind}return $alt")
     case analysis.Adaptive(_) => ArrayOf(s"${ind}return p.adaptivePredict($d)")
-    // The analysis only puts an automaton at the top of a decision.
     case analysis.Automaton(states) => emitAutomaton(e, d, states)
     case analysis.Switch(depth, cases) => {
         val subject = if (depth == 1) "p.types[p.pos]" else s"p.la($depth)"

@@ -47,3 +47,7 @@ type Target interface {
     // Generate returns the files for in, or error messages.
     Generate(in Input, opts Options) Either[Array[string], Array[OutputFile]]
 }
+
+// Offsets lays groups of the given sizes end to end in one flat table: the
+// i-th group starts at Offsets(sizes)[i], and the last entry is the total.
+func Offsets(sizes Array[int]) Array[int] = sizes.FoldLeft(ArrayOf(0), (acc, n) => acc.Append(acc.Last() + n))

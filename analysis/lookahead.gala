@@ -100,7 +100,7 @@ func (t contextTable) intern(es Array[Tuple[int, int]]) int {
         case None() => {
             val id = t.entries.Size()
             t.entries.Append(es)
-            t.depths.Append(1 + es.FoldLeft(0, (acc, e) => maxOf(acc, t.depths.Get(e.V2))))
+            t.depths.Append(1 + es.FoldLeft(0, (acc, e) => atn.MaxInt(acc, t.depths.Get(e.V2))))
             t.ids.Put(k, id)
             id
         }
@@ -120,7 +120,7 @@ func (t contextTable) merge(a int, b int) int {
     if (a == emptyStack || b == emptyStack) {
         return emptyStack
     }
-    val k = int64(minOf(a, b)) * stateSpan * altSpan + int64(maxOf(a, b))
+    val k = int64(atn.MinInt(a, b)) * stateSpan * altSpan + int64(atn.MaxInt(a, b))
     t.merges.Get(k) match {
         case Some(known) => known
         case None() => {
@@ -144,8 +144,6 @@ func (t contextTable) merge(a int, b int) int {
         }
     }
 }
-
-func minOf(a int, b int) int = if (a < b) a else b
 
 // group identifies the runtime configuration c stands for, regardless of its
 // alternative: configurations of different alternatives in the same group
@@ -277,13 +275,13 @@ func (d decider) expand(c0 config, consumed int) expansion {
             emit(move(eofSet, c.group(), c))
         } else {
             val s = d.g.a.State(c.State)
-            if c != c0 && isRuleStop(s) && !d.expanding.Contains(c.key()) {
+            if c != c0 && s.IsRuleStop() && !d.expanding.Contains(c.key()) {
                 val e = d.expand(c, consumed)
                 predicated = predicated || e.Predicated
                 overflow = overflow || e.Overflow
                 e.Moves.ForEach(emit)
             } else {
-                if isRuleStop(s) {
+                if s.IsRuleStop() {
                     if c.Stack != emptyStack {
                         d.stacks.entries.Get(c.Stack).ForEach((e) => visit(config(e.V1, e.V2, c.Exit, c.Alt)))
                     } else {
@@ -492,11 +490,9 @@ func hasAdaptive(l Lookahead) bool = l match {
 
 // depthOf is the deepest token a lookahead tree looks at.
 func depthOf(l Lookahead) int = l match {
-    case Switch(depth, cases) => cases.FoldLeft(depth, (acc, c) => maxOf(acc, depthOf(c.Then)))
+    case Switch(depth, cases) => cases.FoldLeft(depth, (acc, c) => atn.MaxInt(acc, depthOf(c.Then)))
     case _ => 0
 }
-
-func maxOf(a int, b int) int = if (a > b) a else b
 
 // conflictsOf lists the adaptive leaves of a lookahead tree, each with an
 // example of the token prefix that leads to it.
@@ -510,7 +506,7 @@ func conflictsOf(l Lookahead, prefix Array[int]) Array[Conflict] = l match {
 // exampleToken picks a representative of a token set: its smallest real
 // token, or EOF when that is all it holds.
 func exampleToken(s atn.IntervalSet) int =
-    s.Ranges.Find(_.Hi >= 1).Map((r) => maxOf(r.Lo, 1)).GetOrElse(atn.TokenEOF)
+    s.Ranges.Find(_.Hi >= 1).Map((r) => atn.MaxInt(r.Lo, 1)).GetOrElse(atn.TokenEOF)
 
 // unique drops repeated elements and keeps the first of each, in order.
 func unique[T comparable](xs Array[T]) Array[T] {
