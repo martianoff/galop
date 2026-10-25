@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":45},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":30}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":45,"tests":40},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":30,"tests":25}]') }}
     defaults:
       run:
         shell: bash
@@ -69,13 +69,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Caches Go's build cache, so unchanged packages (the GALA stdlib, and
-      # galop packages a change doesn't touch) aren't recompiled.
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
-          cache: true
-          cache-dependency-path: gala.mod
+          cache: false
+
+      # Go's build cache, so unchanged packages (the GALA stdlib, and galop
+      # packages a change doesn't touch) aren't recompiled. Saved even when the
+      # job fails or times out, so one cold run warms the next.
+      - name: Locate Go build cache
+        id: gocache
+        run: echo "dir=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.gocache.outputs.dir }}
+          key: gobuild-${{ matrix.os }}-${{ github.run_id }}
+          restore-keys: gobuild-${{ matrix.os }}-
 
       - name: Install GALA CLI
         run: |
@@ -91,6 +101,8 @@ jobs:
         run: gala version
 
       - name: Unit tests
+        # Leaves room under the job limit for the cache save below.
+        timeout-minutes: ${{ matrix.tests }}
         run: gala test
 
       # Pull requests check the CLI build and the grammar corpus in Bazel; the
@@ -103,3 +115,9 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then bin=galop.exe; fi
           gala build -o "$bin" ./cmd/galop
           "./$bin" -check -roundtrip testdata/grammars/*.g4
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ steps.gocache.outputs.dir }}
+          key: gobuild-${{ matrix.os }}-${{ github.run_id }}
