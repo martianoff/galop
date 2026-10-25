@@ -35,6 +35,7 @@ type PFXCtxPool struct {
 	parents  []int32
 	next     []int32
 	heads    PFXMap
+	singles  PFXMap
 	merges   PFXMap
 }
 
@@ -53,12 +54,13 @@ func (cp *PFXCtxPool) reset(wildcard bool) {
 	cp.parents = append(cp.parents[:0], -1)
 	cp.next = append(cp.next[:0], -1)
 	cp.heads.reset()
+	cp.singles.reset()
 	cp.merges.reset()
 }
 
 // intern returns the id of the context (kind, rets, parents), adding it if new.
 // Contexts are found through a hash of their contents and a chain of the ids
-// that share it.
+// that share it. Singletons are interned by singleton instead.
 func (cp *PFXCtxPool) intern(kind uint8, rets, parents []int32) int32 {
 	h := uint64(kind) + 0x9e3779b97f4a7c15
 	for i := range rets {
@@ -95,13 +97,26 @@ func (cp *PFXCtxPool) intern(kind uint8, rets, parents []int32) int32 {
 	return id
 }
 
-// singleton is ANTLR's SingletonBasePredictionContextCreate.
+// singleton is ANTLR's SingletonBasePredictionContextCreate. Closure creates
+// one at every rule call, so singletons skip the hash chains of intern: their
+// return state and parent are the whole key.
 func (cp *PFXCtxPool) singleton(parent, ret int32) int32 {
 	if ret == PFXEmptyReturn && parent < 0 {
 		return 0
 	}
-	one := [2]int32{ret, parent}
-	return cp.intern(PFXCtxSingleton, one[0:1], one[1:2])
+	k := uint64(uint32(ret))<<32 | uint64(uint32(parent))
+	if id, ok := cp.singles.get(k); ok {
+		return id
+	}
+	id := int32(len(cp.kind))
+	cp.kind = append(cp.kind, PFXCtxSingleton)
+	cp.start = append(cp.start, int32(len(cp.rets)))
+	cp.length = append(cp.length, 1)
+	cp.rets = append(cp.rets, ret)
+	cp.parents = append(cp.parents, parent)
+	cp.next = append(cp.next, -1)
+	cp.singles.set(k, id)
+	return id
 }
 
 func (cp *PFXCtxPool) isEmpty(c int32) bool {
@@ -245,22 +260,25 @@ func (c PFXConfig) key() uint64 {
 }
 
 // PFXMap maps uint64 keys to int32 values: open addressing, cleared in O(1)
-// by bumping the generation.
+// by bumping the generation. A slot holds its key, value and generation
+// together, so a probe reads one cache line.
 type PFXMap struct {
-	keys []uint64
-	vals []int32
-	gens []uint32
-	gen  uint32
-	n    int
+	slots []PFXSlot
+	gen   uint32
+	n     int
+}
+
+type PFXSlot struct {
+	key uint64
+	val int32
+	gen uint32
 }
 
 func (m *PFXMap) reset() {
 	m.gen++
 	m.n = 0
-	if m.keys == nil || m.gen == 0 {
-		m.keys = make([]uint64, 64)
-		m.vals = make([]int32, 64)
-		m.gens = make([]uint32, 64)
+	if m.slots == nil || m.gen == 0 {
+		m.slots = make([]PFXSlot, 64)
 		m.gen = 1
 	}
 }
@@ -275,18 +293,19 @@ func PFXMix(k uint64) uint64 {
 // put stores v for k unless k is present; it returns the stored value and
 // whether k was new.
 func (m *PFXMap) put(k uint64, v int32) (int32, bool) {
-	if 2*(m.n+1) > len(m.keys) {
+	if 2*(m.n+1) > len(m.slots) {
 		m.grow()
 	}
-	mask := uint64(len(m.keys) - 1)
+	mask := uint64(len(m.slots) - 1)
 	for i := PFXMix(k) & mask; ; i = (i + 1) & mask {
-		if m.gens[i] != m.gen {
-			m.gens[i], m.keys[i], m.vals[i] = m.gen, k, v
+		s := &m.slots[i]
+		if s.gen != m.gen {
+			*s = PFXSlot{k, v, m.gen}
 			m.n++
 			return v, true
 		}
-		if m.keys[i] == k {
-			return m.vals[i], false
+		if s.key == k {
+			return s.val, false
 		}
 	}
 }
@@ -296,46 +315,46 @@ func (m *PFXMap) get(k uint64) (int32, bool) {
 	if m.n == 0 {
 		return 0, false
 	}
-	mask := uint64(len(m.keys) - 1)
+	mask := uint64(len(m.slots) - 1)
 	for i := PFXMix(k) & mask; ; i = (i + 1) & mask {
-		if m.gens[i] != m.gen {
+		s := &m.slots[i]
+		if s.gen != m.gen {
 			return 0, false
 		}
-		if m.keys[i] == k {
-			return m.vals[i], true
+		if s.key == k {
+			return s.val, true
 		}
 	}
 }
 
 // set stores v for k, replacing any earlier value.
 func (m *PFXMap) set(k uint64, v int32) {
-	if 2*(m.n+1) > len(m.keys) {
+	if 2*(m.n+1) > len(m.slots) {
 		m.grow()
 	}
-	mask := uint64(len(m.keys) - 1)
+	mask := uint64(len(m.slots) - 1)
 	for i := PFXMix(k) & mask; ; i = (i + 1) & mask {
-		if m.gens[i] != m.gen {
-			m.gens[i], m.keys[i], m.vals[i] = m.gen, k, v
+		s := &m.slots[i]
+		if s.gen != m.gen {
+			*s = PFXSlot{k, v, m.gen}
 			m.n++
 			return
 		}
-		if m.keys[i] == k {
-			m.vals[i] = v
+		if s.key == k {
+			s.val = v
 			return
 		}
 	}
 }
 
 func (m *PFXMap) grow() {
-	oldKeys, oldVals, oldGens, gen := m.keys, m.vals, m.gens, m.gen
-	m.keys = make([]uint64, 2*len(oldKeys))
-	m.vals = make([]int32, 2*len(oldKeys))
-	m.gens = make([]uint32, 2*len(oldKeys))
+	old, gen := m.slots, m.gen
+	m.slots = make([]PFXSlot, 2*len(old))
 	m.gen = 1
 	m.n = 0
-	for i, k := range oldKeys {
-		if oldGens[i] == gen {
-			m.put(k, oldVals[i])
+	for _, s := range old {
+		if s.gen == gen {
+			m.put(s.key, s.val)
 		}
 	}
 }
