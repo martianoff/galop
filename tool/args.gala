@@ -31,9 +31,9 @@ sealed type Action {
 // Config is a parsed command line.
 struct Config(
     Files Array[string] = EmptyArray[string](),
-    OutputDir Option[string] = None[string](),
-    LibDir Option[string] = None[string](),
-    Package Option[string] = None[string](),
+    OutputDir Option[string] = None(),
+    LibDir Option[string] = None(),
+    Package Option[string] = None(),
     Listener bool = true,
     Visitor bool = false,
     // Defines are the -D options, in command-line order.
@@ -69,63 +69,71 @@ val valueOptions = ArrayOf("-o", "-lib", "-package", "-message-format")
 // named twice processed once, -D options applied in order. Problems are
 // reported, not fatal, so one run lists them all; the caller stops when any
 // is an error.
-func ParseArgs(args Array[string]) Parsed {
-    if args.IsEmpty() {
-        return Parsed(Config(Action = ShowHelp()), EmptyArray[diag.Diagnostic]())
+func ParseArgs(args Array[string]) Parsed = args match {
+    case Array() => Parsed(Config(Action = ShowHelp()), EmptyArray[diag.Diagnostic]())
+    case _ => {
+        val read = readArgs(args, Reading(Config()))
+        val (action, actionProblems) = chooseAction(read.Actions, read.RoundTrip, read.Config.Files.IsEmpty())
+        Parsed(read.Config.Copy(Action = action), read.Problems.AppendAll(actionProblems))
     }
-    var cfg = Config()
-    var problems = EmptyArray[diag.Diagnostic]()
-    var actions = EmptyArray[string]()
-    var roundTrip = false
-    var i = 0
-    for i < args.Size() {
-        val arg = args.Get(i)
-        i = i + 1
-        if strings.HasPrefix(arg, "-D") {
-            defineOf(arg) match {
-                case Left(d) => problems = problems.Append(d)
-                case Right(entry) => cfg = cfg.Copy(Defines = cfg.Defines.Append(entry))
-            }
-        } else if !strings.HasPrefix(arg, "-") {
-            if !cfg.Files.Contains(arg) {
-                cfg = cfg.Copy(Files = cfg.Files.Append(arg))
-            }
-        } else if valueOptions.Contains(arg) {
-            if i >= args.Size() {
-                problems = problems.Append(diag.BadCommandLine.New(s"option $arg needs a value"))
-            } else {
-                val value = args.Get(i)
-                i = i + 1
-                arg match {
-                    case "-o" => cfg = cfg.Copy(OutputDir = Some(trimSlash(value)))
-                    case "-lib" => cfg = cfg.Copy(LibDir = Some(trimSlash(value)))
-                    case "-package" => cfg = cfg.Copy(Package = Some(value))
-                    case _ => diag.ParseFormat(value) match {
-                        case Some(f) => cfg = cfg.Copy(MessageFormat = f)
-                        case None() => problems = problems.Append(diag.BadCommandLine.New(
-                            s"unknown message format $value; use ${diag.FormatNames.MkString(", ")}",
-                        ))
-                    }
-                }
-            }
-        } else if flagOptions.Contains(arg) {
-            arg match {
-                case "-atn" => cfg = cfg.Copy(ATN = true)
-                case "-listener" => cfg = cfg.Copy(Listener = true)
-                case "-no-listener" => cfg = cfg.Copy(Listener = false)
-                case "-visitor" => cfg = cfg.Copy(Visitor = true)
-                case "-no-visitor" => cfg = cfg.Copy(Visitor = false)
-                case "-Werror" => cfg = cfg.Copy(Werror = true)
-                case "-Xexact-output-dir" => cfg = cfg.Copy(ExactOutputDir = true)
-                case "-roundtrip" => roundTrip = true
-                case _ => actions = actions.Append(arg)
-            }
-        } else {
-            problems = problems.Append(diag.InvalidCmdlineArg.New(arg))
+}
+
+// Reading is the state of ParseArgs part way through the arguments.
+struct Reading(
+    Config Config,
+    Problems Array[diag.Diagnostic] = EmptyArray[diag.Diagnostic](),
+    // Actions are the action options seen (-check, -format, ...), resolved at the end.
+    Actions Array[string] = EmptyArray[string](),
+    RoundTrip bool = false,
+)
+
+func (r Reading) problem(d diag.Diagnostic) Reading = r.Copy(Problems = r.Problems.Append(d))
+
+func (r Reading) configured(c Config) Reading = r.Copy(Config = c)
+
+// readArgs consumes the arguments one option (with its value) at a time.
+func readArgs(args Array[string], r Reading) Reading = args match {
+    case Array() => r
+    case Array(arg, rest...) if strings.HasPrefix(arg, "-D") => readArgs(rest, defineOf(arg) match {
+        case Left(d) => r.problem(d)
+        case Right(entry) => r.configured(r.Config.Copy(Defines = r.Config.Defines.Append(entry)))
+    })
+    case Array(file, rest...) if !strings.HasPrefix(file, "-") => readArgs(rest, withFile(r, file))
+    case Array(opt, value, rest...) if valueOptions.Contains(opt) => readArgs(rest, withValue(r, opt, value))
+    case Array(opt) if valueOptions.Contains(opt) => r.problem(diag.BadCommandLine.New(s"option $opt needs a value"))
+    case Array(flag, rest...) if flagOptions.Contains(flag) => readArgs(rest, withFlag(r, flag))
+    case _ => readArgs(args.Drop(1), r.problem(diag.InvalidCmdlineArg.New(args.Head())))
+}
+
+// withValue applies an option that takes a value.
+func withValue(r Reading, opt string, value string) Reading = opt match {
+    case "-o" => r.configured(r.Config.Copy(OutputDir = Some(trimSlash(value))))
+    case "-lib" => r.configured(r.Config.Copy(LibDir = Some(trimSlash(value))))
+    case "-package" => r.configured(r.Config.Copy(Package = Some(value)))
+    case _ => diag.ParseFormat(value) match {
+        case Some(f) => r.configured(r.Config.Copy(MessageFormat = f))
+        case None() => {
+            val names = diag.FormatNames.MkString(", ")
+            r.problem(diag.BadCommandLine.New(s"unknown message format $value; use $names"))
         }
     }
-    val (action, actionProblems) = chooseAction(actions, roundTrip, cfg.Files.IsEmpty())
-    Parsed(cfg.Copy(Action = action), problems.AppendAll(actionProblems))
+}
+
+// withFile adds a grammar file; a file named twice is processed once.
+func withFile(r Reading, file string) Reading =
+    if (r.Config.Files.Contains(file)) r else r.configured(r.Config.Copy(Files = r.Config.Files.Append(file)))
+
+// withFlag applies an option that takes no value.
+func withFlag(r Reading, flag string) Reading = flag match {
+    case "-atn" => r.configured(r.Config.Copy(ATN = true))
+    case "-listener" => r.configured(r.Config.Copy(Listener = true))
+    case "-no-listener" => r.configured(r.Config.Copy(Listener = false))
+    case "-visitor" => r.configured(r.Config.Copy(Visitor = true))
+    case "-no-visitor" => r.configured(r.Config.Copy(Visitor = false))
+    case "-Werror" => r.configured(r.Config.Copy(Werror = true))
+    case "-Xexact-output-dir" => r.configured(r.Config.Copy(ExactOutputDir = true))
+    case "-roundtrip" => r.Copy(RoundTrip = true)
+    case _ => r.Copy(Actions = r.Actions.Append(flag))
 }
 
 // chooseAction turns the action options given into one Action.

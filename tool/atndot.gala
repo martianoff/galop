@@ -41,18 +41,18 @@ func RuleDOT(a atn.ATN, rule int) string {
 
 // reachable lists, in increasing order, the states a rule's sub-network
 // reaches from its start state without entering called rules.
-func reachable(a atn.ATN, start int, stop int) Array[int] {
-    var seen = ArrayOf(start)
-    var work = ArrayOf(start)
-    for work.NonEmpty() {
-        val id = work.Head()
-        work = work.Tail()
+func reachable(a atn.ATN, start int, stop int) Array[int] =
+    explore(a, stop, ArrayOf(start), ArrayOf(start)).Sorted()
+
+// explore visits the states in work breadth first, adding the ones not yet
+// seen, and returns every state seen.
+func explore(a atn.ATN, stop int, work Array[int], seen Array[int]) Array[int] = work match {
+    case Array(id, rest...) => {
         val next = if (id == stop) EmptyArray[int]() else a.State(id).Out.Map(nextState)
         val fresh = next.Distinct().Filter((n) => !seen.Contains(n))
-        seen = seen.AppendAll(fresh)
-        work = work.AppendAll(fresh)
+        explore(a, stop, rest.AppendAll(fresh), seen.AppendAll(fresh))
     }
-    seen.SortWith((x, y) => x < y)
+    case _ => seen
 }
 
 // nextState is where a transition continues within its rule: the follow
@@ -81,13 +81,14 @@ func stateLine(s atn.State, stop int) string {
 
 func edgeLine(a atn.ATN, from int, t atn.Transition) string {
     val to = nextState(t)
-    val edge = (label string) => s"s$from -> s$to [fontsize=11, fontname=\"Courier\", arrowsize=.7, label = \"${dotEscape(label)}\"];"
+    val edge = (label string) =>
+        s"s$from -> s$to [fontsize=11, fontname=\"Courier\", arrowsize=.7, label = \"${dotEscape(label)}\"];"
     t match {
         case atn.Epsilon(_) => s"s$from -> s$to [fontname=\"Times-Italic\", label=\"&epsilon;\"];"
         case atn.RuleCall(_, r, _) => edge(s"<${a.RuleNames.Get(r)}>")
         case atn.Atom(_, symbol) => edge(symbolText(a, symbol))
         case atn.SetMatch(_, set) => edge(setText(a, set))
-        case atn.LexerActions(_, cmds) => edge("-> " + cmds.Map((c) => c.Arg.Map((arg) => s"${c.Name}($arg)").GetOrElse(c.Name)).MkString(", "))
+        case atn.LexerActions(_, cmds) => edge("-> " + cmds.Map(commandText).MkString(", "))
         case atn.Predicate(_, _, body) => edge(s"{$body}?")
         case atn.Action(_, _, body) => edge(s"{$body}")
     }
@@ -105,9 +106,14 @@ func setText(a atn.ATN, set atn.IntervalSet) string = a.Kind match {
         val types = set.Ranges.FlatMap((r) => ArrayTabulate(r.Hi - r.Lo + 1, (i) => r.Lo + i))
         "{" + types.Map((t) => a.Vocab.Display(t)).MkString(", ") + "}"
     }
-    case atn.LexerATN() =>
-        "[" + set.Ranges.Map((r) => if (r.Lo == r.Hi) charText(r.Lo) else charText(r.Lo) + ".." + charText(r.Hi)).MkString(", ") + "]"
+    case atn.LexerATN() => "[" + set.Ranges.Map(rangeText).MkString(", ") + "]"
 }
+
+// rangeText is a character range as in a grammar: 'a' or 'a'..'z'.
+func rangeText(r atn.Interval) string = if (r.Lo == r.Hi) charText(r.Lo) else charText(r.Lo) + ".." + charText(r.Hi)
+
+// commandText is a lexer command as written after `->`.
+func commandText(c g4.LexerCommand) string = c.Arg.Map((arg) => s"${c.Name}($arg)").GetOrElse(c.Name)
 
 // charText is a code point as a quoted grammar literal: 'a', '\n', 'é'.
 func charText(cp int) string = cp match {

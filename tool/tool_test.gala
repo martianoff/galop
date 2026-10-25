@@ -121,7 +121,7 @@ func TestOutputPath(t T) T = RunCases[PathCase, string](t,
     Case[PathCase, string](Name = "-o with a bare grammar", Input = PathCase("-o out", "T.g4", "t_parser.go"), Expected = "out/t_parser.go"),
     Case[PathCase, string](Name = "-Xexact-output-dir", Input = PathCase("-o out -Xexact-output-dir", "g/sub/T.g4", "t_parser.go"), Expected = "out/t_parser.go"),
     Case[PathCase, string](Name = "-Xexact-output-dir without -o", Input = PathCase("-Xexact-output-dir", "g/T.g4", "t_parser.go"), Expected = "g/t_parser.go"),
-    Case[PathCase, string](Name = "dot-dot stays relative", Input = PathCase("-o out", "../g/T.g4", "t_parser.go"), Expected = "g/t_parser.go"),
+    Case[PathCase, string](Name = "dot-dot resolves as in ANTLR", Input = PathCase("-o out", "../g/T.g4", "t_parser.go"), Expected = "g/t_parser.go"),
     Case[PathCase, string](Name = "output names with directories", Input = PathCase("-o out", "T.g4", "gen/t.go"), Expected = "out/gen/t.go"),
 )
 
@@ -178,7 +178,8 @@ val failing = codegen.Target(
     Generate = (in, opts) => Left[Array[string], Array[codegen.OutputFile]](ArrayOf(s"cannot handle ${in.Grammar.Name}")),
 )
 
-val lexerGrammar = "lexer grammar Lex;\noptions { flavor = fromGrammar; }\nID : [a-z]+ ;\nWS : [ ]+ -> skip ;\n"
+// lexerGrammar quotes its option value, which targets see unquoted.
+val lexerGrammar = "lexer grammar Lex;\noptions { flavor = 'fromGrammar'; }\nID : [a-z]+ ;\nWS : [ ]+ -> skip ;\n"
 
 func run(m Ptr[memory], targets Array[codegen.Target], line string) Outcome =
     Run(ArrayOf(strings.Split(line, " ")...), Toolkit(Targets = targets, Files = m.fs(), Version = "9.9.9"))
@@ -346,5 +347,12 @@ func TestArgumentErrorsStopTheRun(t T) T {
     val m = newMemory(("Lex.g4", lexerGrammar))
     val out = run(m, ArrayOf(fakeGo), "-bogus Lex.g4")
     val t1 = Eq(t, out, Outcome("", "error(2):  unknown command-line option -bogus\n", 1))
+    Eq(t1, m.writes, EmptyArray[string]())
+}
+
+func TestWerrorStopsOnCommandLineWarnings(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    val out = run(m, ArrayOf(fakeGo), "-Werror -Dk=2 Lex.g4")
+    val t1 = Eq(t, out, Outcome("", "warning(83):  unsupported option k\nerror(10):  warning treated as error\n", 1))
     Eq(t1, m.writes, EmptyArray[string]())
 }

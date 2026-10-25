@@ -16,7 +16,10 @@ import (
 // grammar. Diagnostics carry the position of the offending name (none for a
 // grammar built in code) and no file.
 func Check(g Grammar) Array[diag.Diagnostic] {
-    val noRules = if (g.Rules.IsEmpty()) ArrayOf(at(diag.NoRules.New(g.Name), g.Pos)) else EmptyArray[diag.Diagnostic]()
+    val noRules = g.Rules match {
+        case Array() => ArrayOf(at(diag.NoRules.New(g.Name), g.Pos))
+        case _ => EmptyArray[diag.Diagnostic]()
+    }
     val redefinitions = g.Rules.ZipWithIndex().Collect((ri) => {
         val (r, i) = ri
         g.Rules.Take(i).Find(_.Name == r.Name).Map((prev) =>
@@ -24,8 +27,11 @@ func Check(g Grammar) Array[diag.Diagnostic] {
         )
     })
     val kindErrors = g.Rules.Collect((r) => ruleKindError(g.Kind, r).Map((d) => at(d, r.Pos)))
-    val refErrors = g.Rules.FlatMap((r) => r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => at(d, l.Pos))))
-    diag.InSourceOrder(noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors).AppendAll(implicitTokens(g)))
+    val refErrors = g.Rules.FlatMap((r) =>
+        r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => at(d, l.Pos)))
+    )
+    val all = noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors)
+    diag.InSourceOrder(all.AppendAll(implicitTokens(g)))
 }
 
 // at places d at p.

@@ -28,7 +28,8 @@ type Files interface {
 // OSFiles is the real file system.
 func OSFiles() Files = Files(
     Read = (path) => fs.ReadFileString(path),
-    Write = (path, content) => fs.MkdirAll(filepath.Dir(path), 0o755).FlatMap((_) => fs.WriteFileString(path, content, 0o644)),
+    Write = (path, content) =>
+        fs.MkdirAll(filepath.Dir(path), 0o755).FlatMap((_) => fs.WriteFileString(path, content, 0o644)),
     Kind = (path) => fs.Stat(path) match {
         case Success(info) => if (info.IsDir) Directory() else RegularFile()
         case Failure(_) => Missing()

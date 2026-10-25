@@ -54,7 +54,8 @@ func DecodeCharSet(body string) Either[diag.Diagnostic, IntervalSet] {
                         case Left(d) => err = Some(d)
                         case Right(last) => {
                             if last.V1 < first.V1 {
-                                err = Some(diag.ReversedRange.New(string(rune(first.V1)) + "-" + string(rune(last.V1)), body))
+                                val reversed = string(rune(first.V1)) + "-" + string(rune(last.V1))
+                                err = Some(diag.ReversedRange.New(reversed, body))
                             }
                             acc = acc.Append(Interval(first.V1, last.V1))
                             i = last.V2

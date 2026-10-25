@@ -1,6 +1,8 @@
 package tool
 
 import (
+    "strings"
+
     . "martianoff/gala/collection_immutable"
     . "martianoff/gala/concurrent"
 
@@ -60,7 +62,7 @@ func Run(args Array[string], kit Toolkit) Outcome {
         case ShowVersion() => Outcome(s"galop ${kit.Version}\n", "", 0)
         case _ => {
             val setup = parsed.Problems.AppendAll(checkDirectories(cfg, kit.Files))
-            if diag.HasErrors(setup) {
+            if diag.HasErrors(setup) || (cfg.Werror && setup.NonEmpty()) {
                 return finish(cfg, setup, "")
             }
             val stage = Stage(cfg.Action, cfg.Werror)
@@ -70,13 +72,10 @@ func Run(args Array[string], kit Toolkit) Outcome {
                 val path = pair.V1.Path
                 val front = pair.V2.Await() match {
                     case Success(f) => f
-                    case Failure(e) => FrontEnd(FileResult(ArrayOf(diag.InternalError.New(s"$path: ${e.Error()}")), ""), None[Analyzed]())
+                    case Failure(e) => done(problemsOnly(ArrayOf(diag.InternalError.New(s"$path: ${e.Error()}"))))
                 }
                 front.Ready match {
-                    case Some(a) => {
-                        val back = backEnd(cfg, kit, path, a)
-                        FileResult(front.Result.Diagnostics.AppendAll(back.Diagnostics), front.Result.Stdout + back.Stdout)
-                    }
+                    case Some(a) => front.Result.Then(backEnd(cfg, kit, path, a))
                     case None() => front.Result
                 }
             })
@@ -106,11 +105,11 @@ func checkDirectories(cfg Config, files Files) Array[diag.Diagnostic] {
 // frontEnd runs one grammar through the pure part of the pipeline: parse,
 // check, compile and analyze, or whatever less the action needs.
 func frontEnd(stage Stage, src Source) FrontEnd = src.Text match {
-    case None() => FrontEnd(FileResult(ArrayOf(diag.CannotOpenFile.New(src.Path)), ""), None[Analyzed]())
+    case None() => done(problemsOnly(ArrayOf(diag.CannotOpenFile.New(src.Path))))
     case Some(text) => g4.Parse(text) match {
-        case Left(d) => FrontEnd(FileResult(ArrayOf(located(d, src.Path)), ""), None[Analyzed]())
+        case Left(d) => done(problemsOnly(ArrayOf(located(d, src.Path))))
         case Right(g) => stage.Action match {
-            case PrintFormatted() => FrontEnd(FileResult(EmptyArray[diag.Diagnostic](), g4.Format(g)), None[Analyzed]())
+            case PrintFormatted() => done(printed(g4.Format(g)))
             case _ => checked(stage, src.Path, g)
         }
     }
@@ -118,21 +117,25 @@ func frontEnd(stage Stage, src Source) FrontEnd = src.Text match {
 
 // checked runs the semantic checks and, if they pass, the rest of the front end.
 func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
-    val problems = diag.InSourceOrder(nameProblems(path, g).AppendAll(g4.Check(g)).AppendAll(optionProblems(g))).Map((d) => located(d, path))
+    val found = nameProblems(path, g).AppendAll(g4.Check(g)).AppendAll(optionProblems(g))
+    val problems = diag.InSourceOrder(found).Map((d) => located(d, path))
     val stop = diag.HasErrors(problems) || (stage.Werror && problems.NonEmpty())
     if stop {
-        return FrontEnd(FileResult(problems, ""), None[Analyzed]())
+        return done(problemsOnly(problems))
     }
     val rest = atn.Compile(g) match {
-        case Left(ds) => FrontEnd(FileResult(ds, ""), None[Analyzed]())
+        case Left(ds) => done(problemsOnly(ds))
         case Right(c) => stage.Action match {
-            case Validate(roundTrip) => FrontEnd(validated(path, g, roundTrip), None[Analyzed]())
-            case PrintReport() => FrontEnd(report(path, c), None[Analyzed]())
-            case _ => FrontEnd(FileResult(EmptyArray[diag.Diagnostic](), ""), Some(Analyzed(g, c, c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK)))))
+            case Validate(roundTrip) => done(validated(path, g, roundTrip))
+            case PrintReport() => done(report(path, c))
+            case _ => {
+                val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))
+                FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
+            }
         }
     }
-    val result = rest.Result
-    FrontEnd(FileResult(problems.AppendAll(result.Diagnostics.Map((d) => located(d, path))), result.Stdout), rest.Ready)
+    val placed = rest.Result.Copy(Diagnostics = rest.Result.Diagnostics.Map((d) => located(d, path)))
+    FrontEnd(problemsOnly(problems).Then(placed), rest.Ready)
 }
 
 // nameProblems checks, as ANTLR does, that `grammar X;` is in a file called X.g4.
@@ -145,35 +148,40 @@ func nameProblems(path string, g g4.Grammar) Array[diag.Diagnostic] =
 func optionProblems(g g4.Grammar) Array[diag.Diagnostic] = g.Options.Collect((o) =>
     if (!GrammarOptions.Contains(o.Name)) Some(diag.IllegalOption.New(o.Name).At(o.Pos.Line, o.Pos.Col))
     else if (o.Name == "tokenVocab") Some(diag.Unsupported.New("the tokenVocab option").At(o.Pos.Line, o.Pos.Col))
-    else None[diag.Diagnostic]()
+    else None()
 )
 
 // validated is -check: everything up to compilation passed; with -roundtrip
 // the grammar must also survive the formatter.
 func validated(path string, g g4.Grammar, roundTrip bool) FileResult {
-    val trip = if (roundTrip) g4.RoundTrip(g) else None[string]()
+    val trip = if (roundTrip) g4.RoundTrip(g) else None()
     trip match {
-        case Some(msg) => FileResult(ArrayOf(diag.RoundTripFailed.New(msg).At(g.Pos.Line, g.Pos.Col)), "")
+        case Some(msg) => problemsOnly(ArrayOf(diag.RoundTripFailed.New(msg).At(g.Pos.Line, g.Pos.Col)))
         case None() => {
             val lexer = g.Rules.Count(_.IsLexer())
-            FileResult(
-                EmptyArray[diag.Diagnostic](),
-                s"$path: ok (grammar ${g.Name}: ${g.Rules.Size() - lexer} parser rules, $lexer lexer rules)\n",
-            )
+            printed(s"$path: ok (grammar ${g.Name}: ${g.Rules.Size() - lexer} parser rules, $lexer lexer rules)\n")
         }
     }
 }
 
 // report is -report: the decision report of the parser network, if any.
 func report(path string, c atn.Compiled) FileResult = c.Parser match {
-    case Some(p) => FileResult(EmptyArray[diag.Diagnostic](), analysis.Report(p, analysis.Analyze(p, analysis.MaxK)))
-    case None() => FileResult(EmptyArray[diag.Diagnostic](), s"$path: no parser rules, so no decisions\n")
+    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, analysis.MaxK)))
+    case None() => printed(s"$path: no parser rules, so no decisions\n")
 }
 
 // mergedOptions are the grammar's options followed by the command line's -D
 // options, so a -D option overrides the grammar (codegen.Options.Define takes
-// the last value).
-func mergedOptions(cfg Config, g g4.Grammar) Array[g4.OptionEntry] = g.Options.AppendAll(cfg.Defines)
+// the last value). A quoted grammar value (`superClass = 'Base';`) loses its
+// quotes, as in ANTLR.
+func mergedOptions(cfg Config, g g4.Grammar) Array[g4.OptionEntry] =
+    g.Options.Map((o) => o.Copy(Value = unquote(o.Value))).AppendAll(cfg.Defines)
+
+// unquote strips the single quotes around a quoted option value.
+func unquote(value string) string =
+    if (value.ByteSize() >= 2 && strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'"))
+        strings.TrimSuffix(strings.TrimPrefix(value, "'"), "'")
+    else value
 
 // backEnd generates code for an analyzed grammar and writes it (with the
 // -atn diagrams), or lists the files for -depend.
@@ -187,18 +195,17 @@ func backEnd(cfg Config, kit Toolkit, path string, a Analyzed) FileResult {
     )
     val language = opts.Define("language").GetOrElse(DefaultLanguage)
     kit.Targets.Find(_.Language() == language) match {
-        case None() => FileResult(ArrayOf(diag.CannotCreateTargetGenerator.New(language, kit.Version)), "")
+        case None() => problemsOnly(ArrayOf(diag.CannotCreateTargetGenerator.New(language, kit.Version)))
         case Some(t) => t.Generate(codegen.Input(g, a.Compiled, a.Analysis), opts) match {
-            case Left(msgs) => FileResult(
+            case Left(msgs) => problemsOnly(
                 msgs.Map((m) => diag.CodeGenerationFailed.New(language, m).At(g.Pos.Line, g.Pos.Col).In(path)),
-                "",
             )
             case Right(files) => {
                 val diagrams = if (cfg.ATN) ATNFiles(g, a.Compiled) else EmptyArray[codegen.OutputFile]()
                 val outputs = files.AppendAll(diagrams).Map((f) => (OutputPath(cfg, path, f.Name), f.Content))
                 cfg.Action match {
-                    case Depend() => FileResult(EmptyArray[diag.Diagnostic](), outputs.Map((o) => s"${o.V1} : $path\n").MkString(""))
-                    case _ => FileResult(writeAll(kit.Files, outputs), "")
+                    case Depend() => printed(outputs.Map((o) => s"${o.V1} : $path\n").MkString(""))
+                    case _ => problemsOnly(writeAll(kit.Files, outputs))
                 }
             }
         }
@@ -209,9 +216,22 @@ func backEnd(cfg Config, kit Toolkit, path string, a Analyzed) FileResult {
 func writeAll(files Files, outputs Array[Tuple[string, string]]) Array[diag.Diagnostic] =
     outputs.Collect((o) => files.Write(o.V1, o.V2) match {
         case Failure(e) => Some(diag.CannotWriteFile.New(o.V1, e.Error()))
-        case Success(_) => None[diag.Diagnostic]()
+        case Success(_) => None()
     })
 
 // located attributes a diagnostic with a source position to the grammar file
 // at path. Diagnostics about the tool or output files keep no file, as in ANTLR.
 func located(d diag.Diagnostic, path string) diag.Diagnostic = if (d.Line > 0) d.In(path) else d
+
+// done is a front end that stops at r: nothing goes on to code generation.
+func done(r FileResult) FrontEnd = FrontEnd(r, None())
+
+// problemsOnly is a result that reports ds and prints nothing.
+func problemsOnly(ds Array[diag.Diagnostic]) FileResult = FileResult(ds, "")
+
+// printed is a result that prints text and reports nothing.
+func printed(text string) FileResult = FileResult(EmptyArray[diag.Diagnostic](), text)
+
+// Then is r followed by more: both sets of diagnostics, both outputs.
+func (r FileResult) Then(more FileResult) FileResult =
+    FileResult(r.Diagnostics.AppendAll(more.Diagnostics), r.Stdout + more.Stdout)
