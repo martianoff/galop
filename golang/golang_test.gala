@@ -63,7 +63,7 @@ func TestCompanionUsesANTLRNames(t T) T {
         // The set label is stored in ANTLR's field.
         "localctx.(*ExprContext).op = tok",
         // Public entry points return ANTLR's interfaces.
-        "func (p *ExprFastParser) Prog() (IProgContext, error)",
+        "func (p *ExprGalopParser) Prog() (IProgContext, error)",
     )
     expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
 }
@@ -72,7 +72,7 @@ func TestStaticGrammarHasNoPredictor(t T) T {
     // Every decision of this grammar is LL(1), so no runtime predictor is emitted.
     val code = parserFile(t)
     val t1 = IsFalse(t, strings.Contains(code, "adaptivePredict"))
-    IsTrue(t1, strings.Contains(code, "func (p *ExprFastParser) decide0() int"))
+    IsTrue(t1, strings.Contains(code, "func (p *ExprGalopParser) decide0() int"))
 }
 
 func TestAdaptiveGrammarEmitsPredictor(t T) T = generate(`grammar A;

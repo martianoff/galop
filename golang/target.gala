@@ -44,7 +44,7 @@ func companion(in codegen.Input, opts codegen.Options) Either[Array[string], Arr
             val e = env(
                 names = names,
                 pfx = grammar + "Galop",
-                parserType = grammar + "FastParser",
+                parserType = grammar + "GalopParser",
                 vocab = compiled.Vocab,
                 parser = parser,
                 rules = compiled.Rules,
