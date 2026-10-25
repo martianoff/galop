@@ -42,11 +42,14 @@ descent parser building a full AST, runs at ~60 MB/s versus ANTLR's ~5.4 MB/s on
 annotations, so a grammar keeps working with ANTLR and its editor tooling.
 
 **Analysis, at generation time.**
-- FIRST/FOLLOW sets; each decision is classified as LL(1), LL(k ≤ 3), or conflicting.
-- Conflicting decisions use ordered-choice speculation with memoization (linear time),
-  matching ANTLR's "first viable alternative" order.
-- A **conflict report** names every decision that needs speculation. For `gala.g4` it
-  should list exactly six:
+- FIRST/FOLLOW sets; each decision is classified as LL(1), LL(k ≤ 3), or adaptive.
+- Adaptive decisions run ANTLR's own prediction at runtime, over static ATN tables and
+  the parser's real call stack, so they pick exactly the alternative ANTLR picks. There
+  is no warm-up: the tables are compiled in. (An earlier plan used ordered-choice
+  speculation; it cannot match ANTLR where the choice depends on the calling context,
+  such as `case (a, b) =>`.) See [DESIGN.md](DESIGN.md).
+- A **conflict report** names every adaptive decision. Its six known slow spots for
+  `gala.g4` are:
   1. `(a, b) => …` lambda vs `(a, b)` tuple
   2. `Foo[T]{…}` composite literal vs `a[i]` index
   3. `case (a, b) =>` tuple pattern vs lambda (context)
