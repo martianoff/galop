@@ -1,0 +1,8 @@
+load(":corpus.bzl", "corpus_manifest")
+
+# Every .gala file of the GALA compiler at release 0.92.1 (see MODULE.bazel).
+corpus_manifest(
+    name = "corpus",
+    srcs = ["@gala_corpus//:gala_files"],
+    visibility = ["//differential:__subpackages__"],
+)

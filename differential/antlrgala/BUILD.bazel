@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# ANTLR 4.13.1's Go parser for gala.g4: the reference the harness compares
+# galop against. Generated at build time and never checked in. ANTLR also
+# writes .interp and .tokens files; only the Go sources are kept.
+genrule(
+    name = "antlr_go",
+    srcs = ["//testdata/grammars:gala.g4"],
+    outs = [
+        "gala_base_listener.go",
+        "gala_lexer.go",
+        "gala_listener.go",
+        "gala_parser.go",
+    ],
+    cmd = """
+        set -e
+        out=$(RULEDIR)/antlr_out
+        "$(JAVA)" -jar $(location @antlr4_tool//jar) -Dlanguage=Go -package antlrgala \
+            -Xexact-output-dir -o "$$out" $(location //testdata/grammars:gala.g4)
+        cp "$$out"/*.go $(RULEDIR)/
+        rm -rf "$$out"
+    """,
+    toolchains = ["@bazel_tools//tools/jdk:current_host_java_runtime"],
+    tools = ["@antlr4_tool//jar"],
+)
+
+go_library(
+    name = "antlrgala",
+    srcs = [
+        "companions.go",
+        ":antlr_go",
+    ],
+    importpath = "github.com/martianoff/galop/differential/antlrgala",
+    visibility = ["//differential:__subpackages__"],
+    deps = ["@com_github_antlr4_go_antlr_v4//:antlr"],
+)
