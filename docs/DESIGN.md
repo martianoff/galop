@@ -111,6 +111,56 @@ the rule's end with the caller's stack). So a true ambiguity such as
 identifier, as ANTLR resolves it. A decision whose alternatives start with a
 predicate is always adaptive: ANTLR evaluates those predicates while predicting.
 
+### SLL automata
+
+A decision whose static tree would leave some prefix to adaptive prediction
+gets an **SLL automaton** instead (`Automaton` in `analysis/plan.gala`), which
+replaces its whole lookahead. It is the DFA that ANTLR's SLL prediction builds
+lazily at runtime, built ahead of time by subset construction:
+
+- A state is a set of SLL configurations (ATN state, alternative, context),
+  as ANTLR's `ATNConfigSet` holds them after a closure. Contexts are
+  graph-structured, like ANTLR's prediction contexts: configurations with the
+  same state and alternative merge their contexts, and the empty context is a
+  wildcard root that absorbs whatever it merges with. A rule end with an empty
+  context follows global FOLLOW, which is what SLL's empty outer context does.
+- A state other than the start is final as in ANTLR's `execATN`: with one
+  alternative left it predicts it; when
+  `PredictionMode.hasSLLConflictTerminatingPrediction` holds (all
+  configurations at the end of a start rule, or a (state, merged context)
+  group with several alternatives while no state has a single alternative) it
+  runs full-context prediction from the decision's start, as ANTLR then does.
+  EOF keeps only the configurations at the end of a start rule. A token with no
+  edge is a syntax error.
+- The SLL DFA is infinite under recursion, since each nesting deepens the
+  contexts. An edge into a state whose contexts are deeper than 64 frames, or
+  into a new state once the automaton has 1000, leads to full-context
+  prediction instead.
+
+**Why this is ANTLR's answer.** ANTLR's default prediction is two-stage: SLL
+until it predicts a unique alternative or detects a conflict, then, on a
+conflict, full-context LL from the decision's start. Generated code following
+the automaton takes the same steps on every input, with one difference: past a
+bound it starts full-context prediction where ANTLR would have gone on in SLL.
+That does not change the result on input ANTLR parses:
+
+1. SLL configurations over-approximate LL configurations. SLL replaces the
+   caller's stack with a wildcard (global FOLLOW, absorbing merges), so every
+   configuration LL reaches with the real stack is covered by one SLL reaches.
+2. So if only alternative X survives SLL after a prefix, no other alternative
+   can match that prefix in the real context. On input ANTLR parses, LL's
+   prediction is an alternative that matches the input, hence X. An
+   SLL-unique prediction therefore equals the LL prediction, whether the
+   automaton or full-context prediction makes it.
+3. Where ANTLR's SLL stage detects a conflict, ANTLR itself runs full-context
+   prediction, and so does the automaton.
+
+ANTLR's two-stage prediction yields the LL parse on input it parses (the
+property its SLL-then-LL strategy relies on), and the corpus confirms it: all
+723 GALA corpus files that SLL prediction parses give the same trees as LL.
+Decisions whose alternatives start with a predicate stay `Adaptive` (always
+full LL), because ANTLR evaluates those predicates while predicting.
+
 The **conflict report** (`galop -report`) lists every decision that is not
 statically decided, with its rule, source text, the alternatives in conflict and an
 example lookahead. It is the grammar lint the roadmap describes.

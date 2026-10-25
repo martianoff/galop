@@ -25,6 +25,28 @@ sealed type Lookahead {
     // Adaptive asks the runtime predictor to choose among Alts by simulating
     // the ATN from the decision with the real call stack (ANTLR's LL mode).
     case Adaptive(Alts Array[int])
+    // Automaton is ANTLR's SLL prediction DFA for the decision, built ahead of
+    // time. It replaces the whole decision's lookahead (it starts at the
+    // decision, reading LA(1) in state 0). From a state without Final, read
+    // the next token and follow the edge whose Tokens contain it; no such
+    // edge is a syntax error. A state with Final consumes nothing more: it
+    // predicts an alternative, or asks for full-context (LL) prediction from
+    // the decision's start, exactly as Adaptive does.
+    case Automaton(States Array[DFAState])
+}
+
+// DFAState is one state of an Automaton.
+struct DFAState(Edges Array[DFAEdge], Final Option[DFAFinal])
+
+// DFAEdge moves to state Target on any token in Tokens.
+struct DFAEdge(Tokens atn.IntervalSet, Target int)
+
+// DFAFinal is what an Automaton decides when it stops.
+sealed type DFAFinal {
+    // FinalPredict picks Alt.
+    case FinalPredict(Alt int)
+    // FinalFullLL runs full-context prediction from the decision's start.
+    case FinalFullLL()
 }
 
 // LookaheadCase is one branch of a Switch.

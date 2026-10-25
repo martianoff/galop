@@ -44,7 +44,7 @@ func Report(a atn.ATN, an Analysis) string {
     val adaptiveSection = adaptive match {
         case Array() => EmptyArray[string]()
         case _ => ArrayOf("", "Adaptive decisions:").AppendAll(adaptive.FlatMap((p) =>
-            ArrayOf(heading(a, p.Decision)).AppendAll(p.Conflicts.Map((c) => conflictLine(a.Vocab, c)))
+            ArrayOf(heading(a, p.Decision)).AppendAll(p.Conflicts.Map((c) => conflictLine(a.Vocab, c))).AppendAll(automatonLine(p.Lookahead))
         ))
     }
     ArrayOf(summary).AppendAll(deepSection).AppendAll(adaptiveSection).MkString("\n") + "\n"
@@ -71,4 +71,19 @@ func kindName(k atn.DecisionKind) string = k match {
     case atn.OptionalBlock() => "optional"
     case atn.StarEntry() => "star"
     case atn.PlusBack() => "plus"
+}
+
+// automatonLine summarizes a decision's SLL automaton, if it has one:
+// `  SLL automaton: 12 states, 2 of them final, full LL on some paths`.
+func automatonLine(l Lookahead) Array[string] = l match {
+    case Automaton(states) => {
+        val finals = states.Collect((s) => s.Final)
+        val fullLL = finals.Exists((f) => f match {
+            case FinalFullLL() => true
+            case _ => false
+        })
+        val tail = if (fullLL) ", full LL on some paths" else ""
+        ArrayOf(s"  SLL automaton: ${states.Size()} states, ${finals.Size()} of them final$tail")
+    }
+    case _ => EmptyArray[string]()
 }
