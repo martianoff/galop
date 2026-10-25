@@ -51,11 +51,9 @@ func companion(in codegen.Input, opts codegen.Options, version string) Either[Ar
         case Some(_) => lexgen.GoLexerFile(in, opts, in.Grammar.Name + "GalopLexer").Map((f) => ArrayOf(f.Copy(Name = base + "_galop_lexer.go")))
         case None() => Right[Array[string], Array[codegen.OutputFile]](EmptyArray[codegen.OutputFile]())
     }
-    (parser, lexer) match {
-        case (Right(p), Right(l)) => Right(p.AppendAll(l))
-        case (Left(pe), Left(le)) => Left(pe.AppendAll(le))
-        case (Left(pe), _) => Left(pe)
-        case (_, Left(le)) => Left(le)
+    parser match {
+        case Right(p) => lexer.Map((l) => p.AppendAll(l))
+        case Left(pe) => Left(pe.AppendAll(lexer.Fold((le) => le, (_) => EmptyArray[string]())))
     }
 }
 
