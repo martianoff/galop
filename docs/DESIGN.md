@@ -289,6 +289,10 @@ galop-only:
 
 The README lists the options exactly as `galop -help` prints them.
 
+One deliberate difference: like ANTLR, galop drops a trailing `/` or `\` from
+`-o` and `-lib`, but not from a lone separator. ANTLR turns `-o /` into the
+empty path, the current directory; galop keeps it as the root directory.
+
 **Diagnostics** (`diag`) carry a code, a severity, a file and a 1-based line and
 column. They are rendered in ANTLR's three layouts (`antlr`, `gnu`, `vs2005`),
 byte for byte as ANTLR lays them out, including its 0-based column and the

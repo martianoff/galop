@@ -172,7 +172,9 @@ func defineOf(arg string) Either[diag.Diagnostic, g4.OptionEntry] {
     else Right(g4.OptionEntry(name, value, g4.NoPos))
 }
 
-// trimSlash drops one trailing path separator, as ANTLR does for -o and -lib.
+// trimSlash drops one trailing path separator, as ANTLR does for -o and -lib,
+// except from a lone separator: ANTLR turns `-o /` into the current directory,
+// galop keeps it as the root (see docs/DESIGN.md).
 func trimSlash(dir string) string =
     if (dir.ByteSize() <= 1) dir
     else if (strings.HasSuffix(dir, "/")) strings.TrimSuffix(dir, "/")
