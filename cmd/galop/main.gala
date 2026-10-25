@@ -6,6 +6,7 @@ import (
     . "martianoff/gala/collection_immutable"
 
     "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/golang"
     "github.com/martianoff/galop/tool"
 )
 
@@ -14,7 +15,7 @@ val version = "0.0.0-dev"
 
 // targets are the code generators this binary ships. A language is added by
 // adding its codegen.Target here.
-func targets() Array[codegen.Target] = EmptyArray[codegen.Target]()
+func targets() Array[codegen.Target] = ArrayOf(golang.Target(version))
 
 func main() {
     val kit = tool.Toolkit(Targets = targets(), Files = tool.OSFiles(), Version = version)

@@ -28,7 +28,7 @@ WS : [ \t\r\n]+ -> skip ;
 // generate runs the Go target on a test grammar that must be valid.
 func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], Array[codegen.OutputFile]] = g4.Parse(src) match {
     case Right(g) => atn.Compile(g) match {
-        case Right(c) => Target().Generate(
+        case Right(c) => Target("test").Generate(
             codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))),
             codegen.Options(Package = "expr", Defines = defines),
         )
@@ -37,14 +37,17 @@ func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], A
     case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
 }
 
-func parserFile(t T) string = generate(exprGrammar, EmptyArray[g4.OptionEntry]()) match {
-    case Right(Array(f)) => f.Content
-    case other => go_builtins.Panic(s"expected one file, got $other")
+// parserOf is the content of the generated parser file.
+func parserOf(result Either[Array[string], Array[codegen.OutputFile]]) string = result match {
+    case Right(files) => files.Find((f) => strings.HasSuffix(f.Name, "_galop_parser.go")).Map(_.Content).GetOrElse("")
+    case Left(errs) => go_builtins.Panic(s"generate: ${errs.MkString("; ")}")
 }
+
+func parserFile(t T) string = parserOf(generate(exprGrammar, EmptyArray[g4.OptionEntry]()))
 
 func TestCompanionFileNameAndPackage(t T) T = generate(exprGrammar, EmptyArray[g4.OptionEntry]()) match {
     case Right(files) => {
-        val t1 = Eq(t, files.Map(_.Name), ArrayOf("expr_galop_parser.go"))
+        val t1 = Eq(t, files.Map(_.Name), ArrayOf("expr_galop_parser.go", "expr_galop_lexer.go"))
         IsTrue(t1, strings.Contains(files.Head().Content, "\npackage expr\n"))
     }
     case Left(errs) => t.Error(errs.MkString("; "))
@@ -75,18 +78,16 @@ func TestStaticGrammarHasNoPredictor(t T) T {
     IsTrue(t1, strings.Contains(code, "func (p *ExprGalopParser) decide0() int"))
 }
 
-func TestAdaptiveGrammarEmitsPredictor(t T) T = generate(`grammar A;
+func TestAdaptiveGrammarEmitsPredictor(t T) T {
+    val code = parserOf(generate(`grammar A;
 s : a | b ;
 a : X* Y ;
 b : X* Z ;
 X : 'x' ; Y : 'y' ; Z : 'z' ;
-`, EmptyArray[g4.OptionEntry]()) match {
-    case Right(Array(f)) => {
-        val t1 = IsTrue(t, strings.Contains(f.Content, "return p.adaptivePredict("))
-        val t2 = IsTrue(t1, strings.Contains(f.Content, "var AGalopTransStart = []int32{"))
-        IsTrue(t2, strings.Contains(f.Content, "p.stack = append(p.stack, "))
-    }
-    case other => t.Error(s"unexpected result $other")
+`, EmptyArray[g4.OptionEntry]()))
+    val t1 = IsTrue(t, strings.Contains(code, "p.adaptivePredict("))
+    val t2 = IsTrue(t1, strings.Contains(code, "var AGalopTransStart = []int32{"))
+    IsTrue(t2, strings.Contains(code, "p.stack = append(p.stack, "))
 }
 
 func TestUnknownFlavor(t T) T =
