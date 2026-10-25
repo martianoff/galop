@@ -24,14 +24,15 @@ import (
 //   - otherwise, when PredictionMode.hasSLLConflictTerminatingPrediction holds
 //     (every configuration is at the end of a start rule, or some group with
 //     the same state and merged context has several alternatives while no
-//     state has a single one): full-context prediction, as ANTLR then retries
-//     the decision in LL mode;
+//     state has a single one): a conflict, FinalFullLL(Some(m)) with m the
+//     smallest conflicting alternative, which pure SLL mode predicts, while LL
+//     mode retries the decision with full context, as ANTLR does;
 //   - EOF keeps only the configurations at the end of a start rule.
 //
 // Nothing reached is a syntax error. Recursion makes the SLL DFA infinite
 // (each '(' deepens the stack), so an edge into a state whose stacks are
-// deeper than dfaStackLimit, or past dfaStateLimit states, leads to
-// full-context prediction instead: exact, only slower.
+// deeper than dfaStackLimit, or past dfaStateLimit states, ends in
+// FinalFullLL(None): the runtime goes on predicting (SLL, then LL as needed).
 
 // dfaStateLimit bounds the states of one automaton.
 val dfaStateLimit = 1000
@@ -140,7 +141,8 @@ func (b automatonBuilder) state(f dfaFrontier) int {
 func (b automatonBuilder) final(fin DFAFinal) int {
     val k = fin match {
         case FinalPredict(alt) => alt
-        case FinalFullLL() => 0
+        case FinalFullLL(Some(alt)) => -alt
+        case FinalFullLL(None()) => 0
     }
     if b.finalIndex.Contains(k) {
         return b.finalIndex.Get(k).Get()
@@ -161,9 +163,9 @@ func sllFinal(moves Array[move]) Option[DFAFinal] {
         return Some(FinalPredict(alts.Head()))
     }
     if moves.ForAll((mv) => sourceOf(mv).State == endOfInput) {
-        return Some(FinalFullLL())
+        return Some(FinalFullLL(Some(alts.Head())))
     }
-    if (sllConflict(moves)) Some(FinalFullLL()) else None()
+    if (sllConflict(moves)) Some(FinalFullLL(Some(alts.Head()))) else None()
 }
 
 // sllConflict is ANTLR's conflict heuristic: some group of configurations with
@@ -207,11 +209,11 @@ func (b automatonBuilder) expandState(id int) {
 func (b automatonBuilder) target(cls tokenClass) Option[int] {
     val next = cls.Moves.Map(_.Next)
     if next.Exists((c) => b.d.stacks.depths.Get(c.Stack) > dfaStackLimit) {
-        return Some(b.final(FinalFullLL()))
+        return Some(b.final(FinalFullLL(None())))
     }
     val r = b.d.closure(next, 0)
     if r.Overflow {
-        return Some(b.final(FinalFullLL()))
+        return Some(b.final(FinalFullLL(None())))
     }
     if cls.Tokens.Contains(atn.TokenEOF) {
         // After EOF only the configurations at the end of a start rule remain.
@@ -219,7 +221,7 @@ func (b automatonBuilder) target(cls tokenClass) Option[int] {
         return ended match {
             case Array() => None()
             case Array(alt) => Some(b.final(FinalPredict(alt)))
-            case _ => Some(b.final(FinalFullLL()))
+            case _ => Some(b.final(FinalFullLL(Some(ended.Head()))))
         }
     }
     val f = b.frontier(r.Moves)
@@ -228,7 +230,7 @@ func (b automatonBuilder) target(cls tokenClass) Option[int] {
     sllFinal(f.Moves) match {
         case Some(fin) => Some(b.final(fin))
         case None() =>
-            if (!b.index.Contains(f.Key) && b.edges.Size() >= dfaStateLimit) Some(b.final(FinalFullLL()))
+            if (!b.index.Contains(f.Key) && b.edges.Size() >= dfaStateLimit) Some(b.final(FinalFullLL(None())))
             else Some(b.state(f))
     }
 }

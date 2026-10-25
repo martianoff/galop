@@ -129,35 +129,44 @@ lazily at runtime, built ahead of time by subset construction:
   `PredictionMode.hasSLLConflictTerminatingPrediction` holds (all
   configurations at the end of a start rule, or a (state, merged context)
   group with several alternatives while no state has a single alternative) it
-  runs full-context prediction from the decision's start, as ANTLR then does.
+  stops with `FinalFullLL(Some(m))`, m the smallest conflicting alternative:
+  pure SLL mode predicts m (ANTLR's `D.prediction`), LL mode runs full-context
+  prediction from the decision's start, as ANTLR then does.
   EOF keeps only the configurations at the end of a start rule. A token with no
   edge is a syntax error.
 - The SLL DFA is infinite under recursion, since each nesting deepens the
   contexts. An edge into a state whose contexts are deeper than 64 frames, or
-  into a new state once the automaton has 1000, leads to full-context
-  prediction instead.
+  into a new state once the automaton has 1000, ends in `FinalFullLL(None)`:
+  the runtime goes on predicting, SLL first and then LL as needed.
 
-**Why this is ANTLR's answer.** ANTLR's default prediction is two-stage: SLL
-until it predicts a unique alternative or detects a conflict, then, on a
-conflict, full-context LL from the decision's start. Generated code following
-the automaton takes the same steps on every input, with one difference: past a
-bound it starts full-context prediction where ANTLR would have gone on in SLL.
-That does not change the result on input ANTLR parses:
+**Why this is ANTLR's answer.** The automaton is the DFA of ANTLR's SLL stage:
+the same configurations, merges and stopping conditions, so in states it
+reaches it makes ANTLR's SLL decision. Where it stops at a bound
+(`FinalFullLL(None)`), the runtime simply goes on with the same SLL simulation,
+so nothing changes. What remains is what each mode does with the outcome:
+
+- *Pure SLL mode* returns the unique alternative, or at a conflict the smallest
+  conflicting alternative (`MinAlt`), exactly as ANTLR's SLL mode does.
+- *LL mode* (ANTLR's default two-stage prediction) returns the unique SLL
+  alternative, and at a conflict runs full-context prediction from the
+  decision's start, as ANTLR does.
+
+Both agree with full LL on input ANTLR parses, for the unique case by the
+over-approximation argument:
 
 1. SLL configurations over-approximate LL configurations. SLL replaces the
    caller's stack with a wildcard (global FOLLOW, absorbing merges), so every
    configuration LL reaches with the real stack is covered by one SLL reaches.
 2. So if only alternative X survives SLL after a prefix, no other alternative
    can match that prefix in the real context. On input ANTLR parses, LL's
-   prediction is an alternative that matches the input, hence X. An
-   SLL-unique prediction therefore equals the LL prediction, whether the
-   automaton or full-context prediction makes it.
-3. Where ANTLR's SLL stage detects a conflict, ANTLR itself runs full-context
-   prediction, and so does the automaton.
+   prediction is an alternative that matches the input, hence X: an
+   SLL-unique prediction equals the LL prediction.
+3. At an SLL conflict, LL mode runs full-context prediction, which is LL by
+   definition. Pure SLL mode's `MinAlt` can differ from LL; that is why GALA
+   parses in SLL mode first and reparses in LL mode only on a syntax error,
+   and the corpus confirms the result: all 723 GALA corpus files give the
+   same trees as with LL.
 
-ANTLR's two-stage prediction yields the LL parse on input it parses (the
-property its SLL-then-LL strategy relies on), and the corpus confirms it: all
-723 GALA corpus files that SLL prediction parses give the same trees as LL.
 Decisions whose alternatives start with a predicate stay `Adaptive` (always
 full LL), because ANTLR evaluates those predicates while predicting.
 

@@ -262,7 +262,8 @@ func showAutomaton(a atn.ATN, states Array[DFAState]) string =
         val (st, i) = p
         st.Final match {
             case Some(FinalPredict(alt)) => s"$i predict $alt"
-            case Some(FinalFullLL()) => s"$i full LL"
+            case Some(FinalFullLL(Some(alt))) => s"$i conflict $alt"
+            case Some(FinalFullLL(None())) => s"$i bound"
             case None() => s"$i " + st.Edges.Map((e) => s"${tokens(a, e.Tokens)}:${e.Target}").MkString(" ")
         }
     }).MkString(" | ")
@@ -276,7 +277,8 @@ func runAutomaton(a atn.ATN, states Array[DFAState], input Array[string]) string
         val st = states.Get(state)
         st.Final match {
             case Some(FinalPredict(alt)) => verdict = s"predict $alt"
-            case Some(FinalFullLL()) => verdict = "full LL"
+            case Some(FinalFullLL(Some(alt))) => verdict = s"conflict $alt"
+            case Some(FinalFullLL(None())) => verdict = "bound"
             case None() => rest.HeadOption().FlatMap((name) => a.Vocab.TypeOf(name)) match {
                 case Some(tok) => st.Edges.Find(_.Tokens.Contains(tok)) match {
                     case Some(e) => {
@@ -311,8 +313,8 @@ func TestAutomatonConflictNeedsFullContext(t T) T {
 s : W a Y Q | Z a Q ;
 a : Y Y | Y ;
 ` + tokensXYZ, "a", "a : Y Y | Y")
-    val t1 = Eq(t, showAutomaton(a, states), "0 Y:1 | 1 Y:2 Q:3 | 2 Y:4 Q:5 | 3 predict 2 | 4 predict 1 | 5 full LL")
-    Eq(t1, runAutomaton(a, states, ArrayOf("Y", "Y", "Q")), "full LL")
+    val t1 = Eq(t, showAutomaton(a, states), "0 Y:1 | 1 Y:2 Q:3 | 2 Y:4 Q:5 | 3 predict 2 | 4 predict 1 | 5 conflict 1")
+    Eq(t1, runAutomaton(a, states, ArrayOf("Y", "Y", "Q")), "conflict 1")
 }
 
 func TestAutomatonBoundsRecursion(t T) T {
@@ -323,7 +325,7 @@ s : e EOF ;
 e : X e Y Q | X e Y W | Z ;
 ` + tokensXYZ, "e", "e : X e Y Q | X e Y W | Z")
     val deep = ArrayFill(dfaStackLimit + 2, "X")
-    val t1 = Eq(t, runAutomaton(a, states, deep), "full LL")
+    val t1 = Eq(t, runAutomaton(a, states, deep), "bound")
     val t2 = Eq(t1, runAutomaton(a, states, ArrayOf("X", "X", "Z", "Y", "Q", "Y", "W")), "predict 2")
     val t3 = Eq(t2, runAutomaton(a, states, ArrayOf("Z")), "predict 3")
     val t4 = Eq(t3, runAutomaton(a, states, ArrayOf("X", "Q")), "syntax error")

@@ -30,8 +30,7 @@ sealed type Lookahead {
     // decision, reading LA(1) in state 0). From a state without Final, read
     // the next token and follow the edge whose Tokens contain it; no such
     // edge is a syntax error. A state with Final consumes nothing more: it
-    // predicts an alternative, or asks for full-context (LL) prediction from
-    // the decision's start, exactly as Adaptive does.
+    // predicts an alternative, or stops without one (see FinalFullLL).
     case Automaton(States Array[DFAState])
 }
 
@@ -45,8 +44,15 @@ struct DFAEdge(Tokens atn.IntervalSet, Target int)
 sealed type DFAFinal {
     // FinalPredict picks Alt.
     case FinalPredict(Alt int)
-    // FinalFullLL runs full-context prediction from the decision's start.
-    case FinalFullLL()
+    // FinalFullLL stops the automaton without a unique alternative. MinAlt is
+    // set when ANTLR's SLL prediction stops here with a conflict
+    // (hasSLLConflictTerminatingPrediction): it is the alternative ANTLR
+    // predicts in pure SLL mode (D.prediction, the smallest conflicting
+    // alternative); full-context (LL) prediction from the decision's start
+    // decides in LL mode. MinAlt is None where the automaton stopped at a
+    // bound (stack depth or state budget) rather than a conflict: prediction
+    // goes on at runtime, SLL first and then LL as needed.
+    case FinalFullLL(MinAlt Option[int])
 }
 
 // LookaheadCase is one branch of a Switch.

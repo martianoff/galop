@@ -79,7 +79,7 @@ func automatonLine(l Lookahead) Array[string] = l match {
     case Automaton(states) => {
         val finals = states.Collect((s) => s.Final)
         val fullLL = finals.Exists((f) => f match {
-            case FinalFullLL() => true
+            case FinalFullLL(_) => true
             case _ => false
         })
         val tail = if (fullLL) ", full LL on some paths" else ""
