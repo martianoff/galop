@@ -1,0 +1,24 @@
+package main
+
+import (
+    "os"
+
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/fs"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/golang"
+)
+
+func main() {
+    val src = fs.ReadFileString(os.Args[1]).Get()
+    val g = g4.Parse(src).Right().Get()
+    val c = atn.Compile(g).Right().Get()
+    val an = analysis.Analyze(c.Parser.Get())
+    val files = golang.Target().Generate(codegen.Input(g, c, Some(an)), codegen.Options(Package = "grammar")).Right().Get()
+    files.ForEach((f) => fs.WriteFileString(os.Args[2] + "/" + f.Name, f.Content).Get())
+    Println(s"wrote ${files.Size()} files")
+}

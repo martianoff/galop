@@ -60,7 +60,7 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
 ## What the tests check
 
 - galop's generated lexer (`antlrgala.NewgalaGalopLexer`, built from `gala.g4` by
-  `//tools/lexgen`) gives ANTLR's tokens, errors and stream positions on every corpus
+  the galop CLI) gives ANTLR's tokens, errors and stream positions on every corpus
   file, on mutated copies (truncated, with stray characters) and on nested
   interpolations past its static DFA depth.
 - `antlr-lenient` and `antlr-ll` build the same tree for all 723 files, error-recovered

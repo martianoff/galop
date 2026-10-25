@@ -24,14 +24,17 @@ genrule(
     tools = ["@antlr4_tool//jar"],
 )
 
-# galop's lexer for gala.g4 (the companion flavor), generated at build time
-# like ANTLR's, by the lexgen tool until the galop CLI writes it.
+# galop's lexer and parser for gala.g4 (the Go companion flavor), generated at
+# build time by the galop CLI built from this repository, like ANTLR's.
 genrule(
-    name = "galop_lexer",
+    name = "galop_go",
     srcs = ["//testdata/grammars:gala.g4"],
-    outs = ["gala_galop_lexer.go"],
-    cmd = "$(location //tools/lexgen) $(location //testdata/grammars:gala.g4) $@ antlrgala galaGalopLexer",
-    tools = ["//tools/lexgen"],
+    outs = [
+        "gala_galop_lexer.go",
+        "gala_galop_parser.go",
+    ],
+    cmd = "$(location //cmd/galop) -Dlanguage=Go -package antlrgala -Xexact-output-dir -o $(RULEDIR) $(location //testdata/grammars:gala.g4)",
+    tools = ["//cmd/galop"],
 )
 
 go_library(
@@ -39,7 +42,8 @@ go_library(
     srcs = [
         "companions.go",
         ":antlr_go",
-        ":galop_lexer",
+        "galop_companion.go",
+        ":galop_go",
     ],
     importpath = "github.com/martianoff/galop/differential/antlrgala",
     visibility = ["//differential:__subpackages__"],

@@ -70,6 +70,33 @@ func TestLenientMatchesLL(t *testing.T) {
 	}
 }
 
+// TestGalopMatchesANTLR is the generated parser's acceptance test: on every
+// corpus file it must build exactly the tree the GALA compiler gets from ANTLR
+// (SLL with an LL retry), from the same tokens, and it must reject the files
+// ANTLR rejects. Token parity of galop's lexer is lexdiff's job, so together
+// the two cover the whole galop pipeline.
+func TestGalopMatchesANTLR(t *testing.T) {
+	galop, ok := gala.Parsers()["galop"]
+	if !ok {
+		t.Fatal("the galop companion is not registered")
+	}
+	var out strings.Builder
+	var accepted []Result
+	for _, r := range Run(files(t), galop, gala.Lenient) {
+		if _, skip := rejected[r.File.Name]; skip {
+			if r.ErrA == nil {
+				t.Errorf("%s: galop accepts a file ANTLR rejects", r.File.Name)
+			}
+			continue
+		}
+		accepted = append(accepted, r)
+	}
+	if n := Report(&out, "galop", "antlr-lenient", accepted); n > 0 {
+		t.Errorf("%d trees differ:\n%s", n, out.String())
+	}
+	t.Logf("%d/%d corpus files give ANTLR's tree", len(accepted), len(files(t)))
+}
+
 // TestCorpusParses checks that the reference parser accepts every corpus
 // file under LL prediction except those listed in rejected: a file it
 // rejects cannot tell a correct generated parser from a wrong one, and a
@@ -121,6 +148,35 @@ func BenchmarkParse(b *testing.B) {
 	parseAll() // untimed: builds the DFAs
 	for b.Loop() {
 		parseAll()
+	}
+}
+
+// BenchmarkParseGalop lexes and parses the whole corpus with galop's generated
+// lexer and parser once per iteration.
+func BenchmarkParseGalop(b *testing.B) {
+	fs := files(b)
+	galop := gala.Parsers()["galop"]
+	parseAll := func() {
+		for _, f := range fs {
+			galop(gala.GalopTokens(f.Src))
+		}
+	}
+	b.SetBytes(int64(corpus.Bytes(fs)))
+	parseAll() // untimed: builds the cached SLL DFA states
+	for b.Loop() {
+		parseAll()
+	}
+}
+
+// BenchmarkParseGalopParallel is BenchmarkParseGalop with files spread over
+// GOMAXPROCS goroutines.
+func BenchmarkParseGalopParallel(b *testing.B) {
+	fs := files(b)
+	galop := gala.Parsers()["galop"]
+	b.SetBytes(int64(corpus.Bytes(fs)))
+	parallel(fs, func(f corpus.File) { galop(gala.GalopTokens(f.Src)) })
+	for b.Loop() {
+		parallel(fs, func(f corpus.File) { galop(gala.GalopTokens(f.Src)) })
 	}
 }
 
