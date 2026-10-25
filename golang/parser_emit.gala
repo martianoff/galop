@@ -267,7 +267,10 @@ func setTest(e env, set atn.IntervalSet, v string) string = set.Ranges.Map((r) =
 func emitDecision(e env, plan analysis.DecisionPlan) string {
     val d = plan.Decision.Id
     val text = strings.ReplaceAll(plan.Decision.Text, "\n", " ")
-    val body = emitLookahead(e, d, plan.Lookahead, "\t", atn.EmptySet())
+    val body = plan.Lookahead match {
+        case analysis.Automaton(states) => emitAutomaton(e, d, states)
+        case other => emitLookahead(e, d, other, "\t", atn.EmptySet())
+    }
     s"// decide$d decides ${e.ruleName(plan.Decision.Rule)}: $text\nfunc (p *${e.parserType}) decide$d() int {\n" + body.MkString("\n") + "\n}\n"
 }
 
@@ -292,3 +295,26 @@ func emitLookahead(e env, d int, la analysis.Lookahead, ind string, unused atn.I
 // placeholder and value. Placeholders are upper-case words that cannot occur
 // in the Go code around them.
 func fill(template string, pairs ...string) string = strings.NewReplacer(pairs...).Replace(template)
+
+// emitAutomaton emits a lookahead DFA as a state machine: a label for each
+// state some edge leads to (Go rejects unused labels), an offset counting the
+// tokens read so far, and a switch in each reading state. A final state's alt
+// is returned directly by the edge into it.
+func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] {
+    val targets = states.FlatMap((s) => s.Edges.Map(_.Target)).Distinct()
+    val reading = states.ZipWithIndex().Filter((si) => si.V1.Final.IsEmpty())
+    val jump = (target int) => states.Get(target).Final match {
+        case Some(analysis.FinalPredict(alt)) => s"return $alt"
+        case Some(analysis.FinalFullLL()) => s"return p.adaptivePredict($d)"
+        case None() => s"goto s$target"
+    }
+    val readsAgain = reading.Exists((si) => targets.Contains(si.V2))
+    val start = if (readsAgain) ArrayOf("\ti := 0") else EmptyArray[string]()
+    start.AppendAll(reading.FlatMap((si) => {
+        val label = if (targets.Contains(si.V2)) ArrayOf(s"s${si.V2}:") else EmptyArray[string]()
+        val subject = if (readsAgain) ArrayOf("\ti++", "\tswitch p.la(i) {") else ArrayOf("\tswitch p.types[p.pos] {")
+        label.AppendAll(subject)
+            .AppendAll(si.V1.Edges.FlatMap((edge) => ArrayOf(s"\tcase ${e.tokenList(edge.Tokens)}:", s"\t\t${jump(edge.Target)}")))
+            .AppendAll(ArrayOf("\t}", s"\tp.noViableAlt($d)", "\treturn 0"))
+    }))
+}
