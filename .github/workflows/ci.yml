@@ -28,25 +28,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Compiling one galop package can take 4-6 GB, because Go instantiates
+        # every collection method per element type (martianoff/gala#872).
+        # Unbounded parallel compiles ran both the 16 GB Linux runner and the
+        # 7 GB macOS runner out of memory. A tighter GC keeps one compile near
+        # 4 GB; -p caps how many run at once.
         include:
           - os: ubuntu-latest
             asset: gala-linux-amd64
+            goflags: -p=2
           - os: macos-latest
             asset: gala-darwin-arm64
-            # Compiling one galop package can take 4-6 GB (Go instantiates every
-            # collection method per element type). The 7 GB macOS runner swapped
-            # for hours with three compiles at once; one at a time with a tighter
-            # GC fits.
             goflags: -p=1
-            gogc: "25"
           - os: windows-latest
             asset: gala-windows-amd64.exe
+            goflags: -p=2
     defaults:
       run:
         shell: bash
     env:
       GOFLAGS: ${{ matrix.goflags }}
-      GOGC: ${{ matrix.gogc }}
+      GOGC: "25"
     steps:
       - uses: actions/checkout@v5
 
