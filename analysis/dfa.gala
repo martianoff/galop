@@ -34,8 +34,11 @@ import (
 // deeper than dfaStackLimit, or past dfaStateLimit states, ends in
 // FinalFullLL(None): the runtime goes on predicting (SLL, then LL as needed).
 
-// dfaStateLimit bounds the states of one automaton.
-val dfaStateLimit = 1000
+// dfaStateLimit bounds the states of one automaton. Measured on gala.g4 with
+// the generated Go parser: a limit of 1000 gave a 6.2 MB parser (8.6 s go
+// build), 200 gave 1.5 MB and 50 gave 548 KB, with the same corpus results
+// and the same cold parse time (25 ms for array.gala), so 50 it is.
+val dfaStateLimit = 50
 
 // dfaStackLimit bounds the call stack of the configurations in a state.
 val dfaStackLimit = 64
