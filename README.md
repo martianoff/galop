@@ -29,20 +29,38 @@ the GALA compiler drives it, SLL with an LL retry):
 
 ## Why
 
-ANTLR's runtime interprets a serialized grammar and builds its prediction
-tables while it parses, once per process, and falls back to full-context
-prediction when a decision is ambiguous. For a compiler that runs as a
-short-lived CLI, that warm-up is most of the parse. Measured on the GALA
-compiler's own grammar (Go runtime, a 1,100-line source file):
+A parser keeps choosing which grammar alternative comes next. ANTLR makes those
+choices while it parses: it works them out from the grammar at runtime and
+learns as it goes, starting from scratch in every new process. That warm-up is
+most of the parse for a short-lived tool like a compiler.
 
-| | ANTLR 4 (Go runtime) | Hand-written recursive descent |
-|---|---|---|
-| Warm parse | 7.4 ms | 0.74 ms |
-| First parse in a fresh process | 88 ms | ~0.5 ms |
-| A file that needs full-context prediction | 150 ms | 0.37 ms |
+galop makes those choices when it generates the parser, and picks the cheapest
+form for each:
 
-galop's goal is to generate parsers in that second column from an unchanged
-`.g4` file. Its first user is the GALA compiler itself.
+```mermaid
+flowchart LR
+  g4[".g4 grammar"] --> galop["galop"]
+  galop --> a["Settled by the next few tokens:<br/>a plain switch"]
+  galop --> b["Needs a little more lookahead:<br/>a small precomputed state machine"]
+  galop --> c["Needs unlimited lookahead:<br/>ANTLR's own algorithm, prepared in advance"]
+```
+
+In the GALA grammar, 86 of 107 choices land in the first group, so most of the
+parser is the kind of code you would write by hand. The rare hard cases still
+run ANTLR's algorithm, so the parser always picks exactly what ANTLR would. The
+lexer is built entirely ahead of time.
+
+What you keep:
+
+- **Your grammar.** galop reads the same `.g4` file. No rewrite.
+- **Your code.** The parser builds ANTLR's own parse-tree types, so existing
+  listeners and visitors keep working.
+- **The same results.** Tokens and trees match ANTLR's on the whole GALA corpus.
+
+What you get: a faster parser, especially in a fresh process and when many
+goroutines parse at once (see the table above). A hand-written parser for the
+same grammar is still faster, about 10× ANTLR warm; closing that gap is the next
+milestone. galop's first user is the GALA compiler itself.
 
 ## Install
 
