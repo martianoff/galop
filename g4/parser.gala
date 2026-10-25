@@ -1,25 +1,33 @@
 package g4
 
-import . "martianoff/gala/collection_immutable"
+import (
+    . "martianoff/gala/collection_immutable"
 
-// Parse reads a .g4 grammar into the grammar model. It stops at the first
-// error. Constructs outside the supported subset (rule arguments, `returns`,
-// rule-level options, `catch`, element options, lexer modes, grammar imports)
-// are reported as errors rather than ignored.
-func Parse(src string) Either[Diagnostic, Grammar] =
+    "github.com/martianoff/galop/diag"
+)
+
+// Parse reads a .g4 grammar into the grammar model, with source positions.
+// It stops at the first error: a syntax error (diag.SyntaxError,
+// diag.UnterminatedStringLiteral) or a construct outside the supported subset
+// (rule arguments, `returns`, rule-level options, `catch`, element options,
+// lexer modes, grammar imports), reported as diag.Unsupported rather than
+// ignored. The diagnostic has a position but no file.
+func Parse(src string) Either[diag.Diagnostic, Grammar] =
     Lex(src).FlatMap((toks) => {
-        val p = &parser{toks: toks, pos: 0, err: None[Diagnostic]()}
+        val p = &parser{toks: toks, pos: 0, err: None[diag.Diagnostic](), nodePos: EmptyArray[Pos]()}
         val g = p.grammar()
         p.err match {
-            case Some(d) => Left[Diagnostic, Grammar](d)
-            case None() => Right[Diagnostic, Grammar](g)
+            case Some(d) => Left[diag.Diagnostic, Grammar](d)
+            case None() => Right[diag.Diagnostic, Grammar](g)
         }
     })
 
 type parser struct {
     var toks Array[Token]
     var pos int
-    var err Option[Diagnostic]
+    var err Option[diag.Diagnostic]
+    // nodePos collects the positions of the current rule's elements in Rule.Nodes order.
+    var nodePos Array[Pos]
 }
 
 // --- token helpers ---
@@ -41,13 +49,38 @@ func (p Ptr[parser]) advance() Token {
     t
 }
 
-func (p Ptr[parser]) failAt(t Token, msg string) {
+// reportAt records d at token t, unless an error is already recorded.
+func (p Ptr[parser]) reportAt(t Token, d diag.Diagnostic) {
     if p.err.IsEmpty() {
-        p.err = Some(Diagnostic(t.Line, t.Col, msg))
+        p.err = Some(d.At(t.Line, t.Col))
     }
 }
 
+// failAt records a syntax error at token t.
+func (p Ptr[parser]) failAt(t Token, msg string) = p.reportAt(t, diag.SyntaxError.New(msg))
+
+// fail records a syntax error at the next token.
 func (p Ptr[parser]) fail(msg string) = p.failAt(p.peek(), msg)
+
+// unsupported records that the construct at the next token is not supported yet.
+func (p Ptr[parser]) unsupported(what string) = p.reportAt(p.peek(), diag.Unsupported.New(what))
+
+func posOf(t Token) Pos = Pos(t.Line, t.Col)
+
+// mark is where the next element's position goes in nodePos.
+func (p Ptr[parser]) mark() int = p.nodePos.Size()
+
+// record notes that an element starts at token t; its nested elements follow.
+func (p Ptr[parser]) record(t Token) {
+    p.nodePos = p.nodePos.Append(posOf(t))
+}
+
+// recordAround notes that an element starting at token t wraps the elements
+// recorded since mark (a label or quantifier around an atom), so it goes
+// before them.
+func (p Ptr[parser]) recordAround(mark int, t Token) {
+    p.nodePos = p.nodePos.Take(mark).Append(posOf(t)).AppendAll(p.nodePos.Drop(mark))
+}
 
 func describe(t Token) string = t.Kind match {
     case TokEOF() => "end of file"
@@ -93,6 +126,7 @@ func (p Ptr[parser]) grammar() Grammar {
         p.fail(s"expected 'grammar', found ${describe(p.peek())}")
     }
     p.advance()
+    val nameTok = p.peek()
     val name = p.expectId("a grammar name")
     p.expectPunct(";")
     var options = EmptyArray[OptionEntry]()
@@ -119,7 +153,7 @@ func (p Ptr[parser]) grammar() Grammar {
                 true
             }
             case "import" if t.Kind.isTokId() => {
-                p.fail("grammar imports are not supported yet")
+                p.unsupported("grammar imports")
                 false
             }
             case "@" if t.Kind.isTokPunct() => {
@@ -133,7 +167,7 @@ func (p Ptr[parser]) grammar() Grammar {
     for p.ok() && !p.atEOF() {
         rules = rules.Append(p.rule())
     }
-    Grammar(kind, name, options, tokens, channels, actions, rules)
+    Grammar(kind, name, options, tokens, channels, actions, rules, posOf(nameTok))
 }
 
 func (p Ptr[parser]) grammarKind() GrammarKind {
@@ -155,11 +189,12 @@ func (p Ptr[parser]) optionsBlock() Array[OptionEntry] {
     p.expectPunct("{")
     var entries = EmptyArray[OptionEntry]()
     for p.ok() && !p.isPunct("}") {
+        val nameTok = p.peek()
         val name = p.expectId("an option name")
         p.expectPunct("=")
         val value = p.optionValue()
         p.expectPunct(";")
-        entries = entries.Append(OptionEntry(name, value))
+        entries = entries.Append(OptionEntry(name, value, posOf(nameTok)))
     }
     p.expectPunct("}")
     entries
@@ -230,25 +265,25 @@ func (p Ptr[parser]) rule() Rule {
     if isFragment && !IsTokenName(name) {
         p.failAt(nameTok, s"fragment rule '$name' must be a lexer rule (uppercase name)")
     }
-    p.rejectRulePrequel(name)
+    p.rejectRulePrequel()
     p.expectPunct(":")
+    p.nodePos = EmptyArray[Pos]()
     val alts = p.alternatives()
     p.expectPunct(";")
-    Rule(name, isFragment, alts)
+    Rule(name, isFragment, alts, posOf(nameTok), p.nodePos)
 }
 
 // rejectRulePrequel reports the rule-level constructs the model does not hold yet.
-func (p Ptr[parser]) rejectRulePrequel(name string) {
+func (p Ptr[parser]) rejectRulePrequel() {
     val t = p.peek()
     val unsupported = t.Kind match {
-        case TokSet() => Some("rule arguments are not supported yet")
-        case TokId() if t.Text == "returns" || t.Text == "locals" || t.Text == "throws" =>
-            Some(s"'${t.Text}' is not supported yet")
-        case TokId() if t.Text == "options" => Some("rule-level options are not supported yet")
-        case TokPunct() if t.Text == "@" => Some("rule actions are not supported yet")
+        case TokSet() => Some("rule arguments")
+        case TokId() if t.Text == "returns" || t.Text == "locals" || t.Text == "throws" => Some(s"'${t.Text}'")
+        case TokId() if t.Text == "options" => Some("rule-level options")
+        case TokPunct() if t.Text == "@" => Some("rule actions")
         case _ => None[string]()
     }
-    unsupported.ForEach((msg) => p.failAt(t, s"rule '$name': $msg"))
+    unsupported.ForEach((what) => p.unsupported(what))
 }
 
 // alternatives reads `alt ('|' alt)*`.
@@ -259,7 +294,7 @@ func (p Ptr[parser]) alternatives() Array[Alt] {
 // alternative reads `element* ('#' Label)? ('->' commands)?`.
 func (p Ptr[parser]) alternative() Alt {
     if p.isPunct("<") {
-        p.fail("element options are not supported yet")
+        p.unsupported("element options")
     }
     var elements = EmptyArray[Element]()
     for p.ok() && p.startsElement() {
@@ -313,30 +348,37 @@ func (p Ptr[parser]) command() LexerCommand {
 // atom with an optional quantifier.
 func (p Ptr[parser]) element() Element {
     val t = p.peek()
+    val mark = p.mark()
     if t.Kind.isTokAction() {
         p.advance()
+        p.record(t)
         return Action(t.Text)
     }
     if t.Kind.isTokPredicate() {
         p.advance()
+        p.record(t)
         return Predicate(t.Text)
     }
     val next = p.peekAt(1)
     if t.Kind.isTokId() && (next.IsPunct("=") || next.IsPunct("+=")) {
         p.advance()
         p.advance()
-        return p.quantified(Labeled(t.Text, next.Text == "+=", p.atom()))
+        val inner = p.atom()
+        p.recordAround(mark, t)
+        return p.quantified(Labeled(t.Text, next.Text == "+=", inner), mark, t)
     }
-    p.quantified(p.atom())
+    p.quantified(p.atom(), mark, t)
 }
 
 // quantified wraps e in a Repeat if a `?`, `*` or `+` follows, optionally
-// followed by `?` for a non-greedy loop.
-func (p Ptr[parser]) quantified(e Element) Element {
+// followed by `?` for a non-greedy loop. e's positions start at mark and its
+// first token is start.
+func (p Ptr[parser]) quantified(e Element, mark int, start Token) Element {
     val t = p.peek()
     if !t.Kind.isTokPunct() || !(t.Text == "?" || t.Text == "*" || t.Text == "+") {
         return e
     }
+    p.recordAround(mark, start)
     p.advance()
     val greedy = !p.acceptPunct("?")
     val quant = t.Text match {
@@ -354,10 +396,12 @@ func (p Ptr[parser]) atom() Element {
     t.Kind match {
         case TokId() => {
             p.advance()
+            p.record(t)
             if (IsTokenName(t.Text)) TokenRef(t.Text) else RuleRef(t.Text)
         }
         case TokString() => {
             p.advance()
+            p.record(t)
             if p.acceptPunct("..") {
                 val to = p.peek()
                 if !to.Kind.isTokString() {
@@ -371,6 +415,7 @@ func (p Ptr[parser]) atom() Element {
         }
         case TokSet() => {
             p.advance()
+            p.record(t)
             CharSet(t.Text)
         }
         case TokPunct() => p.punctAtom(t)
@@ -384,14 +429,17 @@ func (p Ptr[parser]) atom() Element {
 func (p Ptr[parser]) punctAtom(t Token) Element = t.Text match {
     case "." => {
         p.advance()
+        p.record(t)
         Wildcard()
     }
     case "~" => {
         p.advance()
+        p.record(t)
         Not(p.atom())
     }
     case "(" => {
         p.advance()
+        p.record(t)
         val alts = p.alternatives()
         p.expectPunct(")")
         Block(alts)

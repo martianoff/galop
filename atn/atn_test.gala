@@ -5,6 +5,7 @@ import (
     . "martianoff/gala/test"
     "martianoff/gala/go_builtins"
 
+    "github.com/martianoff/galop/diag"
     "github.com/martianoff/galop/g4"
 )
 
@@ -55,8 +56,8 @@ func TestIntervalSets(t T) T {
 }
 
 func TestDecodeEscapes(t T) T {
-    val t1 = Eq(t, DecodeLiteral(`a\nA\u{1F600}\\`), Right[string, Array[int]](ArrayOf(97, 10, 65, 0x1F600, 92)))
-    val t2 = Eq(t1, DecodeCharSet(`a-c\]\-x`).Map(_.String()), Right[string, string]("{45, 93, 97..99, 120}"))
+    val t1 = Eq(t, DecodeLiteral(`a\nA\u{1F600}\\`), Right[diag.Diagnostic, Array[int]](ArrayOf(97, 10, 65, 0x1F600, 92)))
+    val t2 = Eq(t1, DecodeCharSet(`a-c\]\-x`).Map(_.String()), Right[diag.Diagnostic, string]("{45, 93, 97..99, 120}"))
     val t3 = IsTrue(t2, DecodeLiteral(`\q`).IsLeft())
     IsTrue(t3, DecodeCharSet(`z-a`).IsLeft())
 }
@@ -111,13 +112,25 @@ func TestLexerNetwork(t T) T {
     Eq(t3, lx.State(lx.TokensStart.Get()).Out.Size(), 9)
 }
 
-func TestCompileErrors(t T) T = g4.Parse(`grammar E;
-s : 'q' ;
-A : [z-a] ;
-`) match {
+// compileErrors compiles src and renders each error as `code line:col: message`.
+func compileErrors(src string) string = g4.Parse(src) match {
     case Right(g) => Compile(g) match {
-        case Left(errs) => Eq(t, errs, ArrayOf("rule 'A': invalid set [z-a]: range 122..97 is reversed"))
-        case Right(_) => t.Error("expected compile errors")
+        case Left(errs) => errs.Map((d) => s"${d.Code} ${d.String()}").MkString("; ")
+        case Right(_) => "no errors"
     }
-    case Left(d) => t.Error(s"parse: ${d.String()}")
+    case Left(d) => s"parse: ${d.String()}"
 }
+
+func TestCompileErrors(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, compileErrors(in), want),
+    Case[string, string](Name = "reversed range", Input = "grammar E;\ns : 'q' ;\nA : [z-a] ;\n", Expected = "507 3:5: reversed range z-a in set [z-a]"),
+    Case[string, string](Name = "unknown escape", Input = "lexer grammar E;\nA : 'x' '\\q' ;\n", Expected = "156 2:9: invalid escape sequence \\q"),
+    Case[string, string](Name = "malformed unicode escape", Input = "lexer grammar E;\nA : [\\u12] ;\n", Expected = "156 2:5: invalid escape sequence \\u12"),
+    Case[string, string](Name = "property escape", Input = "lexer grammar E;\nA : [\\p{L}] ;\n", Expected = "500 2:5: galop does not support unicode property escapes (\\p{...}) yet"),
+    Case[string, string](Name = "empty literal", Input = "lexer grammar E;\nA : 'a' | '' ;\n", Expected = "174 2:11: string literals and sets cannot be empty: ''"),
+    Case[string, string](Name = "empty set", Input = "lexer grammar E;\nA : [] ;\n", Expected = "174 2:5: string literals and sets cannot be empty: []"),
+    Case[string, string](Name = "label on a block", Input = "grammar E;\ns : x=(A B | A) ;\nA : 'a' ;\nB : 'b' ;\n", Expected = "130 2:7: label x assigned to a block which is not a set"),
+    Case[string, string](Name = "token range in parser", Input = "grammar E;\ns : 'a'..'z' ;\n", Expected = "181 2:5: token ranges not allowed in parser: 'a'..'z'"),
+    Case[string, string](Name = "set in parser", Input = "grammar E;\ns : A [abc] ;\nA : 'a' ;\n", Expected = "503 2:7: [abc] is not allowed in a parser rule"),
+    Case[string, string](Name = "every problem is reported", Input = "lexer grammar E;\nA : '\\q' ;\nB : [z-a] ;\n", Expected = "156 2:5: invalid escape sequence \\q; 507 3:5: reversed range z-a in set [z-a]"),
+)

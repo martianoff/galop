@@ -3,6 +3,7 @@ package atn
 import (
     . "martianoff/gala/collection_immutable"
 
+    "github.com/martianoff/galop/diag"
     "github.com/martianoff/galop/g4"
 )
 
@@ -18,8 +19,9 @@ struct Compiled(
 
 // Compile builds the networks of g. g must already pass g4.Check; Compile
 // reports what only it can find (undecodable literals and sets, literals no
-// lexer rule defines, constructs it does not support).
-func Compile(g g4.Grammar) Either[Array[string], Compiled] {
+// lexer rule defines, constructs it does not support) as diagnostics placed
+// at the offending element when g carries positions, and with no file.
+func Compile(g g4.Grammar) Either[Array[diag.Diagnostic], Compiled] {
     val vocab = BuildVocabulary(g)
     val parserRules = g.Rules.Filter((r) => !r.IsLexer())
     val lexerRules = implicitLexerRules(vocab).AppendAll(g.Rules.Filter(_.IsLexer()))
@@ -28,7 +30,7 @@ func Compile(g g4.Grammar) Either[Array[string], Compiled] {
     val lexer = newBuilder(true, vocab, lexerRules)
     val tokensStart = lexer.tokensStart()
     lexerRules.ZipWithIndex().ForEach((ri) => lexer.rule(ri.V2, ri.V1))
-    val errors = parser.errors.AppendAll(lexer.errors)
+    val errors = parser.located(g).AppendAll(lexer.located(g))
     if errors.NonEmpty() {
         return Left(errors)
     }
@@ -55,13 +57,19 @@ struct Frag(Entry int, Exit int)
 // Piece is a compiled element or alternative: its states and its IR steps.
 struct Piece(Frag Frag, Steps Array[Step])
 
+// Problem is an error found while compiling Element of rule Rule (a builder
+// rule index), before it is placed in the source.
+struct Problem(Rule int, Element Option[g4.Element], Diagnostic diag.Diagnostic)
+
 type builder struct {
     var kinds Array[StateKind]
     var owner Array[int]
     var outs Array[Array[Transition]]
     var decisionOf Array[Option[int]]
     var decisions Array[Decision]
-    var errors Array[string]
+    var problems Array[Problem]
+    // current is the element being compiled, for placing problems.
+    var current Option[g4.Element]
     var ruleStart Array[int]
     var ruleStop Array[int]
     lexer bool
@@ -79,7 +87,8 @@ func newBuilder(lexer bool, vocab Vocabulary, rules Array[g4.Rule]) Ptr[builder]
         outs: EmptyArray[Array[Transition]](),
         decisionOf: EmptyArray[Option[int]](),
         decisions: EmptyArray[Decision](),
-        errors: EmptyArray[string](),
+        problems: EmptyArray[Problem](),
+        current: None[g4.Element](),
         ruleStart: EmptyArray[int](),
         ruleStop: EmptyArray[int](),
         lexer: lexer,
@@ -121,9 +130,23 @@ func (b Ptr[builder]) decide(state int, rule int, kind DecisionKind, greedy bool
     id
 }
 
-func (b Ptr[builder]) fail(msg string) {
-    b.errors = b.errors.Append(msg)
+// fail records d against the element being compiled in rule.
+func (b Ptr[builder]) fail(rule int, d diag.Diagnostic) {
+    b.problems = b.problems.Append(Problem(rule, b.current, d))
 }
+
+// located places each recorded problem at its element: the first occurrence of
+// that element in its rule (or, for a rule galop synthesized, anywhere in g),
+// else at the rule's name.
+func (b Ptr[builder]) located(g g4.Grammar) Array[diag.Diagnostic] = b.problems.Map((p) => {
+    val r = b.rules.Get(p.Rule)
+    val elementPos = p.Element.FlatMap((e) => {
+        val find = (rs Array[g4.Rule]) => rs.FlatMap(_.Located()).Find((l) => l.Pos.IsKnown() && std.Equal(l.Element, e)).Map(_.Pos)
+        find(ArrayOf(r)).OrElse(find(g.Rules))
+    })
+    val pos = elementPos.GetOrElse(r.Pos)
+    p.Diagnostic.At(pos.Line, pos.Col)
+})
 
 func (b Ptr[builder]) ruleName(rule int) string = b.names.Get(rule)
 
@@ -202,22 +225,29 @@ func (b Ptr[builder]) choice(rule int, alts Array[g4.Alt], text string) Piece {
     Piece(Frag(start, end), ArrayOf(Choose(d, pieces.Map(_.Steps), None[int]())))
 }
 
-func (b Ptr[builder]) element(rule int, e g4.Element, label Option[LabelRef]) Piece = e match {
+// element compiles e, noting it as the element any problem found is placed at.
+func (b Ptr[builder]) element(rule int, e g4.Element, label Option[LabelRef]) Piece {
+    b.current = Some(e)
+    b.compileElement(rule, e, label)
+}
+
+func (b Ptr[builder]) compileElement(rule int, e g4.Element, label Option[LabelRef]) Piece = e match {
     case g4.Labeled(name, appendTo, inner) => b.element(rule, inner, Some(LabelRef(name, appendTo)))
     case g4.RuleRef(name) => b.ruleCall(rule, name, label)
     case g4.TokenRef(name) if b.lexer => b.ruleCall(rule, name, label)
     case g4.TokenRef(name) => b.vocab.TypeOf(name) match {
         case Some(t) => b.matchSet(rule, SetOf(t), label)
-        case None() => b.empty(rule, s"rule '${b.ruleName(rule)}' references undefined token '$name'")
+        // BuildVocabulary defines every referenced token, so this is a bug.
+        case None() => b.empty(rule, diag.InternalError.New(s"token $name has no token type"))
     }
     case g4.Literal(v) if b.lexer => b.chars(rule, v)
     case g4.Literal(v) => b.vocab.LiteralType(v) match {
         case Some(t) => b.matchSet(rule, SetOf(t), label)
-        case None() => b.empty(rule, s"rule '${b.ruleName(rule)}': no lexer rule defines literal '$v'")
+        case None() => b.empty(rule, diag.ImplicitStringDefinition.New(s"'$v'"))
     }
     case g4.Block(alts) => b.setOf(e) match {
         case Some(set) => b.matchSet(rule, set, label)
-        case None() if label.IsDefined() => b.empty(rule, s"rule '${b.ruleName(rule)}': label '${label.Get().Name}' is on a block that is not a set")
+        case None() if label.IsDefined() => b.empty(rule, diag.LabelBlockNotASet.New(label.Get().Name))
         case None() => b.block(rule, alts)
     }
     case g4.Repeat(inner, q) => b.repeat(rule, inner, q)
@@ -225,21 +255,13 @@ func (b Ptr[builder]) element(rule int, e g4.Element, label Option[LabelRef]) Pi
     case g4.Predicate(body) => b.passThrough(rule, Predicate(-1, rule, body), CheckPredicate(body))
     case g4.CharSet(body) if b.lexer => DecodeCharSet(body) match {
         case Right(set) => b.matchSet(rule, set, label)
-        case Left(msg) => b.empty(rule, s"rule '${b.ruleName(rule)}': $msg")
+        case Left(d) => b.empty(rule, d)
     }
+    case g4.Range(from, to) if !b.lexer => b.empty(rule, diag.TokenRangeInParser.New(s"'$from'", s"'$to'"))
     case _ => b.setOf(e) match {
         case Some(set) => b.matchSet(rule, set, label)
-        case None() => b.empty(rule, s"rule '${b.ruleName(rule)}': ${describe(e)} is not allowed here")
+        case None() => b.empty(rule, diag.NotAllowedHere.New(g4.FormatElement(e), if (b.lexer) "lexer" else "parser"))
     }
-}
-
-// describe names an element kind for messages.
-func describe(e g4.Element) string = e match {
-    case g4.CharSet(body) => s"set [$body]"
-    case g4.Range(from, to) => s"range '$from'..'$to'"
-    case g4.Not(_) => "this ~ operand"
-    case g4.Wildcard() => "wildcard"
-    case _ => "element"
 }
 
 // universe is every symbol: token types 1..MaxType in a parser (EOF excluded,
@@ -358,7 +380,7 @@ func (b Ptr[builder]) plus(rule int, alts Array[g4.Alt], greedy bool, text strin
 func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Piece {
     val target = b.names.IndexOf(name)
     if target < 0 {
-        return b.empty(rule, s"rule '${b.ruleName(rule)}' references undefined rule '$name'")
+        return b.empty(rule, diag.UndefinedRuleRef.New(name))
     }
     val from = b.state(rule, BasicState())
     val follow = b.state(rule, BasicState())
@@ -369,7 +391,7 @@ func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Pi
 // matchSet compiles a one-symbol match; a one-member set becomes an atom.
 func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef]) Piece {
     if set.IsEmpty() {
-        return b.empty(rule, s"rule '${b.ruleName(rule)}' contains a set that matches nothing")
+        return b.empty(rule, b.emptySetProblem())
     }
     val from = b.state(rule, BasicState())
     val to = b.state(rule, BasicState())
@@ -381,8 +403,8 @@ func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef]
 
 // chars compiles a lexer literal into one atom per code point.
 func (b Ptr[builder]) chars(rule int, body string) Piece = DecodeLiteral(body) match {
-    case Left(msg) => b.empty(rule, s"rule '${b.ruleName(rule)}': $msg")
-    case Right(cps) if cps.IsEmpty() => b.empty(rule, s"rule '${b.ruleName(rule)}' contains an empty literal")
+    case Left(d) => b.empty(rule, d)
+    case Right(cps) if cps.IsEmpty() => b.empty(rule, diag.EmptyStringsAndSetsNotAllowed.New("''"))
     case Right(cps) => {
         val entry = b.state(rule, BasicState())
         val exit = cps.FoldLeft(entry, (from, cp) => {
@@ -408,12 +430,18 @@ func (b Ptr[builder]) passThrough(rule int, t Transition, step Step) Piece {
     Piece(Frag(from, to), ArrayOf(step))
 }
 
-// empty records msg (when not empty) and returns a piece that matches nothing,
-// so compilation can go on and report every problem.
-func (b Ptr[builder]) empty(rule int, msg string) Piece {
-    if msg != "" {
-        b.fail(msg)
-    }
+// empty records d and returns a piece that matches nothing, so compilation
+// can go on and report every problem.
+func (b Ptr[builder]) empty(rule int, d diag.Diagnostic) Piece {
+    b.fail(rule, d)
     val s = b.state(rule, BasicState())
     Piece(Frag(s, s), EmptyArray[Step]())
+}
+
+// emptySetProblem describes a set that matches nothing: `[]` is ANTLR's
+// empty-set error, anything else (such as a negation of everything) galop's.
+func (b Ptr[builder]) emptySetProblem() diag.Diagnostic = b.current match {
+    case Some(g4.CharSet("")) => diag.EmptyStringsAndSetsNotAllowed.New("[]")
+    case Some(e) => diag.EmptySet.New(g4.FormatElement(e))
+    case None() => diag.EmptySet.New("a set")
 }
