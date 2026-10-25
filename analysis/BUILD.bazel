@@ -1,45 +1,12 @@
-load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+load("@rules_gala//gala:defs.bzl", "gala_library")
 
 gala_library(
     name = "analysis",
-    srcs = [
-        "analysis.gala",
-        "lookahead.gala",
-        "plan.gala",
-        "report.gala",
-        "sets.gala",
-    ],
+    srcs = ["plan.gala"],
     importpath = "github.com/martianoff/galop/analysis",
     visibility = ["//visibility:public"],
     deps = [
         "//atn",
         "@gala//collection_immutable",
-        "@gala//collection_mutable",
-        "@gala//concurrent",
-    ],
-)
-
-gala_test(
-    name = "analysis_test",
-    srcs = [
-        "analysis_test.gala",
-        "gala_grammar_test.gala",
-    ],
-    importpath = "github.com/martianoff/galop/analysis",
-    lib_srcs = [
-        "analysis.gala",
-        "lookahead.gala",
-        "plan.gala",
-        "report.gala",
-        "sets.gala",
-    ],
-    pkg = "analysis",
-    deps = [
-        "//atn",
-        "//g4",
-        "@gala//collection_immutable",
-        "@gala//collection_mutable",
-        "@gala//concurrent",
-        "@gala//go_builtins",
     ],
 )

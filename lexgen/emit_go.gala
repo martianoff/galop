@@ -1,0 +1,629 @@
+package lexgen
+
+import (
+    "strconv"
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/strings"
+
+    "github.com/martianoff/galop/codegen"
+)
+
+// Go emission: the lexer of the Go target's companion flavor. The generated
+// type embeds *antlr.BaseLexer and implements antlr.Lexer, so it replaces
+// ANTLR's generated lexer wherever that one is used; see the type's doc
+// comment in goLexerTemplate for the contract.
+
+// DepthOption is the `-D` option that sets the static DFA's rule-call depth.
+val DepthOption = "lexerDepth"
+
+// GoLexerFileName is the companion lexer's file name for grammar name: ANTLR's
+// Go file naming (lowercased grammar name) with a `_galop_lexer.go` suffix.
+func GoLexerFileName(grammar string) string = strings.ToLower(grammar) + "_galop_lexer.go"
+
+// GoLexerFile generates the companion Go lexer of in's grammar, as type
+// typeName in package opts.Package (ANTLR's default, `parser`, when empty).
+// The DFA keeps rule-call stacks up to the `lexerDepth` define (default 12).
+func GoLexerFile(in codegen.Input, opts codegen.Options, typeName string) Either[Array[string], codegen.OutputFile] {
+    val depth = opts.Define(DepthOption).FlatMap((v) => intArg(v)).GetOrElse(Options().MaxDepth)
+    val pkg = if (opts.Package == "") "parser" else opts.Package
+    in.Compiled.Lexer match {
+        case Some(lexer) => NewModel(lexer, in.Grammar.Channels)
+            .FlatMap((m) => Build(m, Options(MaxDepth = depth)))
+            .Map((d) => codegen.OutputFile(GoLexerFileName(in.Grammar.Name), EmitGo(d, pkg, in.Grammar.Name, typeName)))
+        case None() => Left(ArrayOf(s"grammar ${in.Grammar.Name} has no lexer rules"))
+    }
+}
+
+// EmitGo renders d as a Go source file declaring lexer type typeName in package pkg.
+func EmitGo(d DFA, pkg string, grammar string, typeName string) string {
+    val prefix = "galop" + strings.S(typeName).Capitalize().ToString()
+    val m = d.Model
+    val numClasses = m.Classes.Size()
+    val vocab = m.ATN.Vocab
+    val accepts = d.States.Map((st) => st.Accept match {
+        case Some(acc) => {
+            val effect = m.EffectOf(acc.Actions)
+            Tuple(effect.Type.GetOrElse(acc.Prediction), effect.Channel.GetOrElse(-1))
+        }
+        case None() => Tuple(TypeInvalid, -1)
+    })
+    val ranges = m.ClassRanges()
+    // The runs cover every code point in order, so those below 128 spell out the ASCII table.
+    val ascii = ranges.Collect({ case r if r.Lo < 128 => ArrayFill((if (r.Hi < 128) r.Hi else 127) - r.Lo + 1, r.Class) }).FlatMap((a) => a)
+    val high = ranges.Collect({ case r if r.Hi >= 128 => if (r.Lo < 128) r.Copy(Lo = 128) else r })
+    val edges = d.Edges.FlatMap((row) => row)
+    val tables = ArrayOf(
+        s"// ${prefix}NumClasses is the number of input classes: code points every\n" +
+            "// transition treats alike.\n" +
+            s"const ${prefix}NumClasses = $numClasses\n",
+        s"// ${prefix}Dynamic marks an edge that needs a deeper rule-call stack than the\n" +
+            "// DFA keeps; the token is then matched on the ATN.\n" +
+            s"const ${prefix}Dynamic = $DynamicEdge\n",
+        goTable(s"${prefix}ClassASCII", unsignedType(ascii), ascii, "is the class of each ASCII code point."),
+        goTable(s"${prefix}RangeLo", "int32", high.Map(_.Lo), "holds the first code point of each run of one class above ASCII."),
+        goTable(s"${prefix}RangeClass", unsignedType(high.Map(_.Class)), high.Map(_.Class), "is the class of each run in RangeLo."),
+        goTable(s"${prefix}Edges", signedType(edges), edges,
+            s"is the DFA, ${d.States.Size()} states by $numClasses classes: the next state, -1 to stop, or Dynamic."),
+        goTable(s"${prefix}AccType", signedType(accepts.Map(_.V1)), accepts.Map(_.V1),
+            "is the token type each DFA state accepts (0: none); skip and more are ANTLR's\n// Lexer.SKIP and Lexer.MORE."),
+        goTable(s"${prefix}AccChannel", signedType(accepts.Map(_.V2)), accepts.Map(_.V2),
+            "is the channel each accepting state sets, or -1."),
+        goStrings(s"${prefix}RuleNames", m.ATN.RuleNames, "are the lexer's rule names, as in ANTLR's lexer."),
+        goStrings(s"${prefix}LiteralNames", ArrayTabulate(vocab.Names.Size(), (t) =>
+            if (t == 0) "" else vocab.Literals.Get(t).Map((lit) => s"'$lit'").GetOrElse("")
+        ), "are the token types' literal names, as in ANTLR's lexer."),
+        goStrings(s"${prefix}SymbolicNames", ArrayTabulate(vocab.Names.Size(), (t) =>
+            if (t == 0 || vocab.Implicit.Get(t)) "" else vocab.Names.Get(t)
+        ), "are the token types' symbolic names, as in ANTLR's lexer."),
+    )
+    val sim = if (d.HasDynamicEdges()) atnTables(m, prefix) + fill(goSimTemplate, prefix, typeName) else fill(goNoSimTemplate, prefix, typeName)
+    val stats = s"${d.States.Size()} states, $numClasses input classes, rule calls up to ${d.MaxDepth} deep"
+    val header = ArrayOf(
+        Tuple("@PKG@", pkg),
+        Tuple("@GRAMMAR@", grammar),
+        Tuple("@GRAMMARFILE@", strconv.Quote(grammar + ".g4")),
+        Tuple("@STATS@", stats),
+    ).FoldLeft(fill(goLexerTemplate, prefix, typeName), (text, kv) => strings.ReplaceAll(text, kv.V1, kv.V2))
+    header + "\n" + tables.MkString("\n") + sim
+}
+
+func fill(template string, prefix string, typeName string) string =
+    strings.ReplaceAll(strings.ReplaceAll(template, "@P@", prefix), "@T@", typeName)
+
+// atnTables renders the lexer ATN for the runtime simulator.
+func atnTables(m Model, prefix string) string {
+    val sets = m.Out.FlatMap((out) => out.Collect({ case Consume(_, _, in) => bitString(in) })).Distinct()
+    val actLists = m.Out.FlatMap((out) => out.Collect({ case Act(_, acts) => acts.Map((a) => s"$a").MkString(",") })).Distinct()
+    val trans = m.Out.Map((out) => out.Map((e) => e match {
+        case Eps(target) => s"{0, $target, 0}"
+        case Call(target, follow) => s"{1, $target, $follow}"
+        case Consume(target, _, in) => s"{2, $target, ${sets.IndexOf(bitString(in))}}"
+        case Act(target, acts) => s"{3, $target, ${actLists.IndexOf(acts.Map((a) => s"$a").MkString(","))}}"
+    }))
+    val starts = trans.FoldLeft(ArrayOf(0), (acc, out) => acc.Append(acc.Last() + out.Size()))
+    val flags = ArrayTabulate(m.Out.Size(), (s) =>
+        (if (m.IsStop.Get(s)) 1 else 0) + (if (m.NonGreedy.Get(s)) 2 else 0) + (if (m.EpsilonOnly.Get(s)) 4 else 0)
+    )
+    val stateType = ArrayTabulate(m.Out.Size(), (s) => if (m.IsStop.Get(s)) m.TokenType(s) else 0)
+    val actType = m.Actions.Map((a) => a match {
+        case SkipAction() => TypeSkip
+        case MoreAction() => TypeMore
+        case TypeAction(t) => t
+        case ChannelAction(_) => 0
+    })
+    val actChannel = m.Actions.Map((a) => a match {
+        case ChannelAction(c) => c
+        case _ => -1
+    })
+    val transRows = trans.FlatMap((out) => out)
+    ArrayOf(
+        "",
+        goTable(s"${prefix}StateFlags", "uint8", flags, "holds each ATN state's flags: 1 rule stop, 2 non-greedy decision, 4 epsilon only."),
+        goTable(s"${prefix}StateType", signedType(stateType), stateType, "is the token type of each rule stop state's rule (0 for fragments)."),
+        goTable(s"${prefix}TransStart", "int32", starts, "indexes each ATN state's first transition in Trans."),
+        s"// ${prefix}Trans holds the ATN's transitions: kind (0 epsilon, 1 rule call, 2 consume,\n" +
+            "// 3 actions), target state, and the follow state, set or action list.\n" +
+            s"var ${prefix}Trans = []${prefix}Transition{\n" +
+            transRows.Grouped(6).Map((row) => "\t" + row.MkString(", ") + ",").MkString("\n") + "\n}\n",
+        s"// ${prefix}SetClasses says which classes each consuming transition's set matches:\n" +
+            s"// byte [set*NumClasses+class] is '1'.\n" +
+            s"const ${prefix}SetClasses = " + sets.Map((b) => strconv.Quote(b)).MkString(" +\n\t") + "\n",
+        s"// ${prefix}ActLists are the action ids each actions transition appends.\n" +
+            s"var ${prefix}ActLists = [][]int32{\n" + actLists.Map((l) => "\t{" + strings.ReplaceAll(l, ",", ", ") + "},").MkString("\n") + "\n}\n",
+        goTable(s"${prefix}ActType", "int32", actType, "is the type each action sets (0: none)."),
+        goTable(s"${prefix}ActChannel", "int32", actChannel, "is the channel each action sets (-1: none)."),
+        goTable(s"${prefix}StartTargets", "int32", m.StartTargets, "are the token rules' start states, in priority order."),
+    ).MkString("\n")
+}
+
+func bitString(in Array[bool]) string = in.Map((b) => if (b) "1" else "0").MkString("")
+
+// goTable renders values as a Go slice variable, sixteen to a line.
+func goTable(name string, goType string, values Array[int], doc string) string = values match {
+    case Array() => s"// $name $doc\nvar $name = []$goType{}\n"
+    case _ => s"// $name $doc\nvar $name = []$goType{\n" +
+        values.Grouped(16).Map((row) => "\t" + row.Map((v) => s"$v").MkString(", ") + ",").MkString("\n") + "\n}\n"
+}
+
+// goStrings renders values as a Go []string variable.
+func goStrings(name string, values Array[string], doc string) string =
+    s"// $name $doc\nvar $name = []string{\n" +
+        values.Grouped(8).Map((row) => "\t" + row.Map((v) => strconv.Quote(v)).MkString(", ") + ",").MkString("\n") + "\n}\n"
+
+// signedType is the smallest Go signed integer type holding values.
+func signedType(values Array[int]) string {
+    val lo = values.FoldLeft(0, (a, v) => if (v < a) v else a)
+    val hi = values.FoldLeft(0, (a, v) => if (v > a) v else a)
+    if (lo >= -128 && hi <= 127) "int8" else if (lo >= -32768 && hi <= 32767) "int16" else "int32"
+}
+
+// unsignedType is the smallest Go unsigned integer type holding values (all >= 0).
+func unsignedType(values Array[int]) string {
+    val hi = values.FoldLeft(0, (a, v) => if (v > a) v else a)
+    if (hi <= 255) "uint8" else if (hi <= 65535) "uint16" else "uint32"
+}
+
+// goLexerTemplate is the lexer type and its token loop. @T@ is the type name,
+// @P@ the prefix of every other package-level name.
+val goLexerTemplate = `// Code generated by galop. DO NOT EDIT.
+
+package @PKG@
+
+import (
+	"unicode/utf8"
+
+	"github.com/antlr4-go/antlr/v4"
+)
+
+// @T@ is the lexer of the @GRAMMAR@ grammar, generated by galop. It produces
+// the tokens ANTLR 4.13.1's generated lexer produces for the same input (type,
+// text, channel, start, stop, line and column, through the EOF token) and
+// reports token recognition errors the way it does, to the lexer's error
+// listeners.
+//
+// @T@ embeds *antlr.BaseLexer and implements antlr.Lexer, so it stands in for
+// ANTLR's lexer anywhere: under a token source that wraps an antlr.Lexer, in
+// an antlr.CommonTokenStream, with the same token factory and listeners. As in
+// ANTLR's lexer, the current line and column live in Interpreter, an
+// *antlr.LexerATNSimulator: set its Line and CharPositionInLine before the
+// first token to count from elsewhere. The simulator only counts; it holds no
+// ATN, so GetATN returns nil.
+//
+// Matching runs a DFA computed when the code was generated (@STATS@).
+// Its tables are immutable, so lexers on different goroutines share no state.
+type @T@ struct {
+	*antlr.BaseLexer
+	// data is the input's text. The lexer scans it directly and keeps the
+	// input stream at the end of each token, where ANTLR's lexer leaves it.
+	data string
+	// lastIndex and lastOff are a code-point index and its byte offset in data.
+	lastIndex, lastOff int
+	hitEOF             bool
+}
+
+var _ antlr.Lexer = (*@T@)(nil)
+
+// New@T@ returns a lexer reading input.
+func New@T@(input antlr.CharStream) *@T@ {
+	l := &@T@{BaseLexer: antlr.NewBaseLexer(input)}
+	l.Virt = l
+	l.Interpreter = antlr.NewLexerATNSimulator(l, nil, nil, nil)
+	l.RuleNames = @P@RuleNames
+	l.LiteralNames = @P@LiteralNames
+	l.SymbolicNames = @P@SymbolicNames
+	l.GrammarFileName = @GRAMMARFILE@
+	l.load(input)
+	return l
+}
+
+func (l *@T@) load(input antlr.CharStream) {
+	l.data = ""
+	l.lastIndex, l.lastOff = 0, 0
+	l.hitEOF = false
+	if input != nil && input.Size() > 0 {
+		l.data = input.GetText(0, input.Size()-1)
+	}
+}
+
+// SetInputStream makes the lexer read input from its start.
+func (l *@T@) SetInputStream(input antlr.CharStream) {
+	l.BaseLexer.SetInputStream(input)
+	l.load(input)
+}
+
+// Reset rewinds the lexer to the start of its input.
+func (l *@T@) Reset() {
+	l.BaseLexer.Reset()
+	l.hitEOF = false
+}
+
+// offset is the byte offset in data of code point index.
+func (l *@T@) offset(index int) int {
+	i, off := 0, 0
+	if index >= l.lastIndex {
+		i, off = l.lastIndex, l.lastOff
+	}
+	for ; i < index && off < len(l.data); i++ {
+		_, size := @P@At(l.data, off)
+		off += size
+	}
+	return off
+}
+
+func (l *@T@) position() (line, column int) {
+	if sim, ok := l.Interpreter.(*antlr.LexerATNSimulator); ok {
+		return sim.Line, sim.CharPositionInLine
+	}
+	return l.Interpreter.GetLine(), l.Interpreter.GetCharPositionInLine()
+}
+
+// sync leaves the input stream and the line and column at at, where ANTLR's
+// lexer leaves them.
+func (l *@T@) sync(at @P@Pos) {
+	l.GetInputStream().Seek(at.index)
+	l.lastIndex, l.lastOff = at.index, at.off
+	if sim, ok := l.Interpreter.(*antlr.LexerATNSimulator); ok {
+		sim.Line = at.line
+		sim.CharPositionInLine = at.column()
+	}
+}
+
+// NextToken returns the next token: the longest match, the earliest rule on
+// a tie, with skip, more, type and channel commands applied, as ANTLR's
+// BaseLexer.NextToken does. At the end of the input it returns EOF tokens.
+func (l *@T@) NextToken() antlr.Token {
+	input := l.GetInputStream()
+	if input == nil {
+		panic("NextToken requires a non-nil input stream.")
+	}
+	data := l.data
+	line, column := l.position()
+	index := input.Index()
+	at := @P@Pos{index: index, off: l.offset(index), line: line, colBase: index - column}
+	for {
+		if l.hitEOF {
+			l.sync(at)
+			return l.EmitEOF()
+		}
+		start := at
+		channel := antlr.TokenDefaultChannel
+		ttype := antlr.LexerMore
+		for ttype == antlr.LexerMore {
+			m := @P@Match(data, at)
+			switch {
+			case m.accepted:
+				at = m.end
+				ttype = int(m.ttype)
+				if m.channel >= 0 {
+					channel = int(m.channel)
+				}
+			case m.stop.off >= len(data) && m.stop.index == at.index:
+				ttype = antlr.TokenEOF
+			default:
+				l.recognitionError(start, m.stop)
+				at = m.stop
+				if at.off < len(data) {
+					at = at.advance(@P@At(data, at.off))
+				}
+				ttype = antlr.LexerSkip
+			}
+			if at.off >= len(data) {
+				l.hitEOF = true
+			}
+		}
+		if ttype != antlr.LexerSkip {
+			l.sync(at)
+			l.TokenStartCharIndex = start.index
+			l.TokenStartLine = start.line
+			l.TokenStartColumn = start.column()
+			l.SetType(ttype)
+			l.SetChannel(channel)
+			l.SetText("")
+			return l.BaseLexer.Emit()
+		}
+	}
+}
+
+// recognitionError reports that no token starts at start, having scanned to
+// stop, the way ANTLR's lexer reports it.
+func (l *@T@) recognitionError(start, stop @P@Pos) {
+	l.sync(stop)
+	l.TokenStartCharIndex = start.index
+	l.TokenStartLine = start.line
+	l.TokenStartColumn = start.column()
+	input := l.GetInputStream()
+	text := input.GetTextFromInterval(antlr.NewInterval(start.index, stop.index))
+	e := antlr.NewLexerNoViableAltException(l, input, start.index, nil)
+	l.GetErrorListenerDispatch().SyntaxError(l.BaseLexer, nil, start.line, start.column(),
+		"token recognition error at: '"+text+"'", e)
+}
+
+// @P@Pos is a position in the input: a code-point index and its byte offset,
+// its line, and the index the line's columns count from.
+type @P@Pos struct {
+	index, off, line, colBase int
+}
+
+func (p @P@Pos) column() int { return p.index - p.colBase }
+
+// advance is p after code point c, size bytes long. Lines are counted as
+// ANTLR's lexer counts them: after each '\n'.
+func (p @P@Pos) advance(c rune, size int) @P@Pos {
+	if c == '\n' {
+		return @P@Pos{p.index + 1, p.off + size, p.line + 1, p.index + 1}
+	}
+	return @P@Pos{p.index + 1, p.off + size, p.line, p.colBase}
+}
+
+// @P@At is the code point at byte offset off of data and its length in bytes.
+func @P@At(data string, off int) (rune, int) {
+	if c := data[off]; c < utf8.RuneSelf {
+		return rune(c), 1
+	}
+	return utf8.DecodeRuneInString(data[off:])
+}
+
+// @P@Result is the outcome of one match: the token type and channel of the
+// longest accepted match and where it ends, and where the scan stopped.
+type @P@Result struct {
+	accepted       bool
+	ttype, channel int32
+	end, stop      @P@Pos
+}
+
+// @P@Class is the input class of code point c.
+func @P@Class(c rune) int {
+	if c < 128 {
+		return int(@P@ClassASCII[c])
+	}
+	lo, hi := 0, len(@P@RangeLo)-1
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if @P@RangeLo[mid] <= c {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return int(@P@RangeClass[lo])
+}
+
+// @P@Match runs the DFA from from: ANTLR's LexerATNSimulator.execATN.
+func @P@Match(data string, from @P@Pos) @P@Result {
+	var r @P@Result
+	if t := @P@AccType[0]; t != 0 {
+		r = @P@Result{accepted: true, ttype: int32(t), channel: int32(@P@AccChannel[0]), end: from}
+	}
+	s := 0
+	index, off, line, colBase := from.index, from.off, from.line, from.colBase
+	for off < len(data) {
+		c, size := rune(data[off]), 1
+		var class int
+		if c < utf8.RuneSelf {
+			class = int(@P@ClassASCII[c])
+		} else {
+			c, size = utf8.DecodeRuneInString(data[off:])
+			class = @P@Class(c)
+		}
+		next := int(@P@Edges[s*@P@NumClasses+class])
+		if next < 0 {
+			if next == @P@Dynamic {
+				return @P@MatchATN(data, from)
+			}
+			break
+		}
+		if c == '\n' {
+			line++
+			colBase = index + 1
+		}
+		index++
+		off += size
+		s = next
+		if t := @P@AccType[s]; t != 0 {
+			r.accepted = true
+			r.ttype = int32(t)
+			r.channel = int32(@P@AccChannel[s])
+			r.end = @P@Pos{index, off, line, colBase}
+		}
+	}
+	r.stop = @P@Pos{index, off, line, colBase}
+	return r
+}
+`
+
+// goNoSimTemplate stands in for the simulator when the DFA has no dynamic edge.
+val goNoSimTemplate = `
+// @P@MatchATN is never called: this DFA has no dynamic edges.
+func @P@MatchATN(data string, from @P@Pos) @P@Result {
+	panic("galop: dynamic DFA edge without an ATN")
+}
+`
+
+// goSimTemplate is the runtime lexer ATN simulator: ANTLR's closure and reach
+// with unbounded rule-call stacks, used only past the DFA's depth.
+val goSimTemplate = `
+// @P@Transition is an ATN transition (see @P@Trans).
+type @P@Transition struct {
+	kind   uint8
+	target int32
+	arg    int32
+}
+
+// @P@Frame is a rule-call stack: the innermost return state first.
+type @P@Frame struct {
+	ret  int32
+	next *@P@Frame
+}
+
+// @P@Acts is a configuration's action list, the latest action first.
+type @P@Acts struct {
+	id   int32
+	prev *@P@Acts
+}
+
+// @P@Config is a lexer ATN configuration, as in ANTLR's LexerATNConfig.
+type @P@Config struct {
+	state, alt int32
+	nonGreedy  bool
+	stack      *@P@Frame
+	acts       *@P@Acts
+}
+
+// @P@Set is an ordered configuration set without duplicates.
+type @P@Set struct {
+	configs []@P@Config
+	seen    map[string]bool
+	key     []byte
+}
+
+func @P@AppendInt(b []byte, v int32) []byte {
+	return append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+}
+
+func (s *@P@Set) add(c @P@Config) {
+	k := @P@AppendInt(s.key[:0], c.state)
+	k = @P@AppendInt(k, c.alt)
+	if c.nonGreedy {
+		k = append(k, 1)
+	} else {
+		k = append(k, 0)
+	}
+	for f := c.stack; f != nil; f = f.next {
+		k = @P@AppendInt(k, f.ret)
+	}
+	k = @P@AppendInt(k, -1)
+	for a := c.acts; a != nil; a = a.prev {
+		k = @P@AppendInt(k, a.id)
+	}
+	s.key = k
+	if !s.seen[string(k)] {
+		s.seen[string(k)] = true
+		s.configs = append(s.configs, c)
+	}
+}
+
+func @P@Moved(c @P@Config, target int32, stack *@P@Frame, acts *@P@Acts) @P@Config {
+	return @P@Config{target, c.alt, c.nonGreedy || @P@StateFlags[target]&2 != 0, stack, acts}
+}
+
+// closure is ANTLR's LexerATNSimulator.closure; it reports whether the
+// configuration's alternative has reached its rule's stop state.
+func (s *@P@Set) closure(c @P@Config, reached bool) bool {
+	flags := @P@StateFlags[c.state]
+	if flags&1 != 0 {
+		if c.stack == nil {
+			s.add(c)
+			return true
+		}
+		return s.closure(@P@Moved(c, c.stack.ret, c.stack.next, c.acts), reached)
+	}
+	if flags&4 == 0 && (!reached || !c.nonGreedy) {
+		s.add(c)
+	}
+	for i := @P@TransStart[c.state]; i < @P@TransStart[c.state+1]; i++ {
+		t := @P@Trans[i]
+		switch t.kind {
+		case 0:
+			reached = s.closure(@P@Moved(c, t.target, c.stack, c.acts), reached)
+		case 1:
+			reached = s.closure(@P@Moved(c, t.target, &@P@Frame{t.arg, c.stack}, c.acts), reached)
+		case 3:
+			acts := c.acts
+			if c.stack == nil {
+				for _, id := range @P@ActLists[t.arg] {
+					acts = &@P@Acts{id, acts}
+				}
+			}
+			reached = s.closure(@P@Moved(c, t.target, c.stack, acts), reached)
+		}
+	}
+	return reached
+}
+
+func @P@NewSet() *@P@Set {
+	return &@P@Set{seen: map[string]bool{}}
+}
+
+// @P@Reach is ANTLR's getReachableConfigSet: the configurations after a code
+// point of class class.
+func @P@Reach(configs []@P@Config, class int) *@P@Set {
+	s := @P@NewSet()
+	skipAlt := int32(0)
+	for _, c := range configs {
+		reached := c.alt == skipAlt
+		if reached && c.nonGreedy {
+			continue
+		}
+		for i := @P@TransStart[c.state]; i < @P@TransStart[c.state+1]; i++ {
+			t := @P@Trans[i]
+			if t.kind == 2 && @P@SetClasses[int(t.arg)*@P@NumClasses+class] == '1' {
+				if s.closure(@P@Moved(c, t.target, c.stack, c.acts), reached) {
+					skipAlt = c.alt
+				}
+			}
+		}
+	}
+	return s
+}
+
+// @P@Accept is what configs accept: the type and channel of the first
+// configuration at a rule stop state, after its actions.
+func @P@Accept(configs []@P@Config) (ok bool, ttype, channel int32) {
+	for _, c := range configs {
+		if @P@StateFlags[c.state]&1 == 0 {
+			continue
+		}
+		var ids []int32
+		for a := c.acts; a != nil; a = a.prev {
+			ids = append(ids, a.id)
+		}
+		ttype, channel = int32(@P@StateType[c.state]), -1
+		for i := len(ids) - 1; i >= 0; i-- {
+			if t := @P@ActType[ids[i]]; t != 0 {
+				ttype = t
+			}
+			if ch := @P@ActChannel[ids[i]]; ch >= 0 {
+				channel = ch
+			}
+		}
+		return true, ttype, channel
+	}
+	return false, 0, 0
+}
+
+// @P@MatchATN matches one token on the ATN, with no limit on rule-call
+// depth: ANTLR's execATN without a DFA cache.
+func @P@MatchATN(data string, from @P@Pos) @P@Result {
+	var r @P@Result
+	start := @P@NewSet()
+	for i, target := range @P@StartTargets {
+		start.closure(@P@Config{state: target, alt: int32(i + 1)}, false)
+	}
+	configs := start.configs
+	at := from
+	if ok, t, ch := @P@Accept(configs); ok {
+		r = @P@Result{accepted: true, ttype: t, channel: ch, end: at}
+	}
+	for at.off < len(data) {
+		c, size := @P@At(data, at.off)
+		reach := @P@Reach(configs, @P@Class(c)).configs
+		if len(reach) == 0 {
+			break
+		}
+		at = at.advance(c, size)
+		configs = reach
+		if ok, t, ch := @P@Accept(configs); ok {
+			r.accepted, r.ttype, r.channel, r.end = true, t, ch, at
+		}
+	}
+	r.stop = at
+	return r
+}
+`
+
+// Stats summarizes a DFA for reports: states, input classes, dynamic edges.
+func (d DFA) Stats() string {
+    val dynamic = d.Edges.FoldLeft(0, (n, row) => n + row.Count(_ == DynamicEdge))
+    s"${d.States.Size()} states, ${d.Model.Classes.Size()} classes, depth ${d.MaxDepth}, $dynamic dynamic edges"
+}
+

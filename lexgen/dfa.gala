@@ -1,0 +1,250 @@
+package lexgen
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/concurrent"
+)
+
+// DFA construction reproduces ANTLR 4's LexerATNSimulator. A DFA state is the
+// ordered list of configurations ANTLR's simulator would hold after the same
+// input, built with the same closure order, so the first configuration to
+// reach a token rule's stop state (rule priority), the non-greedy cut-off and
+// the lexer commands that travel with a configuration all come out the same.
+//
+// Recursive fragments make rule-call stacks unbounded. The static DFA keeps
+// stacks up to Options.MaxDepth; an edge whose target would need a deeper
+// stack is Dynamic, and a lexer that takes it re-runs the token on the ATN
+// (Sim with no depth limit), which gives the same answer at any depth.
+
+// Config is one ATN configuration of the lexer simulation.
+struct Config(
+    State int,
+    // Alt is the token rule's alternative number in the tokens start state (1-based).
+    Alt int,
+    // Stack holds the return states of the rules called so far, innermost first.
+    Stack List[int],
+    // NonGreedy is set once the configuration has passed a non-greedy decision.
+    NonGreedy bool,
+    // Actions are the lexer commands collected so far (ids into Model.Actions).
+    Actions Array[int],
+)
+
+// Key identifies c within a configuration set: ANTLR's lexer configurations
+// are equal when state, alternative, stack, non-greedy flag and actions are.
+func (c Config) Key() string =
+    s"${c.State}/${c.Alt}/${c.NonGreedy}/${c.Stack.MkString(",")}/${c.Actions.MkString(",")}"
+
+// configSet is an ordered set of configurations under construction.
+type configSet struct {
+    var configs Array[Config]
+    var keys HashSet[string]
+    // overflow is set when a configuration needed a stack deeper than the limit.
+    var overflow bool
+}
+
+func newConfigSet() Ptr[configSet] = &configSet{
+    configs: EmptyArray[Config](),
+    keys: EmptyHashSet[string](),
+    overflow: false,
+}
+
+func (s Ptr[configSet]) add(c Config) {
+    val key = c.Key()
+    if !s.keys.Contains(key) {
+        s.keys = s.keys.Add(key)
+        s.configs = s.configs.Append(c)
+    }
+}
+
+// Sim runs ANTLR's lexer closure and reach over a Model. MaxDepth bounds the
+// rule-call stack (0 means no bound).
+struct Sim(M Model, MaxDepth int)
+
+// moved is c at target: ANTLR sets the non-greedy flag when a configuration
+// enters a non-greedy decision state, and it stays set.
+func (s Sim) moved(c Config, target int, stack List[int], actions Array[int]) Config =
+    Config(target, c.Alt, stack, c.NonGreedy || s.M.NonGreedy.Get(target), actions)
+
+// closure adds c and every configuration reachable from it without consuming
+// to set, in ANTLR's order, and reports whether the alternative has reached
+// its token rule's stop state (ANTLR's currentAltReachedAcceptState).
+func (s Sim) closure(c Config, set Ptr[configSet], reached bool) bool {
+    if s.M.IsStop.Get(c.State) {
+        return c.Stack match {
+            case List(ret, rest...) => s.closure(s.moved(c, ret, rest, c.Actions), set, reached)
+            case _ => {
+                set.add(c)
+                true
+            }
+        }
+    }
+    if !s.M.EpsilonOnly.Get(c.State) && (!reached || !c.NonGreedy) {
+        set.add(c)
+    }
+    s.M.Out.Get(c.State).FoldLeft(reached, (r, e) => e match {
+        case Eps(target) => s.closure(s.moved(c, target, c.Stack, c.Actions), set, r)
+        case Call(_, _) if s.MaxDepth > 0 && c.Stack.Size() >= s.MaxDepth => {
+            set.overflow = true
+            r
+        }
+        case Call(target, follow) => s.closure(s.moved(c, target, c.Stack.Prepend(follow), c.Actions), set, r)
+        // Commands of a rule reached through a rule call are ignored, as in ANTLR.
+        case Act(target, acts) if c.Stack.IsEmpty() => s.closure(s.moved(c, target, c.Stack, c.Actions.AppendAll(acts)), set, r)
+        case Act(target, _) => s.closure(s.moved(c, target, c.Stack, c.Actions), set, r)
+        case Consume(_, _, _) => r
+    })
+}
+
+// Start is the closure of the tokens start state: one alternative per token rule.
+func (s Sim) Start() Ptr[configSet] {
+    val set = newConfigSet()
+    s.M.StartTargets.ZipWithIndex().ForEach((ti) => {
+        s.closure(Config(ti.V1, ti.V2 + 1, EmptyList[int](), false, EmptyArray[int]()), set, false)
+    })
+    set
+}
+
+// Reach is the configuration set after consuming a code point of class cls
+// from configs (ANTLR's getReachableConfigSet followed by closure). Once an
+// alternative has reached its stop state, its configurations that passed a
+// non-greedy decision stop matching.
+func (s Sim) Reach(configs Array[Config], cls int) Ptr[configSet] {
+    val set = newConfigSet()
+    configs.FoldLeft(0, (skipAlt, cfg) => {
+        val reached = cfg.Alt == skipAlt
+        if (reached && cfg.NonGreedy) skipAlt
+        else s.M.Out.Get(cfg.State).FoldLeft(skipAlt, (skip, e) => e match {
+            case Consume(target, _, in) if in.Get(cls) =>
+                if (s.closure(s.moved(cfg, target, cfg.Stack, cfg.Actions), set, reached)) cfg.Alt else skip
+            case _ => skip
+        })
+    })
+    set
+}
+
+// Accept is what a DFA state accepts: the token type its first stop-state
+// configuration predicts and the lexer actions collected on the way.
+struct Accept(Prediction int, Actions Array[int])
+
+// AcceptOf is the accept of a configuration list, as ANTLR decides it.
+func (s Sim) AcceptOf(configs Array[Config]) Option[Accept] =
+    configs.Find((c) => s.M.IsStop.Get(c.State)).Map((c) => Accept(s.M.TokenType(c.State), c.Actions))
+
+// ErrorEdge marks a DFA edge that leads nowhere: the token ends before the code point.
+val ErrorEdge = -1
+
+// DynamicEdge marks a DFA edge whose target needs a deeper rule-call stack
+// than the static DFA keeps; the lexer finishes the token on the ATN.
+val DynamicEdge = -2
+
+// DFAState is a state of the lexer DFA.
+struct DFAState(Id int, Configs Array[Config], Accept Option[Accept])
+
+// DFA is the lexer DFA: Edges[s][c] is the state after a code point of class
+// c from state s, or ErrorEdge, or DynamicEdge. State 0 is the start state.
+struct DFA(
+    Model Model,
+    MaxDepth int,
+    States Array[DFAState],
+    Edges Array[Array[int]],
+)
+
+// Options configure DFA construction.
+struct Options(
+    // MaxDepth is the deepest rule-call stack the static DFA keeps.
+    MaxDepth int = 12,
+    // Parallel computes the transitions of a DFA frontier concurrently.
+    Parallel bool = true,
+)
+
+// HasDynamicEdges reports whether some edge leaves the static DFA.
+func (d DFA) HasDynamicEdges() bool = d.Edges.Exists(_.Contains(DynamicEdge))
+
+// rowTarget is one computed edge before its target has a state id.
+sealed type rowTarget {
+    case NoTarget()
+    case Overflow()
+    case Reached(Configs Array[Config], Key string)
+}
+
+func setKey(configs Array[Config]) string = configs.Map(_.Key()).MkString(";")
+
+// row computes every edge out of configs. Classes that the configurations'
+// transitions cannot tell apart give the same reach, so it is computed once
+// per group of such classes.
+func (s Sim) row(configs Array[Config]) Array[rowTarget] {
+    val numClasses = s.M.Classes.Size()
+    val consumes = configs.FlatMap((cfg) => s.M.Out.Get(cfg.State).Collect({ case Consume(_, _, in) => in }))
+    val signature = (cls int) string =>
+        consumes.ZipWithIndex().Filter((ci) => ci.V1.Get(cls)).Map((ci) => s"${ci.V2}").MkString(",")
+    val sigs = ArrayTabulate(numClasses, signature)
+    val reaches = sigs.Distinct().Filter(_ != "").FoldLeft(EmptyHashMap[string, rowTarget](), (acc, sig) => {
+        val reach = s.Reach(configs, sigs.IndexOf(sig))
+        val target = if (reach.overflow) Overflow()
+            else if (reach.configs.IsEmpty()) NoTarget()
+            else Reached(reach.configs, setKey(reach.configs))
+        acc.Put(sig, target)
+    })
+    sigs.Map((sig) => reaches.Get(sig).GetOrElse(NoTarget()))
+}
+
+// Build constructs the lexer DFA of m, breadth first. Each frontier's rows are
+// independent, so with opts.Parallel they are computed as concurrent Futures;
+// new states are then numbered in frontier order, so the result is the same
+// either way.
+func Build(m Model, opts Options) Either[Array[string], DFA] {
+    val sim = Sim(m, opts.MaxDepth)
+    val start = sim.Start()
+    if start.overflow {
+        return Left(ArrayOf(s"the lexer's start state needs rule calls deeper than ${opts.MaxDepth}"))
+    }
+    val first = growth(
+        ArrayOf(DFAState(0, start.configs, sim.AcceptOf(start.configs))),
+        EmptyHashMap[string, int]().Put(setKey(start.configs), 0),
+        EmptyArray[Array[int]](),
+    )
+    val done = grow(sim, opts.Parallel, first)
+    Right(DFA(m, opts.MaxDepth, done.States, done.Edges))
+}
+
+// growth is a DFA under construction: its states, their ids by
+// configuration-set key, and the rows of the states processed so far.
+struct growth(States Array[DFAState], Ids HashMap[string, int], Edges Array[Array[int]])
+
+// grow computes the rows of every state not yet processed, one frontier at a
+// time, until no new state appears.
+func grow(sim Sim, parallel bool, g growth) growth {
+    if g.Edges.Size() == g.States.Size() {
+        return g
+    }
+    val frontier = g.States.Drop(g.Edges.Size())
+    val rows = if (parallel) {
+        frontier.Map((st) => Future(sim.row(st.Configs))).Map(_.Get())
+    } else {
+        frontier.Map((st) => sim.row(st.Configs))
+    }
+    grow(sim, parallel, rows.FoldLeft(g, (acc, r) => acc.withRow(sim, r)))
+}
+
+// withRow numbers the targets of row, adding the states it reaches first, and
+// appends the row.
+func (g growth) withRow(sim Sim, row Array[rowTarget]) growth {
+    val numbered = row.FoldLeft(Tuple(g, EmptyArray[int]()), (acc, t) => {
+        val (cur, ids) = acc
+        val (next, id) = cur.target(sim, t)
+        Tuple(next, ids.Append(id))
+    })
+    numbered.V1.Copy(Edges = numbered.V1.Edges.Append(numbered.V2))
+}
+
+func (g growth) target(sim Sim, t rowTarget) Tuple[growth, int] = t match {
+    case NoTarget() => Tuple(g, ErrorEdge)
+    case Overflow() => Tuple(g, DynamicEdge)
+    case Reached(configs, key) => g.Ids.Get(key) match {
+        case Some(id) => Tuple(g, id)
+        case None() => {
+            val id = g.States.Size()
+            Tuple(g.Copy(States = g.States.Append(DFAState(id, configs, sim.AcceptOf(configs))), Ids = g.Ids.Put(key, id)), id)
+        }
+    }
+}
