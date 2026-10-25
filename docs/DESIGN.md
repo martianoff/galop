@@ -52,14 +52,27 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
      global FOLLOW, i.e. any calling context) are disjoint within K ≤ 3 tokens, the
      decision is a `switch` on `LA(1)`, then `LA(2)`… Only one alternative can be
      viable on that lookahead in any context, so this agrees with ANTLR.
-  2. *Adaptive prediction*, for the lookahead prefixes static analysis cannot settle.
-     Generated parsers keep a stack of return states (one `int32` push per rule call)
-     and, at such a decision, run a small ATN simulator over the static ATN tables
-     with the real call stack: ANTLR's full-context LL prediction, including its
-     stopping rule (stop when every conflicting subset of configurations resolves to
-     the same minimum alternative) and its graph-structured context merging. There
-     is no per-process warm-up: the tables are Go literals, and only decisions the
-     report lists ever reach the simulator.
+  2. *Adaptive prediction*, for the decisions static lookahead cannot settle. This is
+     ANTLR's own prediction (its Go runtime 4.13.1, quirks included) run over the
+     ATN, which generated parsers carry as Go literal tables:
+     - **SLL first.** The calling context is a wildcard: a rule's end continues
+       after every call of the rule. Prediction stops at a unique alternative or at
+       an SLL conflict (`hasSLLConflictTerminatingPrediction`), which SLL settles by
+       the lowest conflicting alternative. The analysis builds as much of each
+       decision's SLL DFA as it can ahead of time (`Automaton`); states beyond that
+       are computed at runtime and cached for the life of the process, as ANTLR
+       caches them. Walking cached edges takes no lock.
+     - **LL on retry.** A parse runs in SLL mode; if it hits a syntax error it is
+       retried from the start in LL mode, where an SLL conflict runs full-context
+       prediction with the parser's real call stack (generated parsers push one
+       `int32` return state per rule call) until ANTLR's stopping rule picks an
+       alternative. This is how the GALA compiler drives ANTLR, and SLL success gives
+       the LL tree on the whole corpus.
+     - **Contexts** are graph-structured stacks, hash-consed and merged with ANTLR's
+       rules (`merge`, `mergeSingletons`, `mergeArrays`, wildcard root in SLL), so
+       configuration sets, conflict subsets and DFA states are exactly ANTLR's.
+       Tracking each stack separately is not just slower: with global FOLLOW the
+       number of distinct stacks grows combinatorially.
 - **Trees.** The default Go flavor (below) builds ANTLR's own context objects, so
   trees print identically with `antlr.TreesStringTree`.
 - **Lexing** follows ANTLR's lexer: longest match, the earlier rule wins a tie,

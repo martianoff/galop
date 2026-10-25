@@ -3,13 +3,29 @@
 **galop** is a parser generator for ANTLR-style `.g4` grammars, written in
 [GALA](https://github.com/martianoff/gala).
 
-It reads the grammar you already have and works out every parsing decision when
-it generates the parser, not while the parser runs. The output is plain
-recursive-descent code: no runtime library, no grammar interpreter, no warm-up.
+It reads the grammar you already have and works out parsing decisions when it
+generates the parser, not while the parser runs. The output is plain
+recursive-descent code with a `switch` on the next tokens wherever a few tokens of
+lookahead decide. Only decisions that need unbounded lookahead run ANTLR's
+prediction algorithm, over tables compiled into the generated file, so the parser
+picks exactly what ANTLR would pick. It needs no grammar file at runtime and no
+deserialization.
 
-> **Status: early development.** galop reads, validates and formats `.g4`
-> grammars today. Grammar analysis and code generation are next; see the
+> **Status: early development.** galop generates a Go lexer and parser for the
+> GALA compiler's grammar that produce exactly ANTLR's tokens and trees on the
+> whole GALA source corpus (722 of 722 files ANTLR accepts), several times faster.
+> Other grammars work as far as their features are supported (see below); see the
 > [roadmap](docs/ROADMAP.md).
+
+On the GALA corpus (723 files, 1.8 MB; Go 1.25, one machine; ANTLR driven the way
+the GALA compiler drives it, SLL with an LL retry):
+
+| | ANTLR 4.13.1 | galop | |
+|---|---:|---:|---:|
+| First pass in a fresh process | 2.00 s | 0.72 s | 2.8× |
+| Warm, one goroutine | 0.58 s | 0.19 s | 3× |
+| Warm, 32 goroutines | 394 ms | 67 ms | 5.9× |
+| Lexer only, warm, parallel | 107 ms | 11 ms | 10× |
 
 ## Why
 
