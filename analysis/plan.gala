@@ -25,27 +25,33 @@ sealed type Lookahead {
     // Adaptive asks the runtime predictor to choose among Alts by simulating
     // the ATN from the decision with the real call stack (ANTLR's LL mode).
     case Adaptive(Alts Array[int])
-    // Automaton is ANTLR's SLL lookahead DFA, built ahead of time. State 0
-    // reads LA(1); a state without Final reads the next token and follows the
-    // edge whose Tokens contain it (no edge: a syntax error). A state with
-    // Final consumes nothing more.
+    // Automaton is ANTLR's SLL prediction DFA for the decision, built ahead of
+    // time. It replaces the whole decision's lookahead (it starts at the
+    // decision, reading LA(1) in state 0). From a state without Final, read
+    // the next token and follow the edge whose Tokens contain it; no such
+    // edge is a syntax error. A state with Final consumes nothing more: it
+    // predicts an alternative, or stops without one (see FinalFullLL).
     case Automaton(States Array[DFAState])
 }
 
 // DFAState is one state of an Automaton.
 struct DFAState(Edges Array[DFAEdge], Final Option[DFAFinal])
 
-// DFAEdge leads to state Target on any token in Tokens.
+// DFAEdge moves to state Target on any token in Tokens.
 struct DFAEdge(Tokens atn.IntervalSet, Target int)
 
-// DFAFinal ends an Automaton walk.
+// DFAFinal is what an Automaton decides when it stops.
 sealed type DFAFinal {
     // FinalPredict picks Alt.
     case FinalPredict(Alt int)
-    // FinalFullLL needs runtime prediction. MinAlt is set for an SLL conflict and is
-    // ANTLR's SLL-mode answer (the lowest conflicting alternative); LL mode runs
-    // full-context prediction instead. MinAlt is None where construction stopped at a
-    // bound: the runtime continues with SLL prediction.
+    // FinalFullLL stops the automaton without a unique alternative. MinAlt is
+    // set when ANTLR's SLL prediction stops here with a conflict
+    // (hasSLLConflictTerminatingPrediction): it is the alternative ANTLR
+    // predicts in pure SLL mode (D.prediction, the smallest conflicting
+    // alternative); full-context (LL) prediction from the decision's start
+    // decides in LL mode. MinAlt is None where the automaton stopped at a
+    // bound (stack depth or state budget) rather than a conflict: prediction
+    // goes on at runtime, SLL first and then LL as needed.
     case FinalFullLL(MinAlt Option[int])
 }
 

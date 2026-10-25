@@ -42,8 +42,8 @@ import (
 // is left to adaptive prediction.
 
 // config is a position reached while computing lookahead: an ATN state, the
-// return states of the rule calls entered on the way (an interned stack, see
-// stackTable), how many tokens had been consumed when it returned past the
+// return states of the rule calls entered on the way (a context, see
+// contextTable), how many tokens had been consumed when it returned past the
 // end of the decision's rule (Exit, or inside while it has not), and the
 // decision alternative it belongs to. State endOfInput stands for "past the
 // end of a start rule", where only EOF can follow.
@@ -54,7 +54,9 @@ val endOfInput = -1
 // inside is the Exit of a configuration that has not left the decision's rule.
 val inside = -1
 
-// emptyStack is the id of the empty call stack.
+// emptyStack is the id of the empty context: no rule call entered since the
+// decision, the caller's context below it unknown (a wildcard, as in ANTLR's
+// SLL prediction).
 val emptyStack = 0
 
 // maxStack bounds the call stack of a configuration. Only a left-recursive
@@ -68,34 +70,82 @@ val stateSpan = int64(1) << 22
 val altSpan = int64(1) << 10
 val exitSpan = int64(1) << 6
 
-// stackTable interns call stacks: each distinct stack gets an id, so a
-// configuration is four ints and its key one int64. A stack is its top
-// return state (heads) on top of another stack (tails); id 0 is empty.
-struct stackTable(
-    ids Ptr[m.HashMap[int64, int]],
-    heads Ptr[m.Array[int]],
-    tails Ptr[m.Array[int]],
-    sizes Ptr[m.Array[int]],
+// contextTable interns call-stack contexts, the way ANTLR's prediction
+// contexts are graph-structured: a context is a set of (return state, parent
+// context) entries sorted by return state, and id 0 is the empty context. A
+// plain stack is a chain of single entries; merging the contexts of two
+// configurations with the same state and alternative shares their common
+// structure instead of listing every stack. Equal contexts get equal ids, so
+// a configuration is four ints and its key one int64.
+struct contextTable(
+    ids Ptr[m.HashMap[string, int]],
+    entries Ptr[m.Array[Array[Tuple[int, int]]]],
+    depths Ptr[m.Array[int]],
+    merges Ptr[m.HashMap[int64, int]],
 )
 
-func newStackTable() stackTable =
-    stackTable(m.EmptyHashMap[int64, int](), m.ArrayOf(0), m.ArrayOf(0), m.ArrayOf(0))
+func newContextTable() contextTable =
+    contextTable(
+        m.EmptyHashMap[string, int](),
+        m.ArrayOf(EmptyArray[Tuple[int, int]]()),
+        m.ArrayOf(0),
+        m.EmptyHashMap[int64, int](),
+    )
 
-// push is the stack with ret on top of stack.
-func (t stackTable) push(ret int, stack int) int {
-    val k = int64(stack) * stateSpan + int64(ret)
+// intern is the id of the context with these entries (sorted by return state).
+func (t contextTable) intern(es Array[Tuple[int, int]]) int {
+    val k = es.Map((e) => s"${e.V1}/${e.V2}").MkString(",")
     t.ids.Get(k) match {
         case Some(id) => id
         case None() => {
-            val id = t.heads.Size()
-            t.heads.Append(ret)
-            t.tails.Append(stack)
-            t.sizes.Append(t.sizes.Get(stack) + 1)
+            val id = t.entries.Size()
+            t.entries.Append(es)
+            t.depths.Append(1 + es.FoldLeft(0, (acc, e) => maxOf(acc, t.depths.Get(e.V2))))
             t.ids.Put(k, id)
             id
         }
     }
 }
+
+// push is the context with return state ret on top of ctx.
+func (t contextTable) push(ret int, ctx int) int = t.intern(ArrayOf((ret, ctx)))
+
+// merge is the union of two contexts. The empty context is a wildcard (the
+// caller's context is unknown), so it absorbs whatever it is merged with, at
+// any depth, as ANTLR's SLL merge does.
+func (t contextTable) merge(a int, b int) int {
+    if (a == b) {
+        return a
+    }
+    if (a == emptyStack || b == emptyStack) {
+        return emptyStack
+    }
+    val k = int64(minOf(a, b)) * stateSpan * altSpan + int64(maxOf(a, b))
+    t.merges.Get(k) match {
+        case Some(known) => known
+        case None() => {
+            val ea = t.entries.Get(a)
+            val eb = t.entries.Get(b)
+            val rets = unique(ea.Map(_.V1).AppendAll(eb.Map(_.V1))).Sorted()
+            val merged = rets.Map((r) => {
+                val pa = ea.Find(_.V1 == r).Map(_.V2)
+                val pb = eb.Find(_.V1 == r).Map(_.V2)
+                val parent = (pa, pb) match {
+                    case (Some(x), Some(y)) => t.merge(x, y)
+                    case (Some(x), None()) => x
+                    case (_, Some(y)) => y
+                    case _ => emptyStack
+                }
+                (r, parent)
+            })
+            val id = t.intern(merged)
+            t.merges.Put(k, id)
+            id
+        }
+    }
+}
+
+func minOf(a int, b int) int = if (a < b) a else b
 
 // group identifies the runtime configuration c stands for, regardless of its
 // alternative: configurations of different alternatives in the same group
@@ -146,20 +196,24 @@ func exitAfter(exit int, consumed int) int = if (exit == inside) consumed else e
 struct decider(
     g grammarInfo,
     maxK int,
-    stacks stackTable,
+    stacks contextTable,
     memo Ptr[m.HashMap[string, Lookahead]],
     expanded Ptr[m.Array[Ptr[m.HashMap[int64, expansion]]]],
     expanding Ptr[m.HashSet[int64]],
+    // trackExit records Exit on configurations leaving the decision's rule;
+    // the SLL automaton does not need it.
+    trackExit bool,
 )
 
-func newDecider(g grammarInfo, maxK int) decider =
+func newDecider(g grammarInfo, maxK int, trackExit bool = true) decider =
     decider(
         g,
         maxK,
-        newStackTable(),
+        newContextTable(),
         m.EmptyHashMap[string, Lookahead](),
         m.ArrayTabulate(maxK + 2, (_) => m.EmptyHashMap[int64, expansion]()),
         m.EmptyHashSet[int64](),
+        trackExit,
     )
 
 // closure follows every non-consuming path from the start configurations,
@@ -232,9 +286,9 @@ func (d decider) expand(c0 config, consumed int) expansion {
             val s = st.Get()
             if isRuleStop(s) {
                 if c.Stack != emptyStack {
-                    visit(config(d.stacks.heads.Get(c.Stack), d.stacks.tails.Get(c.Stack), c.Exit, c.Alt))
+                    d.stacks.entries.Get(c.Stack).ForEach((e) => visit(config(e.V1, e.V2, c.Exit, c.Alt)))
                 } else {
-                    val exit = exitAfter(c.Exit, consumed)
+                    val exit = if (d.trackExit) exitAfter(c.Exit, consumed) else inside
                     d.g.callerFollows.Get(s.Rule).ForEach((ret) => visit(config(ret, emptyStack, exit, c.Alt)))
                     if d.g.startRule.Get(s.Rule) {
                         visit(config(endOfInput, emptyStack, exit, c.Alt))
@@ -244,7 +298,7 @@ func (d decider) expand(c0 config, consumed int) expansion {
             s.Out.ForEach((t) => t match {
                 case atn.Epsilon(target) => visit(config(target, c.Stack, c.Exit, c.Alt))
                 case atn.RuleCall(target, _, follow) => {
-                    if d.stacks.sizes.Get(c.Stack) >= maxStack {
+                    if d.stacks.depths.Get(c.Stack) >= maxStack {
                         overflow = true
                     } else {
                         visit(config(target, d.stacks.push(follow, c.Stack), c.Exit, c.Alt))
@@ -386,39 +440,32 @@ func mergeCases(cases Array[LookaheadCase]) Array[LookaheadCase] {
 func render(l Lookahead) string = l match {
     case Predict(alt) => s"$alt"
     case Adaptive(alts) => s"adaptive(${alts.MkString(",")})"
+    case Automaton(states) => s"automaton(${states.Size()})"
     case Switch(depth, cases) => s"LA$depth{" + cases.Map((c) => c.Tokens.String() + ":" + render(c.Then)).MkString(" ") + "}"
 }
 
-// planDecision analyzes one decision.
+// planDecision analyzes one decision. The static lookahead tree comes first;
+// when part of it would be left to adaptive prediction, the whole decision
+// gets its SLL automaton instead (class and conflicts still describe the
+// tree). A decision whose alternatives start with a predicate stays Adaptive:
+// ANTLR evaluates those predicates while it predicts.
 func (g grammarInfo) planDecision(dec atn.Decision, maxK int) DecisionPlan {
-    val st = g.a.State(dec.State)
-    val allAlts = ArrayTabulate(dec.AltCount, (i) => i + 1)
-    val d = newDecider(g, maxK)
-    // The decision state's i-th transition starts alternative i+1. A
-    // transition that consumes straight away gets a group of its own.
-    val seeds = st.Out.ZipWithIndex().Map((p) => (p.V1, p.V2 + 1))
-    val firstMoves = seeds.Collect({
-        case (atn.Atom(target, label), alt) => move(atn.SetOf(label), int64(-alt), config(target, emptyStack, inside, alt))
-        case (atn.SetMatch(target, set), alt) => move(set, int64(-alt), config(target, emptyStack, inside, alt))
-    })
-    val starts = seeds.Collect({
-        case (atn.Epsilon(target), alt) => config(target, emptyStack, inside, alt)
-        case (atn.RuleCall(target, _, follow), alt) => config(target, d.stacks.push(follow, emptyStack), inside, alt)
-        case (atn.LexerActions(target, _), alt) => config(target, emptyStack, inside, alt)
-        case (atn.Predicate(target, _, _), alt) => config(target, emptyStack, inside, alt)
-        case (atn.Action(target, _, _), alt) => config(target, emptyStack, inside, alt)
-    })
-    val predicatedSeed = seeds.Exists((p) => p.V1 match {
-        case atn.Predicate(_, _, _) => true
-        case _ => false
-    })
-    val r = d.closure(starts, 0)
-    // ANTLR evaluates the predicates it meets before the first token while it
-    // predicts, so such a decision is always left to the runtime.
+    val (tree, static) = g.lookaheadTree(dec, maxK)
     val lookahead =
-        if (predicatedSeed || r.Predicated || r.Overflow) Adaptive(allAlts)
-        else d.decide(firstMoves.AppendAll(r.Moves), 1)
-    DecisionPlan(dec, classify(lookahead), lookahead, conflictsOf(lookahead, EmptyArray[int]()))
+        if (static && hasAdaptive(tree)) g.buildAutomaton(dec).GetOrElse(Adaptive(ArrayTabulate(dec.AltCount, (i) => i + 1)))
+        else tree
+    DecisionPlan(dec, classify(tree), lookahead, conflictsOf(tree, EmptyArray[int]()))
+}
+
+// lookaheadTree is the static lookahead tree of dec, and whether static
+// lookahead applies at all (no predicate before the first token, no runaway
+// call stack); when it does not, the tree is Adaptive over every alternative.
+func (g grammarInfo) lookaheadTree(dec atn.Decision, maxK int) Tuple[Lookahead, bool] {
+    val d = newDecider(g, maxK)
+    val start = decisionSeed(g, dec, d)
+    val r = d.closure(start.Starts, 0)
+    if (start.Predicated || r.Predicated || r.Overflow) (Adaptive(ArrayTabulate(dec.AltCount, (i) => i + 1)), false)
+    else (d.decide(start.Moves.AppendAll(r.Moves), 1), true)
 }
 
 // classify summarizes a lookahead tree.
@@ -432,6 +479,7 @@ func classify(l Lookahead) DecisionClass =
 func hasAdaptive(l Lookahead) bool = l match {
     case Predict(_) => false
     case Adaptive(_) => true
+    case Automaton(_) => true
     case Switch(_, cases) => cases.Exists((c) => hasAdaptive(c.Then))
 }
 
@@ -448,6 +496,7 @@ func maxOf(a int, b int) int = if (a > b) a else b
 func conflictsOf(l Lookahead, prefix Array[int]) Array[Conflict] = l match {
     case Predict(_) => EmptyArray[Conflict]()
     case Adaptive(alts) => ArrayOf(Conflict(alts, prefix))
+    case Automaton(_) => EmptyArray[Conflict]()
     case Switch(_, cases) => cases.FlatMap((c) => conflictsOf(c.Then, prefix.Append(exampleToken(c.Tokens))))
 }
 

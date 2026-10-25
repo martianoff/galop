@@ -25,6 +25,7 @@ func tokens(a atn.ATN, s atn.IntervalSet) string = s.Values().Map((t) => a.Vocab
 func show(a atn.ATN, l Lookahead) string = l match {
     case Predict(alt) => s"$alt"
     case Adaptive(alts) => s"?${alts.MkString(",")}"
+    case Automaton(states) => s"dfa(${states.Size()})"
     case Switch(_, cases) => "{" + cases.Map((c) => tokens(a, c.Tokens) + ":" + show(a, c.Then)).MkString(" ") + "}"
 }
 
@@ -46,7 +47,14 @@ func planFor(a atn.ATN, an Analysis, rule string, text string) DecisionPlan =
 func decision(src string, rule string, text string, maxK int = MaxK) string {
     val a = parserATN(src)
     val p = planFor(a, Analyze(a, maxK), rule, text)
-    s"${className(p.Class)} ${show(a, p.Lookahead)}"
+    s"${className(p.Class)} ${show(a, treeOf(a, p.Decision, maxK))}"
+}
+
+// treeOf is the static lookahead tree of a decision, which the plan replaces
+// with an automaton when part of it is adaptive.
+func treeOf(a atn.ATN, dec atn.Decision, maxK int) Lookahead {
+    val sites = callSites(a)
+    newGrammarInfo(a, sites, startRules(a, sites)).lookaheadTree(dec, maxK).V1
 }
 
 val tokensXYZ = `
@@ -214,6 +222,7 @@ Decisions that need more than one token:
 Adaptive decisions:
 decision 1 in rule t (block): t : Q W Q Y | Q W Q Z
   alts 1,2 both start with: 'q' 'w' 'q'
+  SLL automaton: 6 states, 2 of them final
 `)
 }
 
@@ -236,4 +245,89 @@ func TestGalaGrammar(t T) T {
     }).Map((p) => a.RuleNames.Get(p.Decision.Rule))
     val t1 = HasPrefix(t, report, "107 decisions: 71 LL(1), 13 LL(2), 2 LL(3), 21 adaptive\n")
     Eq(t1, adaptive, galaAdaptive)
+}
+
+// automatonOf analyzes src and returns the SLL automaton of one decision.
+func automatonOf(src string, rule string, text string) Tuple[atn.ATN, Array[DFAState]] {
+    val a = parserATN(src)
+    planFor(a, Analyze(a), rule, text).Lookahead match {
+        case Automaton(states) => (a, states)
+        case other => go_builtins.Panic(s"no automaton, got ${render(other)}")
+    }
+}
+
+// showAutomaton renders an automaton: `0 X:1 | 1 predict 2 | 2 full LL`.
+func showAutomaton(a atn.ATN, states Array[DFAState]) string =
+    states.ZipWithIndex().Map((p) => {
+        val (st, i) = p
+        st.Final match {
+            case Some(FinalPredict(alt)) => s"$i predict $alt"
+            case Some(FinalFullLL(Some(alt))) => s"$i conflict $alt"
+            case Some(FinalFullLL(None())) => s"$i bound"
+            case None() => s"$i " + st.Edges.Map((e) => s"${tokens(a, e.Tokens)}:${e.Target}").MkString(" ")
+        }
+    }).MkString(" | ")
+
+// runAutomaton feeds token names to an automaton until it decides.
+func runAutomaton(a atn.ATN, states Array[DFAState], input Array[string]) string {
+    var state = 0
+    var rest = input
+    var verdict = ""
+    for verdict == "" {
+        val st = states.Get(state)
+        st.Final match {
+            case Some(FinalPredict(alt)) => verdict = s"predict $alt"
+            case Some(FinalFullLL(Some(alt))) => verdict = s"conflict $alt"
+            case Some(FinalFullLL(None())) => verdict = "bound"
+            case None() => rest.HeadOption().FlatMap((name) => a.Vocab.TypeOf(name)) match {
+                case Some(tok) => st.Edges.Find(_.Tokens.Contains(tok)) match {
+                    case Some(e) => {
+                        state = e.Target
+                        rest = rest.Drop(1)
+                    }
+                    case None() => verdict = "syntax error"
+                }
+                case None() => verdict = "out of input"
+            }
+        }
+    }
+    verdict
+}
+
+func TestAutomatonLoopsBack(t T) T {
+    // Telling a's alternatives apart needs the token after a dotted name of any
+    // length: the automaton cycles over `Y X` instead of giving up.
+    val (a, states) = automatonOf(`grammar L;
+s : a EOF ;
+a : X (Y X)* Z | X (Y X)* W ;
+` + tokensXYZ, "a", "a : X (Y X)* Z | X (Y X)* W")
+    val t1 = Eq(t, showAutomaton(a, states), "0 X:1 | 1 Y:2 Z:3 W:4 | 2 X:1 | 3 predict 1 | 4 predict 2")
+    Eq(t1, runAutomaton(a, states, ArrayOf("X", "Y", "X", "Y", "X", "W")), "predict 2")
+}
+
+func TestAutomatonConflictNeedsFullContext(t T) T {
+    // After `Y Y Q` both alternatives can end s, in different calling contexts
+    // of a: SLL prediction stops with a conflict and ANTLR retries in LL mode,
+    // which sees whether s started with W or Z.
+    val (a, states) = automatonOf(`grammar C;
+s : W a Y Q | Z a Q ;
+a : Y Y | Y ;
+` + tokensXYZ, "a", "a : Y Y | Y")
+    val t1 = Eq(t, showAutomaton(a, states), "0 Y:1 | 1 Y:2 Q:3 | 2 Y:4 Q:5 | 3 predict 2 | 4 predict 1 | 5 conflict 1")
+    Eq(t1, runAutomaton(a, states, ArrayOf("Y", "Y", "Q")), "conflict 1")
+}
+
+func TestAutomatonBoundsRecursion(t T) T {
+    // Every X nests e once more, so the SLL automaton would be infinite; past
+    // the stack limit it hands over to full-context prediction.
+    val (a, states) = automatonOf(`grammar R;
+s : e EOF ;
+e : X e Y Q | X e Y W | Z ;
+` + tokensXYZ, "e", "e : X e Y Q | X e Y W | Z")
+    val deep = ArrayFill(dfaStackLimit + 2, "X")
+    val t1 = Eq(t, runAutomaton(a, states, deep), "bound")
+    val t2 = Eq(t1, runAutomaton(a, states, ArrayOf("X", "X", "Z", "Y", "Q", "Y", "W")), "predict 2")
+    val t3 = Eq(t2, runAutomaton(a, states, ArrayOf("Z")), "predict 3")
+    val t4 = Eq(t3, runAutomaton(a, states, ArrayOf("X", "Q")), "syntax error")
+    Less(t4, states.Size(), dfaStateLimit)
 }
