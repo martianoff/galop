@@ -1,0 +1,16 @@
+load("@rules_gala//gala:defs.bzl", "gala_binary")
+
+gala_binary(
+    name = "lexgen",
+    srcs = ["main.gala"],
+    # The differential harness generates gala.g4's companion lexer with it.
+    visibility = ["//differential:__subpackages__"],
+    deps = [
+        "//atn",
+        "//codegen",
+        "//g4",
+        "//lexgen",
+        "@gala//collection_immutable",
+        "@gala//fs",
+    ],
+)

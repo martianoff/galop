@@ -20,6 +20,7 @@ at build time, never checked in. `go.mod` here exists for Bazel's `go_deps`.
 | `gala/` | `Tokens`, `ParseANTLR`, the `Parser` type and the parser registry |
 | `corpus/` | Loading input: the Bazel corpus manifest, a directory, or files |
 | `diff/` | Parallel tree comparison; the corpus tests and `testing.B` benchmarks |
+| `lexdiff/` | galop's generated lexer against ANTLR's, token by token over the corpus; lexer benchmarks |
 | `cmd/treedump` | Print each file's tree (ANTLR's `ToStringTree`) |
 | `cmd/difftest` | Compare two parsers over a corpus; exit 1 on any mismatch |
 | `cmd/bench` | Lexer and parser timings, warm and in a fresh process |
@@ -42,6 +43,7 @@ bazel run //differential/cmd/difftest -- -a antlr-sll -b antlr-ll
 bazel run //differential/cmd/treedump -- -parser antlr-ll path/to/file.gala
 bazel run -c opt //differential/cmd/bench           # timing table (Markdown)
 bazel run -c opt //differential/diff:diff_test -- -test.run='^$' -test.bench=. -test.benchmem
+bazel test //differential/lexdiff:lexdiff_test         # galop's lexer vs ANTLR's, token by token
 ```
 
 Every tool reads the Bazel corpus by default. `-dir <dir>` or file arguments point it at
@@ -57,6 +59,10 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
 
 ## What the tests check
 
+- galop's generated lexer (`antlrgala.NewgalaGalopLexer`, built from `gala.g4` by
+  `//tools/lexgen`) gives ANTLR's tokens, errors and stream positions on every corpus
+  file, on mutated copies (truncated, with stray characters) and on nested
+  interpolations past its static DFA depth.
 - `antlr-lenient` and `antlr-ll` build the same tree for all 723 files, error-recovered
   trees included, so either one is the reference.
 - Where SLL alone builds a tree without a syntax error, it is LL's tree. SLL rejects 15
