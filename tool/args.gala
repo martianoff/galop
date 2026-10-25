@@ -1,0 +1,170 @@
+package tool
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/diag"
+    "github.com/martianoff/galop/g4"
+)
+
+// Action is what one galop run does with its grammar files.
+sealed type Action {
+    // Generate writes the generated code (the default).
+    case Generate()
+    // Depend prints the files Generate would write, as `output : grammar` lines.
+    case Depend()
+    // Validate parses, checks and compiles, and writes nothing (-check);
+    // RoundTrip also checks that formatting preserves the grammar (-roundtrip).
+    case Validate(RoundTrip bool)
+    // PrintFormatted prints each grammar in canonical form (-format).
+    case PrintFormatted()
+    // PrintReport prints each grammar's decision report (-report).
+    case PrintReport()
+    // ShowVersion prints the version (-version).
+    case ShowVersion()
+    // ShowHelp prints the usage text (-help, or no arguments at all).
+    case ShowHelp()
+}
+
+// Config is a parsed command line.
+struct Config(
+    Files Array[string] = EmptyArray[string](),
+    OutputDir Option[string] = None[string](),
+    LibDir Option[string] = None[string](),
+    Package Option[string] = None[string](),
+    Listener bool = true,
+    Visitor bool = false,
+    // Defines are the -D options, in command-line order.
+    Defines Array[g4.OptionEntry] = EmptyArray[g4.OptionEntry](),
+    ExactOutputDir bool = false,
+    MessageFormat diag.Format = diag.ANTLRFormat(),
+    Werror bool = false,
+    ATN bool = false,
+    Action Action = Generate(),
+)
+
+// Parsed is a command line and the problems found reading it.
+struct Parsed(Config Config, Problems Array[diag.Diagnostic])
+
+// GrammarOptions are the grammar-level options ANTLR 4 accepts (in `options {}`
+// or as -D), plus galop's `flavor`, which picks the Go target's output style.
+val GrammarOptions = ArrayOf(
+    "superClass", "contextSuperClass", "TokenLabelType", "tokenVocab", "language",
+    "accessLevel", "exportMacro", "caseInsensitive", "flavor",
+)
+
+// flagOptions are the options that take no value.
+val flagOptions = ArrayOf(
+    "-atn", "-listener", "-no-listener", "-visitor", "-no-visitor", "-depend", "-Werror",
+    "-Xexact-output-dir", "-check", "-roundtrip", "-format", "-report", "-version", "-help",
+)
+
+// valueOptions are the options followed by a value.
+val valueOptions = ArrayOf("-o", "-lib", "-package", "-message-format")
+
+// ParseArgs reads a galop command line (without the program name) the way
+// ANTLR's tool reads its own: options and grammar files in any order, a file
+// named twice processed once, -D options applied in order. Problems are
+// reported, not fatal, so one run lists them all; the caller stops when any
+// is an error.
+func ParseArgs(args Array[string]) Parsed {
+    if args.IsEmpty() {
+        return Parsed(Config(Action = ShowHelp()), EmptyArray[diag.Diagnostic]())
+    }
+    var cfg = Config()
+    var problems = EmptyArray[diag.Diagnostic]()
+    var actions = EmptyArray[string]()
+    var roundTrip = false
+    var i = 0
+    for i < args.Size() {
+        val arg = args.Get(i)
+        i = i + 1
+        if strings.HasPrefix(arg, "-D") {
+            defineOf(arg) match {
+                case Left(d) => problems = problems.Append(d)
+                case Right(entry) => cfg = cfg.Copy(Defines = cfg.Defines.Append(entry))
+            }
+        } else if !strings.HasPrefix(arg, "-") {
+            if !cfg.Files.Contains(arg) {
+                cfg = cfg.Copy(Files = cfg.Files.Append(arg))
+            }
+        } else if valueOptions.Contains(arg) {
+            if i >= args.Size() {
+                problems = problems.Append(diag.BadCommandLine.New(s"option $arg needs a value"))
+            } else {
+                val value = args.Get(i)
+                i = i + 1
+                arg match {
+                    case "-o" => cfg = cfg.Copy(OutputDir = Some(trimSlash(value)))
+                    case "-lib" => cfg = cfg.Copy(LibDir = Some(trimSlash(value)))
+                    case "-package" => cfg = cfg.Copy(Package = Some(value))
+                    case _ => diag.ParseFormat(value) match {
+                        case Some(f) => cfg = cfg.Copy(MessageFormat = f)
+                        case None() => problems = problems.Append(diag.BadCommandLine.New(
+                            s"unknown message format $value; use ${diag.FormatNames.MkString(", ")}",
+                        ))
+                    }
+                }
+            }
+        } else if flagOptions.Contains(arg) {
+            arg match {
+                case "-atn" => cfg = cfg.Copy(ATN = true)
+                case "-listener" => cfg = cfg.Copy(Listener = true)
+                case "-no-listener" => cfg = cfg.Copy(Listener = false)
+                case "-visitor" => cfg = cfg.Copy(Visitor = true)
+                case "-no-visitor" => cfg = cfg.Copy(Visitor = false)
+                case "-Werror" => cfg = cfg.Copy(Werror = true)
+                case "-Xexact-output-dir" => cfg = cfg.Copy(ExactOutputDir = true)
+                case "-roundtrip" => roundTrip = true
+                case _ => actions = actions.Append(arg)
+            }
+        } else {
+            problems = problems.Append(diag.InvalidCmdlineArg.New(arg))
+        }
+    }
+    val (action, actionProblems) = chooseAction(actions, roundTrip, cfg.Files.IsEmpty())
+    Parsed(cfg.Copy(Action = action), problems.AppendAll(actionProblems))
+}
+
+// chooseAction turns the action options given into one Action.
+func chooseAction(given Array[string], roundTrip bool, noFiles bool) Tuple[Action, Array[diag.Diagnostic]] {
+    val actions = given.Distinct()
+    val none = EmptyArray[diag.Diagnostic]()
+    if actions.Contains("-help") {
+        return (ShowHelp(), none)
+    }
+    if actions.Contains("-version") {
+        return (ShowVersion(), none)
+    }
+    val validate = actions.Contains("-check") || roundTrip
+    val chosen = actions.Filter(_ != "-check").AppendAll(if (validate) ArrayOf("-check") else EmptyArray[string]())
+    val action = chosen.HeadOption() match {
+        case Some("-check") => Validate(roundTrip)
+        case Some("-format") => PrintFormatted()
+        case Some("-report") => PrintReport()
+        case Some("-depend") => Depend()
+        case _ => Generate()
+    }
+    val conflicts = if (chosen.Size() > 1)
+        ArrayOf(diag.BadCommandLine.New(s"options ${chosen.MkString(", ")} cannot be combined"))
+        else none
+    val missing = if (noFiles) ArrayOf(diag.BadCommandLine.New("no grammar files given")) else none
+    (action, conflicts.AppendAll(missing))
+}
+
+// defineOf reads one -Dname=value option. ANTLR rejects a missing name or
+// value (error 9) and ignores an option it does not know, with warning 83.
+func defineOf(arg string) Either[diag.Diagnostic, g4.OptionEntry] {
+    val (name, value, found) = strings.Cut(strings.TrimPrefix(arg, "-D"), "=")
+    if (!found || name == "" || value == "") Left(diag.BadOptionSetSyntax.New(arg))
+    else if (!GrammarOptions.Contains(name)) Left(diag.IllegalOption.New(name))
+    else Right(g4.OptionEntry(name, value, g4.NoPos))
+}
+
+// trimSlash drops one trailing path separator, as ANTLR does for -o and -lib.
+func trimSlash(dir string) string =
+    if (dir.ByteSize() <= 1) dir
+    else if (strings.HasSuffix(dir, "/")) strings.TrimSuffix(dir, "/")
+    else strings.TrimSuffix(dir, "\\")

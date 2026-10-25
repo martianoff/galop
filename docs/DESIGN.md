@@ -23,9 +23,11 @@ becomes a parser, and the contracts between the packages that do it.
 | `atn` | Token numbering (ANTLR-compatible), the ATN, the parser rule IR |
 | `analysis` | FIRST/FOLLOW, static LL(k) per decision, adaptive decisions, conflict report |
 | `lexgen` | Lexer ATN → DFA with ANTLR's lexer semantics |
-| `codegen` | The `Target` interface and the target registry |
+| `codegen` | The `Target` interface; `cmd/galop` lists the targets a binary ships |
 | `golang` | The Go target |
-| `cmd/galop` | The command-line tool, with ANTLR's options and message format |
+| `diag` | Diagnostics: ANTLR's error numbers and message formats, galop's own codes |
+| `tool` | The command line: argument parsing, output layout, the per-file pipeline |
+| `cmd/galop` | `main`: wires the targets and the file system into `tool` |
 
 Each stage is a pure function of the previous stage's output, so stages that do
 not depend on each other run concurrently (see [Concurrency](#concurrency)).
@@ -156,25 +158,76 @@ galop-only:
   -report               print the decision report
   -check [-roundtrip]   validate only, write nothing
   -format               print the grammar in canonical form
-  -version
+  -version, -help
 ```
 
-Messages use ANTLR's format and, where the problem is the same, ANTLR's error
-numbers: `error(56): gala.g4:12:5: reference to undefined rule: foo`. Problems only
-galop has (a construct it does not support yet) use numbers from 500 up. The exit
-code is 1 when any error was reported.
+The README lists the options exactly as `galop -help` prints them.
+
+**Diagnostics** (`diag`) carry a code, a severity, a file and a 1-based line and
+column. They are rendered in ANTLR's three layouts (`antlr`, `gnu`, `vs2005`),
+byte for byte as ANTLR lays them out, including its 0-based column and the
+double space where a tool error has no location:
+`error(56): gala.g4:12:4: reference to undefined rule: foo`,
+`error(7):  cannot find or open file: x.g4`. Where the problem is one ANTLR
+reports, the code and wording are ANTLR 4.13.1's (`diag/kinds.gala` lists them);
+problems only galop has use codes from 500 up:
+
+| Code | Problem |
+|---|---|
+| 500 | a construct galop does not support yet (imports, `tokenVocab`, rule arguments, ...) |
+| 501 | a parser rule references a fragment rule |
+| 502 | `-check -roundtrip`: the formatter does not preserve the grammar |
+| 503 | an element that cannot appear in this kind of rule (a `[set]` in a parser rule) |
+| 504 | a set that matches nothing |
+| 505 | the target rejected the grammar |
+| 506 | a command line galop cannot act on (missing value, conflicting actions, no files) |
+| 507 | a reversed range in a lexer set (`[z-a]`) |
+
+Two places follow ANTLR where galop used to be stricter: a token a parser rule
+uses but nothing defines is warning 125 (ANTLR then defines it, and so does
+`atn.BuildVocabulary`), and an unknown `-D` or grammar option is warning 83. The
+exit code is 1 when any error was reported; `-Werror` adds ANTLR's one-time
+error 10 after the first warning and stops that grammar before code generation.
+
+**Positions.** The grammar model records where the grammar name, each option,
+each rule name and each element start (`Rule.Located`, in the pre-order of
+`Rule.Nodes`). They place diagnostics; they do not change what a grammar means,
+so equality that matters (the formatter round trip) compares
+`g4.StripPositions` of both sides. `atn.Compile` places its errors at the
+element being compiled.
+
+**Pipeline** (`tool`). `tool.Run(args, Toolkit)` is the whole command line;
+`main` only wires a `Toolkit` (the targets, the file system, the version) and
+prints the `Outcome`. A target is added to `main`'s list; there is no global
+registry. For each grammar file the front end (read, parse, check, compile,
+analyze) runs in its own `Future`; generation and writes then run in
+command-line order, so output and diagnostics are deterministic and an error
+in one grammar does not stop the others.
 
 ## Bazel (`rules_gala`)
 
-`rules_gala` provides `galop_parser(name, grammar, package, flavor, ...)`, the
-counterpart of the usual ANTLR genrule: it runs galop on a `.g4` and yields the
-generated Go sources for a `go_library`.
+`rules_gala` provides `galop_parser(name, grammar, package, flavor, kind, ...)`,
+the counterpart of the usual ANTLR genrule: it runs galop on a `.g4` and
+yields the generated Go sources (declared outputs named like ANTLR's Go
+target) for a `go_library`.
+
+rules_gala gets galop from a **toolchain of prebuilt release binaries**, not by
+building galop from source with `gala_binary`. The GALA compiler is built from
+source in Bazel and will generate its own parser with galop; building galop
+from source inside `galop_parser` would need the GALA toolchain, which needs
+the GALA compiler, which needs its parser: a cycle. A prebuilt binary breaks it,
+and users who only want Go parsers need neither Go nor GALA toolchains for the
+generator. galop's own repository (or anyone else) can still register a
+`galop_toolchain` pointing at a from-source build.
 
 ## Concurrency
 
 galop is written in GALA and uses `concurrent.Future`:
 
-- the CLI processes grammar files concurrently;
+- the CLI runs each grammar file's front end (parse, check, compile, analyze)
+  concurrently. Generation and writes stay on the main goroutine: GALA's
+  data-race check never lets an interface or a function value (an injected
+  target or file system) cross into a `Future`;
 - for one grammar, parser analysis and lexer DFA construction run concurrently;
 - decisions are analyzed concurrently; rules are emitted concurrently and joined
   in rule order, so output is deterministic.

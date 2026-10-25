@@ -1,0 +1,24 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "diag",
+    srcs = [
+        "diag.gala",
+        "kinds.gala",
+    ],
+    importpath = "github.com/martianoff/galop/diag",
+    visibility = ["//visibility:public"],
+    deps = ["@gala//collection_immutable"],
+)
+
+gala_test(
+    name = "diag_test",
+    srcs = ["diag_test.gala"],
+    importpath = "github.com/martianoff/galop/diag",
+    lib_srcs = [
+        "diag.gala",
+        "kinds.gala",
+    ],
+    pkg = "diag",
+    deps = ["@gala//collection_immutable"],
+)

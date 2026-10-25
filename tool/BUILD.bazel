@@ -1,0 +1,48 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "tool",
+    srcs = [
+        "args.gala",
+        "atndot.gala",
+        "files.gala",
+        "pipeline.gala",
+        "usage.gala",
+    ],
+    importpath = "github.com/martianoff/galop/tool",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//analysis",
+        "//atn",
+        "//codegen",
+        "//diag",
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//concurrent",
+        "@gala//fs",
+    ],
+)
+
+gala_test(
+    name = "tool_test",
+    srcs = ["tool_test.gala"],
+    importpath = "github.com/martianoff/galop/tool",
+    lib_srcs = [
+        "args.gala",
+        "atndot.gala",
+        "files.gala",
+        "pipeline.gala",
+        "usage.gala",
+    ],
+    pkg = "tool",
+    deps = [
+        "//analysis",
+        "//atn",
+        "//codegen",
+        "//diag",
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//concurrent",
+        "@gala//fs",
+    ],
+)

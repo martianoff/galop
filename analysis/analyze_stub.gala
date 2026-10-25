@@ -1,0 +1,23 @@
+package analysis
+
+import (
+    "martianoff/gala/go_builtins"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// TEMPORARY STUB. The real Analyze and Report are being written on another
+// branch; this file only lets the command-line tool compile against their
+// signatures until that branch lands, and must be deleted then. Both fail
+// loudly (the tool reports an internal error) rather than return empty plans
+// a code generator could mistake for a real analysis.
+
+// Analyze computes the decision plans of a parser network (not implemented yet).
+func Analyze(a atn.ATN, maxK int) Analysis {
+    go_builtins.Panic(s"analysis.Analyze is not implemented yet (grammar ${a.GrammarName}, MaxK $maxK)")
+}
+
+// Report renders the decision report of an analysis (not implemented yet).
+func Report(a atn.ATN, plans Analysis) string {
+    go_builtins.Panic(s"analysis.Report is not implemented yet (grammar ${a.GrammarName}, ${plans.Plans.Size()} plans)")
+}

@@ -1,0 +1,48 @@
+package tool
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+)
+
+// OptionHelp is one line of the usage text.
+struct OptionHelp(Name string, Description string)
+
+// antlrOptions are the options galop shares with ANTLR's tool, described as ANTLR describes them.
+val antlrOptions = ArrayOf(
+    OptionHelp("-o ___", "specify output directory where all output is generated"),
+    OptionHelp("-lib ___", "specify location of grammars, tokens files"),
+    OptionHelp("-atn", "generate rule augmented transition network diagrams"),
+    OptionHelp("-message-format ___", "specify output style for messages in antlr, gnu, vs2005"),
+    OptionHelp("-listener", "generate parse tree listener (default)"),
+    OptionHelp("-no-listener", "don't generate parse tree listener"),
+    OptionHelp("-visitor", "generate parse tree visitor"),
+    OptionHelp("-no-visitor", "don't generate parse tree visitor (default)"),
+    OptionHelp("-package ___", "specify a package/namespace for the generated code"),
+    OptionHelp("-depend", "generate file dependencies"),
+    OptionHelp("-D<option>=value", "set/override a grammar-level option"),
+    OptionHelp("-Werror", "treat warnings as errors"),
+    OptionHelp("-Xexact-output-dir", "all output goes into -o dir regardless of paths/package"),
+)
+
+// galopOptions are galop's own options.
+val galopOptions = ArrayOf(
+    OptionHelp("-check", "validate grammars without generating anything"),
+    OptionHelp("-roundtrip", "with -check, also verify that formatting keeps each grammar"),
+    OptionHelp("-format", "print each grammar in canonical form"),
+    OptionHelp("-report", "print the decisions static lookahead cannot settle"),
+    OptionHelp("-version", "print the galop version"),
+    OptionHelp("-help", "print this help"),
+)
+
+// Usage is the help text, laid out like ANTLR's: a header, then one
+// ` %-19s %s` line per option.
+func Usage(version string) string {
+    val line = (o OptionHelp) => {
+        val pad = if (o.Name.Size() < 19) strings.Repeat(" ", 19 - o.Name.Size()) else ""
+        return " " + o.Name + pad + " " + o.Description + "\n"
+    }
+    val header = s"galop $version, a parser generator for ANTLR 4 grammars\nusage: galop [options] grammar.g4...\n"
+    header + antlrOptions.Map(line).MkString("") + "galop options:\n" + galopOptions.Map(line).MkString("")
+}

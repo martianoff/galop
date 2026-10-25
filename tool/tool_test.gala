@@ -1,0 +1,350 @@
+package tool
+
+import (
+    "errors"
+    "path/filepath"
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/diag"
+    "github.com/martianoff/galop/g4"
+)
+
+// --- argument parsing ---
+
+// summary renders the parts of a parsed command line the tests look at.
+func summary(p Parsed) string {
+    val c = p.Config
+    val action = c.Action match {
+        case Generate() => "generate"
+        case Depend() => "depend"
+        case Validate(rt) => if (rt) "check+roundtrip" else "check"
+        case PrintFormatted() => "format"
+        case PrintReport() => "report"
+        case ShowVersion() => "version"
+        case ShowHelp() => "help"
+    }
+    val format = c.MessageFormat match {
+        case diag.ANTLRFormat() => "antlr"
+        case diag.GNUFormat() => "gnu"
+        case diag.VS2005Format() => "vs2005"
+    }
+    val parts = ArrayOf(
+        action,
+        s"files=${c.Files.MkString(",")}",
+        s"o=${c.OutputDir.GetOrElse("-")}",
+        s"lib=${c.LibDir.GetOrElse("-")}",
+        s"pkg=${c.Package.GetOrElse("-")}",
+        s"listener=${c.Listener}",
+        s"visitor=${c.Visitor}",
+        s"D=${c.Defines.Map((d) => d.Name + "=" + d.Value).MkString(",")}",
+        s"exact=${c.ExactOutputDir}",
+        s"format=$format",
+        s"werror=${c.Werror}",
+        s"atn=${c.ATN}",
+    )
+    val problems = p.Problems.Map((d) => d.Render(diag.ANTLRFormat()))
+    parts.AppendAll(problems).MkString(" ")
+}
+
+func parse(line string) string = summary(ParseArgs(if (line == "") EmptyArray[string]() else ArrayOf(strings.Split(line, " ")...)))
+
+val defaults = "o=- lib=- pkg=- listener=true visitor=false D= exact=false format=antlr werror=false atn=false"
+
+func TestParseArgs(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, parse(in), want),
+    Case[string, string](Name = "no arguments prints help", Input = "", Expected = s"help files= $defaults"),
+    Case[string, string](Name = "files only", Input = "A.g4 B.g4 A.g4", Expected = s"generate files=A.g4,B.g4 $defaults"),
+    Case[string, string](
+        Name = "every ANTLR option",
+        Input = "-o out/ -lib lib -package p -no-listener -visitor -Dlanguage=Go -Dflavor=companion -Xexact-output-dir -message-format gnu -Werror -atn T.g4",
+        Expected = "generate files=T.g4 o=out lib=lib pkg=p listener=false visitor=true D=language=Go,flavor=companion exact=true format=gnu werror=true atn=true",
+    ),
+    Case[string, string](Name = "last listener option wins", Input = "-no-listener -listener T.g4", Expected = s"generate files=T.g4 $defaults"),
+    Case[string, string](Name = "depend", Input = "-depend T.g4", Expected = s"depend files=T.g4 $defaults"),
+    Case[string, string](Name = "check", Input = "-check T.g4", Expected = s"check files=T.g4 $defaults"),
+    Case[string, string](Name = "roundtrip implies check", Input = "-roundtrip T.g4", Expected = s"check+roundtrip files=T.g4 $defaults"),
+    Case[string, string](Name = "check and roundtrip", Input = "T.g4 -check -roundtrip", Expected = s"check+roundtrip files=T.g4 $defaults"),
+    Case[string, string](Name = "format", Input = "-format T.g4", Expected = s"format files=T.g4 $defaults"),
+    Case[string, string](Name = "report", Input = "-report T.g4", Expected = s"report files=T.g4 $defaults"),
+    Case[string, string](Name = "version needs no files", Input = "-version", Expected = s"version files= $defaults"),
+    Case[string, string](Name = "help wins", Input = "-check -help", Expected = s"help files= $defaults"),
+    Case[string, string](
+        Name = "unknown option",
+        Input = "-bogus T.g4",
+        Expected = s"generate files=T.g4 $defaults error(2):  unknown command-line option -bogus",
+    ),
+    Case[string, string](
+        Name = "missing value",
+        Input = "T.g4 -o",
+        Expected = s"generate files=T.g4 $defaults error(506):  option -o needs a value",
+    ),
+    Case[string, string](
+        Name = "unknown message format",
+        Input = "-message-format json T.g4",
+        Expected = s"generate files=T.g4 $defaults error(506):  unknown message format json; use antlr, gnu, vs2005",
+    ),
+    Case[string, string](
+        Name = "bad -D syntax",
+        Input = "-Dlanguage -D=Go -Dlanguage= T.g4",
+        Expected = s"generate files=T.g4 $defaults error(9):  invalid -Dname=value syntax: -Dlanguage error(9):  invalid -Dname=value syntax: -D=Go error(9):  invalid -Dname=value syntax: -Dlanguage=",
+    ),
+    Case[string, string](
+        Name = "unknown -D option is a warning and is dropped",
+        Input = "-Dk=2 T.g4",
+        Expected = s"generate files=T.g4 $defaults warning(83):  unsupported option k",
+    ),
+    Case[string, string](
+        Name = "actions cannot be combined",
+        Input = "-check -format T.g4",
+        Expected = s"format files=T.g4 $defaults error(506):  options -format, -check cannot be combined",
+    ),
+    Case[string, string](Name = "no files", Input = "-Werror", Expected = "generate files= o=- lib=- pkg=- listener=true visitor=false D= exact=false format=antlr werror=true atn=false error(506):  no grammar files given"),
+)
+
+// --- output paths ---
+
+struct PathCase(Args string, Grammar string, File string)
+
+func pathOf(c PathCase) string =
+    filepath.ToSlash(OutputPath(ParseArgs(ArrayOf(strings.Split(c.Args + " " + c.Grammar, " ")...)).Config, c.Grammar, c.File))
+
+func TestOutputPath(t T) T = RunCases[PathCase, string](t,
+    (sub, in, want) => Eq(sub, pathOf(in), want),
+    Case[PathCase, string](Name = "next to the grammar", Input = PathCase("-check", "T.g4", "t_parser.go"), Expected = "t_parser.go"),
+    Case[PathCase, string](Name = "next to a grammar in a directory", Input = PathCase("-check", "g/sub/T.g4", "t_parser.go"), Expected = "g/sub/t_parser.go"),
+    Case[PathCase, string](Name = "-o keeps the grammar's relative directory", Input = PathCase("-o out", "g/sub/T.g4", "t_parser.go"), Expected = "out/g/sub/t_parser.go"),
+    Case[PathCase, string](Name = "-o with a bare grammar", Input = PathCase("-o out", "T.g4", "t_parser.go"), Expected = "out/t_parser.go"),
+    Case[PathCase, string](Name = "-Xexact-output-dir", Input = PathCase("-o out -Xexact-output-dir", "g/sub/T.g4", "t_parser.go"), Expected = "out/t_parser.go"),
+    Case[PathCase, string](Name = "-Xexact-output-dir without -o", Input = PathCase("-Xexact-output-dir", "g/T.g4", "t_parser.go"), Expected = "g/t_parser.go"),
+    Case[PathCase, string](Name = "dot-dot stays relative", Input = PathCase("-o out", "../g/T.g4", "t_parser.go"), Expected = "g/t_parser.go"),
+    Case[PathCase, string](Name = "output names with directories", Input = PathCase("-o out", "T.g4", "gen/t.go"), Expected = "out/gen/t.go"),
+)
+
+func TestUsage(t T) T {
+    val text = Usage("1.2.3")
+    val t1 = HasPrefix(t, text, "galop 1.2.3, a parser generator for ANTLR 4 grammars\nusage: galop [options] grammar.g4...\n")
+    val t2 = Contains(t1, text, "\n -message-format ___ specify output style for messages in antlr, gnu, vs2005\n")
+    val t3 = Contains(t2, text, "\n -o ___              specify output directory where all output is generated\n")
+    Contains(t3, text, "\n -check              validate grammars without generating anything\n")
+}
+
+// --- the pipeline, with an in-memory file system and a fake target ---
+
+type memory struct {
+    var files HashMap[string, string]
+    var writes Array[string]
+}
+
+func newMemory(files ...Tuple[string, string]) Ptr[memory] =
+    &memory{files: HashMapOf(files...), writes: EmptyArray[string]()}
+
+// fs is the in-memory file system; writing under `locked/` fails, and `taken`
+// is a regular file.
+func (m Ptr[memory]) fs() Files = Files(
+    Read = (path) => m.files.Get(path) match {
+        case Some(text) => Success(text)
+        case None() => Failure[string](errors.New("no such file"))
+    },
+    Write = (path, content) => {
+        if strings.HasPrefix(filepath.ToSlash(path), "locked/") {
+            return Failure[Void](errors.New("permission denied"))
+        }
+        m.files = m.files.Put(filepath.ToSlash(path), content)
+        m.writes = m.writes.Append(filepath.ToSlash(path))
+        return Success[Void](Void())
+    },
+    Kind = (path) => if (path == "taken") RegularFile() else if (m.files.Contains(path)) RegularFile() else Missing(),
+)
+
+// fakeGo is a Go target that writes one file per grammar, recording the
+// options it was given in the file.
+val fakeGo = codegen.Target(
+    Language = () => "Go",
+    Generate = (in, opts) => {
+        val name = strings.ToLower(in.Grammar.Name)
+        val content = s"package=${opts.Package} listener=${opts.Listener} visitor=${opts.Visitor} flavor=${opts.Define("flavor").GetOrElse("-")} lexer=${in.Compiled.Lexer.IsDefined()}"
+        return Right[Array[string], Array[codegen.OutputFile]](ArrayOf(codegen.OutputFile(name + "_galop_lexer.go", content)))
+    },
+)
+
+// failing is a target that rejects every grammar.
+val failing = codegen.Target(
+    Language = () => "Go",
+    Generate = (in, opts) => Left[Array[string], Array[codegen.OutputFile]](ArrayOf(s"cannot handle ${in.Grammar.Name}")),
+)
+
+val lexerGrammar = "lexer grammar Lex;\noptions { flavor = fromGrammar; }\nID : [a-z]+ ;\nWS : [ ]+ -> skip ;\n"
+
+func run(m Ptr[memory], targets Array[codegen.Target], line string) Outcome =
+    Run(ArrayOf(strings.Split(line, " ")...), Toolkit(Targets = targets, Files = m.fs(), Version = "9.9.9"))
+
+func TestGenerateWritesFiles(t T) T {
+    val m = newMemory(("g/Lex.g4", lexerGrammar))
+    val out = run(m, ArrayOf(fakeGo), "-o out -package lexing -visitor -Dflavor=fromCommandLine g/Lex.g4")
+    val t1 = Eq(t, out, Outcome("", "", 0))
+    val t2 = Eq(t1, m.writes, ArrayOf("out/g/lex_galop_lexer.go"))
+    Eq(t2, m.files.Get("out/g/lex_galop_lexer.go"), Some("package=lexing listener=true visitor=true flavor=fromCommandLine lexer=true"))
+}
+
+func TestGrammarOptionsApplyWithoutDefines(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    val t1 = Eq(t, run(m, ArrayOf(fakeGo), "Lex.g4").ExitCode, 0)
+    Eq(t1, m.files.Get("lex_galop_lexer.go"), Some("package= listener=true visitor=false flavor=fromGrammar lexer=true"))
+}
+
+func TestDependListsFiles(t T) T {
+    val m = newMemory(("g/Lex.g4", lexerGrammar))
+    val out = run(m, ArrayOf(fakeGo), "-depend -o out -atn g/Lex.g4")
+    val sep = string(filepath.Separator)
+    val want = ArrayOf("out/g/lex_galop_lexer.go", "out/g/Lex.ID.dot", "out/g/Lex.WS.dot")
+        .Map((p) => strings.ReplaceAll(p, "/", sep) + " : g/Lex.g4\n").MkString("")
+    val t1 = Eq(t, out, Outcome(want, "", 0))
+    Eq(t1, m.writes, EmptyArray[string]())
+}
+
+func TestATNWritesDiagrams(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    val t1 = Eq(t, run(m, ArrayOf(fakeGo), "-atn Lex.g4").ExitCode, 0)
+    val t2 = Eq(t1, m.writes, ArrayOf("lex_galop_lexer.go", "Lex.ID.dot", "Lex.WS.dot"))
+    val dot = m.files.Get("Lex.WS.dot").GetOrElse("")
+    val t3 = HasPrefix(t2, dot, "digraph ATN {\nrankdir=LR;\n")
+    val t4 = Contains(t3, dot, "s13 -> s14 [fontsize=11, fontname=\"Courier\", arrowsize=.7, label = \"' '\"];")
+    val t5 = Contains(t4, dot, "s15[fontsize=11, label=\"15\\nd=2\", shape=circle, fixedsize=true, width=.55, peripheries=1];")
+    val t6 = Contains(t5, dot, "s3[fontsize=11, label=\"3\", shape=doublecircle, fixedsize=true, width=.6];")
+    val t7 = Contains(t6, dot, "label = \"-> skip\"];")
+    Contains(t7, m.files.Get("Lex.ID.dot").GetOrElse(""), "label = \"['a'..'z']\"];")
+}
+
+// diagrams parses and compiles a valid grammar and returns its -atn files.
+func diagrams(src string) Array[codegen.OutputFile] = g4.Parse(src) match {
+    case Right(g) => atn.Compile(g) match {
+        case Right(c) => ATNFiles(g, c)
+        case Left(_) => EmptyArray[codegen.OutputFile]()
+    }
+    case Left(_) => EmptyArray[codegen.OutputFile]()
+}
+
+func TestParserDiagrams(t T) T {
+    val dots = diagrams("grammar P;\ns : ID (',' ID)* EOF | t ;\nt : 'x' ;\nID : [a-z]+ ;\n")
+    // A combined grammar's lexer rules belong to its implicit lexer grammar.
+    val t1 = Eq(t, dots.Map(_.Name), ArrayOf("P.s.dot", "P.t.dot", "PLexer.T__0.dot", "PLexer.T__1.dot", "PLexer.ID.dot"))
+    val s = dots.HeadOption().Map(_.Content).GetOrElse("")
+    val t2 = Contains(t1, s, "label = \"ID\"];")
+    val t3 = Contains(t2, s, "label = \"','\"];")
+    val t4 = Contains(t3, s, "label = \"<EOF>\"];")
+    Contains(t4, s, "label = \"<t>\"];")
+}
+
+func TestUnknownLanguage(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    val out = run(m, ArrayOf(fakeGo), "-Dlanguage=Java Lex.g4")
+    Eq(t, out, Outcome("", "error(31):  galop cannot generate Java code as of version 9.9.9\n", 1))
+}
+
+func TestNoTargets(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    Eq(t, run(m, EmptyArray[codegen.Target](), "Lex.g4").Stderr, "error(31):  galop cannot generate Go code as of version 9.9.9\n")
+}
+
+func TestTargetErrors(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    Eq(t, run(m, ArrayOf(failing), "Lex.g4"), Outcome("", "error(505): Lex.g4:1:14: Go code generation failed: cannot handle Lex\n", 1))
+}
+
+func TestOneBadGrammarDoesNotStopOthers(t T) T {
+    val m = newMemory(("Bad.g4", "lexer grammar Bad\nA : 'a' ;\n"), ("Lex.g4", lexerGrammar))
+    val out = run(m, ArrayOf(fakeGo), "Bad.g4 Missing.g4 Lex.g4")
+    val t1 = Eq(t, out.Stderr, "error(50): Bad.g4:2:0: syntax error: expected ';', found 'A'\nerror(7):  cannot find or open file: Missing.g4\n")
+    val t2 = Eq(t1, out.ExitCode, 1)
+    Eq(t2, m.writes, ArrayOf("lex_galop_lexer.go"))
+}
+
+func TestMessageFormats(t T) T {
+    val m = newMemory(("g/Lex.g4", "lexer grammar Lex;\nA : B ;\n"))
+    val antlr = run(m, ArrayOf(fakeGo), "g/Lex.g4").Stderr
+    val gnu = run(m, ArrayOf(fakeGo), "-message-format gnu g/Lex.g4").Stderr
+    val vs = run(m, ArrayOf(fakeGo), "-message-format vs2005 g/Lex.g4").Stderr
+    val t1 = Eq(t, antlr, "error(56): Lex.g4:2:4: reference to undefined rule: B\n")
+    val t2 = Eq(t1, gnu, "g/Lex.g4:2:4: error: reference to undefined rule: B [error 56]\n")
+    Eq(t2, vs, "g/Lex.g4(2,4) : error 56 : reference to undefined rule: B\n")
+}
+
+func TestFileNameMustMatchGrammarName(t T) T {
+    val m = newMemory(("Other.g4", lexerGrammar))
+    Eq(t, run(m, ArrayOf(fakeGo), "Other.g4").Stderr, "error(8): Other.g4:1:14: grammar name Lex and file name Other.g4 differ\n")
+}
+
+func TestGrammarOptionProblems(t T) T {
+    val m = newMemory(("P.g4", "parser grammar P;\noptions { tokenVocab = L; k = 2; }\na : A ;\n"))
+    Eq(t, run(m, ArrayOf(fakeGo), "-check P.g4").Stderr,
+        "error(500): P.g4:2:10: galop does not support the tokenVocab option yet\nwarning(83): P.g4:2:26: unsupported option k\n")
+}
+
+func TestWerror(t T) T {
+    val m = newMemory(("W.g4", "grammar W;\na : B C ;\n"))
+    val out = run(m, ArrayOf(fakeGo), "-Werror W.g4")
+    val t1 = Eq(t, out.Stderr, "warning(125): W.g4:2:4: implicit definition of token B in parser\nerror(10):  warning treated as error\nwarning(125): W.g4:2:6: implicit definition of token C in parser\n")
+    val t2 = Eq(t1, out.ExitCode, 1)
+    Eq(t2, m.writes, EmptyArray[string]())
+}
+
+func TestWarningsAloneSucceed(t T) T {
+    val m = newMemory(("W.g4", "grammar W;\na : B ;\n"))
+    val out = run(m, ArrayOf(fakeGo), "-check W.g4")
+    Eq(t, out, Outcome("W.g4: ok (grammar W: 1 parser rules, 0 lexer rules)\n", "warning(125): W.g4:2:4: implicit definition of token B in parser\n", 0))
+}
+
+func TestCheckCompiles(t T) T {
+    val m = newMemory(("L.g4", "lexer grammar L;\nA : '\\q' ;\n"))
+    Eq(t, run(m, ArrayOf(fakeGo), "-check L.g4"), Outcome("", "error(156): L.g4:2:4: invalid escape sequence \\q\n", 1))
+}
+
+func TestCheckRoundTrip(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    Eq(t, run(m, ArrayOf(fakeGo), "-check -roundtrip Lex.g4"), Outcome("Lex.g4: ok (grammar Lex: 0 parser rules, 2 lexer rules)\n", "", 0))
+}
+
+func TestFormat(t T) T {
+    val m = newMemory(("Lex.g4", "lexer grammar Lex;\nA:'a'|'b';"))
+    Eq(t, run(m, ArrayOf(fakeGo), "-format Lex.g4"), Outcome("lexer grammar Lex;\n\nA\n    : 'a'\n    | 'b'\n    ;\n", "", 0))
+}
+
+func TestReportWithoutParserRules(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    Eq(t, run(m, ArrayOf(fakeGo), "-report Lex.g4").Stdout, "Lex.g4: no parser rules, so no decisions\n")
+}
+
+func TestCannotWriteFile(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    val out = run(m, ArrayOf(fakeGo), "-o locked Lex.g4")
+    val path = filepath.Join("locked", "lex_galop_lexer.go")
+    Eq(t, out, Outcome("", s"error(1):  cannot write file $path: permission denied\n", 1))
+}
+
+func TestOutputDirIsFile(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    Eq(t, run(m, ArrayOf(fakeGo), "-o taken Lex.g4"), Outcome("", "error(6):  output directory is a file: taken\n", 1))
+}
+
+func TestLibDirMustExist(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    Eq(t, run(m, ArrayOf(fakeGo), "-lib nowhere Lex.g4"), Outcome("", "error(5):  directory not found: nowhere\n", 1))
+}
+
+func TestVersionAndHelp(t T) T {
+    val m = newMemory()
+    val t1 = Eq(t, run(m, ArrayOf(fakeGo), "-version"), Outcome("galop 9.9.9\n", "", 0))
+    Eq(t1, run(m, ArrayOf(fakeGo), "-help").Stdout, Usage("9.9.9"))
+}
+
+func TestArgumentErrorsStopTheRun(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    val out = run(m, ArrayOf(fakeGo), "-bogus Lex.g4")
+    val t1 = Eq(t, out, Outcome("", "error(2):  unknown command-line option -bogus\n", 1))
+    Eq(t1, m.writes, EmptyArray[string]())
+}

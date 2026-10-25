@@ -25,14 +25,11 @@ func Check(g Grammar) Array[diag.Diagnostic] {
     })
     val kindErrors = g.Rules.Collect((r) => ruleKindError(g.Kind, r).Map((d) => at(d, r.Pos)))
     val refErrors = g.Rules.FlatMap((r) => r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => at(d, l.Pos))))
-    inSourceOrder(noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors).AppendAll(implicitTokens(g)))
+    diag.InSourceOrder(noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors).AppendAll(implicitTokens(g)))
 }
 
 // at places d at p.
 func at(d diag.Diagnostic, p Pos) diag.Diagnostic = d.At(p.Line, p.Col)
-
-func inSourceOrder(ds Array[diag.Diagnostic]) Array[diag.Diagnostic] =
-    ds.SortWith((a, b) => a.Line < b.Line || (a.Line == b.Line && a.Col < b.Col))
 
 func ruleKindError(kind GrammarKind, r Rule) Option[diag.Diagnostic] = kind match {
     case LexerOnly() if !r.IsLexer() => Some(diag.ParserRulesNotAllowed.New(r.Name))

@@ -52,7 +52,9 @@ AI-assisted contributions are welcome; the disclosure rules are in
 
 | Path | Purpose |
 |------|---------|
-| `g4/` | The `.g4` reader: lexer, parser, grammar model, formatter, semantic checks |
+| `g4/` | The `.g4` reader: lexer, parser, grammar model with positions, formatter, semantic checks |
+| `diag/` | Diagnostics with ANTLR's error numbers and message formats |
+| `tool/` | The command line: options, output layout, the per-file pipeline |
 | `cmd/galop/` | The `galop` CLI |
 | `testdata/grammars/` | Corpus grammars, copied verbatim from upstream |
 | `docs/ROADMAP.md` | Goals, design, milestones |
@@ -66,7 +68,7 @@ conflict report) and a Go code generator.
 |------|---------|
 | Unit tests | `gala test` |
 | Build the CLI | `gala build -o galop ./cmd/galop` |
-| Corpus check | `./galop check --roundtrip testdata/grammars/*.g4` |
+| Corpus check | `./galop -check -roundtrip testdata/grammars/*.g4` |
 | Bazel build + test | `bazel test //...` |
 | Regenerate BUILD files | `bazel run //:gazelle` |
 
@@ -98,7 +100,7 @@ binary directly instead:
 ## Pre-commit checklist
 
 1. [ ] `gala test` passes
-2. [ ] `gala build -o galop ./cmd/galop` and `./galop check --roundtrip testdata/grammars/*.g4` pass
+2. [ ] `gala build -o galop ./cmd/galop` and `./galop -check -roundtrip testdata/grammars/*.g4` pass
 3. [ ] `bazel test //...` passes
 4. [ ] `bazel run //:gazelle` leaves no diff (if files were added or removed)
 5. [ ] README / ROADMAP updated if behaviour or scope changed

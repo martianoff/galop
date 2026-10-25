@@ -1,0 +1,217 @@
+package tool
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/concurrent"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/diag"
+    "github.com/martianoff/galop/g4"
+)
+
+// Toolkit is what a run needs from outside the tool: the code generators,
+// the file system and the version. main wires the real ones; tests pass fakes.
+struct Toolkit(
+    // Targets are the code generators, looked up by the `language` option.
+    Targets Array[codegen.Target],
+    Files Files,
+    Version string,
+)
+
+// Outcome is what a run printed and its exit code: 1 when any error was
+// reported, else 0.
+struct Outcome(Stdout string, Stderr string, ExitCode int)
+
+// FileResult is what one grammar file produced.
+struct FileResult(Diagnostics Array[diag.Diagnostic], Stdout string)
+
+// Source is a grammar file as read: its text, or None when it could not be read.
+struct Source(Path string, Text Option[string])
+
+// Stage is the part of the configuration the front end needs.
+struct Stage(Action Action, Werror bool)
+
+// Analyzed is a grammar that passed the front end and is ready for a target.
+struct Analyzed(Grammar g4.Grammar, Compiled atn.Compiled, Analysis Option[analysis.Analysis])
+
+// FrontEnd is the front end's result for one file: what to report, and the
+// analyzed grammar when code generation should go on.
+struct FrontEnd(Result FileResult, Ready Option[Analyzed])
+
+// DefaultLanguage is the target used when no `language` option is set.
+val DefaultLanguage = "Go"
+
+// Run executes a galop command line.
+//
+// Each grammar file goes through the front end (parse, check, compile,
+// analyze) in its own Future: that work is pure and independent, so files are
+// processed concurrently and an error in one does not stop the others.
+// Generation and file writes then run in command-line order, so output and
+// diagnostics are deterministic. (GALA does not let an injected target or
+// file system cross into a Future: interfaces and function values are never
+// shareable, so they stay on this goroutine.)
+func Run(args Array[string], kit Toolkit) Outcome {
+    val parsed = ParseArgs(args)
+    val cfg = parsed.Config
+    cfg.Action match {
+        case ShowHelp() => Outcome(Usage(kit.Version), "", 0)
+        case ShowVersion() => Outcome(s"galop ${kit.Version}\n", "", 0)
+        case _ => {
+            val setup = parsed.Problems.AppendAll(checkDirectories(cfg, kit.Files))
+            if diag.HasErrors(setup) {
+                return finish(cfg, setup, "")
+            }
+            val stage = Stage(cfg.Action, cfg.Werror)
+            val sources = cfg.Files.Map((path) => Source(path, kit.Files.Read(path).ToOption()))
+            val fronts = sources.Map((src) => Future(frontEnd(stage, src)))
+            val results = sources.Zip(fronts).Map((pair) => {
+                val path = pair.V1.Path
+                val front = pair.V2.Await() match {
+                    case Success(f) => f
+                    case Failure(e) => FrontEnd(FileResult(ArrayOf(diag.InternalError.New(s"$path: ${e.Error()}")), ""), None[Analyzed]())
+                }
+                front.Ready match {
+                    case Some(a) => {
+                        val back = backEnd(cfg, kit, path, a)
+                        FileResult(front.Result.Diagnostics.AppendAll(back.Diagnostics), front.Result.Stdout + back.Stdout)
+                    }
+                    case None() => front.Result
+                }
+            })
+            finish(cfg, setup.AppendAll(results.FlatMap(_.Diagnostics)), results.Map(_.Stdout).MkString(""))
+        }
+    }
+}
+
+// finish renders diagnostics in the chosen message format. Under -Werror the
+// first warning is followed by ANTLR's one-time "warning treated as error".
+func finish(cfg Config, ds Array[diag.Diagnostic], stdout string) Outcome {
+    val firstWarning = ds.ZipWithIndex().Find((p) => !p.V1.IsError()).Map(_.V2).GetOrElse(-1)
+    val all = if (cfg.Werror && firstWarning >= 0)
+        ds.Take(firstWarning + 1).Append(diag.WarningTreatedAsError.New()).AppendAll(ds.Drop(firstWarning + 1))
+        else ds
+    val stderr = all.Map((d) => d.Render(cfg.MessageFormat) + "\n").MkString("")
+    Outcome(stdout, stderr, if (diag.HasErrors(all)) 1 else 0)
+}
+
+// checkDirectories checks -o and -lib before any grammar is read.
+func checkDirectories(cfg Config, files Files) Array[diag.Diagnostic] {
+    val out = cfg.OutputDir.Filter((dir) => files.Kind(dir).isRegularFile()).Map((dir) => diag.OutputDirIsFile.New(dir))
+    val lib = cfg.LibDir.Filter((dir) => files.Kind(dir).isMissing()).Map((dir) => diag.DirNotFound.New(dir))
+    ArrayOf(out, lib).Collect((d) => d)
+}
+
+// frontEnd runs one grammar through the pure part of the pipeline: parse,
+// check, compile and analyze, or whatever less the action needs.
+func frontEnd(stage Stage, src Source) FrontEnd = src.Text match {
+    case None() => FrontEnd(FileResult(ArrayOf(diag.CannotOpenFile.New(src.Path)), ""), None[Analyzed]())
+    case Some(text) => g4.Parse(text) match {
+        case Left(d) => FrontEnd(FileResult(ArrayOf(located(d, src.Path)), ""), None[Analyzed]())
+        case Right(g) => stage.Action match {
+            case PrintFormatted() => FrontEnd(FileResult(EmptyArray[diag.Diagnostic](), g4.Format(g)), None[Analyzed]())
+            case _ => checked(stage, src.Path, g)
+        }
+    }
+}
+
+// checked runs the semantic checks and, if they pass, the rest of the front end.
+func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
+    val problems = diag.InSourceOrder(nameProblems(path, g).AppendAll(g4.Check(g)).AppendAll(optionProblems(g))).Map((d) => located(d, path))
+    val stop = diag.HasErrors(problems) || (stage.Werror && problems.NonEmpty())
+    if stop {
+        return FrontEnd(FileResult(problems, ""), None[Analyzed]())
+    }
+    val rest = atn.Compile(g) match {
+        case Left(ds) => FrontEnd(FileResult(ds, ""), None[Analyzed]())
+        case Right(c) => stage.Action match {
+            case Validate(roundTrip) => FrontEnd(validated(path, g, roundTrip), None[Analyzed]())
+            case PrintReport() => FrontEnd(report(path, c), None[Analyzed]())
+            case _ => FrontEnd(FileResult(EmptyArray[diag.Diagnostic](), ""), Some(Analyzed(g, c, c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK)))))
+        }
+    }
+    val result = rest.Result
+    FrontEnd(FileResult(problems.AppendAll(result.Diagnostics.Map((d) => located(d, path))), result.Stdout), rest.Ready)
+}
+
+// nameProblems checks, as ANTLR does, that `grammar X;` is in a file called X.g4.
+func nameProblems(path string, g g4.Grammar) Array[diag.Diagnostic] =
+    if (baseName(path) == g.Name) EmptyArray[diag.Diagnostic]()
+    else ArrayOf(diag.FileAndGrammarNameDiffer.New(g.Name, fileName(path)).At(g.Pos.Line, g.Pos.Col))
+
+// optionProblems checks the grammar's own `options {}`: an option galop does
+// not know is ANTLR's warning 83; tokenVocab is not supported yet.
+func optionProblems(g g4.Grammar) Array[diag.Diagnostic] = g.Options.Collect((o) =>
+    if (!GrammarOptions.Contains(o.Name)) Some(diag.IllegalOption.New(o.Name).At(o.Pos.Line, o.Pos.Col))
+    else if (o.Name == "tokenVocab") Some(diag.Unsupported.New("the tokenVocab option").At(o.Pos.Line, o.Pos.Col))
+    else None[diag.Diagnostic]()
+)
+
+// validated is -check: everything up to compilation passed; with -roundtrip
+// the grammar must also survive the formatter.
+func validated(path string, g g4.Grammar, roundTrip bool) FileResult {
+    val trip = if (roundTrip) g4.RoundTrip(g) else None[string]()
+    trip match {
+        case Some(msg) => FileResult(ArrayOf(diag.RoundTripFailed.New(msg).At(g.Pos.Line, g.Pos.Col)), "")
+        case None() => {
+            val lexer = g.Rules.Count(_.IsLexer())
+            FileResult(
+                EmptyArray[diag.Diagnostic](),
+                s"$path: ok (grammar ${g.Name}: ${g.Rules.Size() - lexer} parser rules, $lexer lexer rules)\n",
+            )
+        }
+    }
+}
+
+// report is -report: the decision report of the parser network, if any.
+func report(path string, c atn.Compiled) FileResult = c.Parser match {
+    case Some(p) => FileResult(EmptyArray[diag.Diagnostic](), analysis.Report(p, analysis.Analyze(p, analysis.MaxK)))
+    case None() => FileResult(EmptyArray[diag.Diagnostic](), s"$path: no parser rules, so no decisions\n")
+}
+
+// mergedOptions are the grammar's options followed by the command line's -D
+// options, so a -D option overrides the grammar (codegen.Options.Define takes
+// the last value).
+func mergedOptions(cfg Config, g g4.Grammar) Array[g4.OptionEntry] = g.Options.AppendAll(cfg.Defines)
+
+// backEnd generates code for an analyzed grammar and writes it (with the
+// -atn diagrams), or lists the files for -depend.
+func backEnd(cfg Config, kit Toolkit, path string, a Analyzed) FileResult {
+    val g = a.Grammar
+    val opts = codegen.Options(
+        Package = cfg.Package.GetOrElse(""),
+        Listener = cfg.Listener,
+        Visitor = cfg.Visitor,
+        Defines = mergedOptions(cfg, g),
+    )
+    val language = opts.Define("language").GetOrElse(DefaultLanguage)
+    kit.Targets.Find(_.Language() == language) match {
+        case None() => FileResult(ArrayOf(diag.CannotCreateTargetGenerator.New(language, kit.Version)), "")
+        case Some(t) => t.Generate(codegen.Input(g, a.Compiled, a.Analysis), opts) match {
+            case Left(msgs) => FileResult(
+                msgs.Map((m) => diag.CodeGenerationFailed.New(language, m).At(g.Pos.Line, g.Pos.Col).In(path)),
+                "",
+            )
+            case Right(files) => {
+                val diagrams = if (cfg.ATN) ATNFiles(g, a.Compiled) else EmptyArray[codegen.OutputFile]()
+                val outputs = files.AppendAll(diagrams).Map((f) => (OutputPath(cfg, path, f.Name), f.Content))
+                cfg.Action match {
+                    case Depend() => FileResult(EmptyArray[diag.Diagnostic](), outputs.Map((o) => s"${o.V1} : $path\n").MkString(""))
+                    case _ => FileResult(writeAll(kit.Files, outputs), "")
+                }
+            }
+        }
+    }
+}
+
+// writeAll writes every output, reporting each one that fails.
+func writeAll(files Files, outputs Array[Tuple[string, string]]) Array[diag.Diagnostic] =
+    outputs.Collect((o) => files.Write(o.V1, o.V2) match {
+        case Failure(e) => Some(diag.CannotWriteFile.New(o.V1, e.Error()))
+        case Success(_) => None[diag.Diagnostic]()
+    })
+
+// located attributes a diagnostic with a source position to the grammar file
+// at path. Diagnostics about the tool or output files keep no file, as in ANTLR.
+func located(d diag.Diagnostic, path string) diag.Diagnostic = if (d.Line > 0) d.In(path) else d

@@ -116,3 +116,7 @@ func singleLine(text string) string = strings.ReplaceAll(text, "\n", " ")
 
 // HasErrors reports whether any of ds is an error.
 func HasErrors(ds Array[Diagnostic]) bool = ds.Exists(_.IsError())
+
+// InSourceOrder sorts ds by line, then column.
+func InSourceOrder(ds Array[Diagnostic]) Array[Diagnostic] =
+    ds.SortWith((a, b) => a.Line < b.Line || (a.Line == b.Line && a.Col < b.Col))
