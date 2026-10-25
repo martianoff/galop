@@ -1,29 +1,223 @@
 package golang
 
 // predictorSource is the Go code of the runtime predictor that generated
-// parsers include when the analysis left decisions to full-context
-// prediction. PFX is replaced with a per-grammar prefix and PARSER with the
-// parser type.
+// parsers include when the analysis left decisions to runtime prediction.
+// PFX is replaced with a per-grammar prefix and PARSER with the parser type.
 //
-// It is ANTLR 4's full-context (LL) prediction (ParserATNSimulator
-// execATNWithFullContext, computeReachSet, closure, getConflictingAltSubsets,
-// getSingleViableAlt), run over the static ATN tables with the parser's real
-// call stack, so it picks the alternative ANTLR picks. A prediction stack is
-// an interned frame (an index into a pool); a configuration set keeps one
-// entry per (state, alt, stack); conflict subsets group configurations by
-// state and by the set of stacks of each (state, alt), which is what ANTLR's
-// merged contexts denote. All scratch memory is reused across predictions:
-// sets are open-addressing tables cleared by bumping a generation number.
+// It reproduces the prediction of ANTLR's Go runtime 4.13.1
+// (ParserATNSimulator execATN, execATNWithFullContext, computeReachSet,
+// closure; PredictionMode; PredictionContext merge) over the static ATN
+// tables, in both of ANTLR's modes:
+//
+//   - SLL: the calling context is a wildcard (a rule's end continues at every
+//     caller) and an SLL conflict is settled by the lowest conflicting
+//     alternative. SLL results are cached in a per-decision DFA for the life of
+//     the process, as ANTLR caches them.
+//   - LL: the parser's real call stack is the context, and prediction runs until
+//     ANTLR's stopping rule picks an alternative.
+//
+// Prediction contexts are graph-structured stacks, hash-consed so that equal
+// contexts have equal ids, and merged with ANTLR's rules, so configuration
+// sets, conflict subsets and DFA states are the ones ANTLR computes.
 val predictorSource = `
-// PFXFrame is one frame of a prediction stack: the ATN state to return to
-// and the frame below it (-1 is the empty stack: the start rule's caller).
-type PFXFrame struct {
-	ret    int32
-	parent int32
+// PFXEmptyReturn is the return state that marks the end of the outermost context.
+const PFXEmptyReturn = int32(0x7fffffff)
+
+// PFXCtxPool holds hash-consed prediction contexts. Context 0 is EMPTY; every
+// other context is a singleton (one return state and parent) or an array
+// (return states in ascending order, with parents). A parent of -1 is nil.
+type PFXCtxPool struct {
+	wildcard bool
+	kind     []uint8
+	start    []int32
+	length   []int32
+	rets     []int32
+	parents  []int32
+	index    map[string]int32
+	merges   map[uint64]int32
+	key      []byte
+}
+
+const (
+	PFXCtxEmpty     = 0
+	PFXCtxSingleton = 1
+	PFXCtxArray     = 2
+)
+
+func (cp *PFXCtxPool) reset(wildcard bool) {
+	cp.wildcard = wildcard
+	cp.kind = append(cp.kind[:0], PFXCtxEmpty)
+	cp.start = append(cp.start[:0], 0)
+	cp.length = append(cp.length[:0], 1)
+	cp.rets = append(cp.rets[:0], PFXEmptyReturn)
+	cp.parents = append(cp.parents[:0], -1)
+	if cp.index == nil {
+		cp.index = map[string]int32{}
+		cp.merges = map[uint64]int32{}
+	} else {
+		clear(cp.index)
+		clear(cp.merges)
+	}
+}
+
+func (cp *PFXCtxPool) intern(kind uint8, rets, parents []int32) int32 {
+	key := append(cp.key[:0], kind)
+	for i := range rets {
+		key = binary.LittleEndian.AppendUint32(key, uint32(rets[i]))
+		key = binary.LittleEndian.AppendUint32(key, uint32(parents[i]))
+	}
+	cp.key = key
+	if id, ok := cp.index[string(key)]; ok {
+		return id
+	}
+	id := int32(len(cp.kind))
+	cp.kind = append(cp.kind, kind)
+	cp.start = append(cp.start, int32(len(cp.rets)))
+	cp.length = append(cp.length, int32(len(rets)))
+	cp.rets = append(cp.rets, rets...)
+	cp.parents = append(cp.parents, parents...)
+	cp.index[string(key)] = id
+	return id
+}
+
+// singleton is ANTLR's SingletonBasePredictionContextCreate.
+func (cp *PFXCtxPool) singleton(parent, ret int32) int32 {
+	if ret == PFXEmptyReturn && parent < 0 {
+		return 0
+	}
+	return cp.intern(PFXCtxSingleton, []int32{ret}, []int32{parent})
+}
+
+func (cp *PFXCtxPool) isEmpty(c int32) bool {
+	switch cp.kind[c] {
+	case PFXCtxEmpty:
+		return true
+	case PFXCtxArray:
+		return cp.length[c] > 0 && cp.rets[cp.start[c]] == PFXEmptyReturn
+	}
+	return false
+}
+
+// toArray is ANTLR's convertToArray: EMPTY becomes an array with no entries.
+func (cp *PFXCtxPool) toArray(c int32) int32 {
+	switch cp.kind[c] {
+	case PFXCtxEmpty:
+		return cp.intern(PFXCtxArray, nil, nil)
+	case PFXCtxSingleton:
+		s := cp.start[c]
+		return cp.intern(PFXCtxArray, []int32{cp.rets[s]}, []int32{cp.parents[s]})
+	}
+	return c
+}
+
+func PFXMergeKey(a, b int32) uint64 { return uint64(uint32(a))<<32 | uint64(uint32(b)) }
+
+func (cp *PFXCtxPool) cached(a, b int32) (int32, bool) {
+	if r, ok := cp.merges[PFXMergeKey(a, b)]; ok {
+		return r, true
+	}
+	r, ok := cp.merges[PFXMergeKey(b, a)]
+	return r, ok
+}
+
+// merge is ANTLR's merge(a, b, rootIsWildcard, mergeCache).
+func (cp *PFXCtxPool) merge(a, b int32) int32 {
+	if a == b {
+		return a
+	}
+	if cp.kind[a] == PFXCtxSingleton && cp.kind[b] == PFXCtxSingleton {
+		return cp.mergeSingletons(a, b)
+	}
+	if cp.wildcard {
+		if cp.isEmpty(a) {
+			return a
+		}
+		if cp.isEmpty(b) {
+			return b
+		}
+	}
+	return cp.mergeArrays(cp.toArray(a), cp.toArray(b))
+}
+
+func (cp *PFXCtxPool) mergeSingletons(a, b int32) int32 {
+	if r, ok := cp.cached(a, b); ok {
+		return r
+	}
+	ar, ap := cp.rets[cp.start[a]], cp.parents[cp.start[a]]
+	br, bp := cp.rets[cp.start[b]], cp.parents[cp.start[b]]
+	var r int32
+	if ar == br {
+		parent := cp.merge(ap, bp)
+		if parent == ap {
+			return a
+		}
+		if parent == bp {
+			return b
+		}
+		r = cp.singleton(parent, ar)
+	} else if ap >= 0 && ap == bp {
+		lo, hi := min(ar, br), max(ar, br)
+		r = cp.intern(PFXCtxArray, []int32{lo, hi}, []int32{ap, ap})
+	} else if ar < br {
+		r = cp.intern(PFXCtxArray, []int32{ar, br}, []int32{ap, bp})
+	} else {
+		r = cp.intern(PFXCtxArray, []int32{br, ar}, []int32{bp, ap})
+	}
+	cp.merges[PFXMergeKey(a, b)] = r
+	return r
+}
+
+func (cp *PFXCtxPool) mergeArrays(a, b int32) int32 {
+	if r, ok := cp.cached(a, b); ok {
+		return r
+	}
+	as, al := cp.start[a], cp.length[a]
+	bs, bl := cp.start[b], cp.length[b]
+	rets := make([]int32, 0, al+bl)
+	parents := make([]int32, 0, al+bl)
+	i, j := int32(0), int32(0)
+	for i < al && j < bl {
+		ar, ap := cp.rets[as+i], cp.parents[as+i]
+		br, bp := cp.rets[bs+j], cp.parents[bs+j]
+		switch {
+		case ar == br:
+			bothDollars := ar == PFXEmptyReturn && ap < 0 && bp < 0
+			if bothDollars || (ap >= 0 && bp >= 0 && ap == bp) {
+				parents = append(parents, ap)
+			} else {
+				parents = append(parents, cp.merge(ap, bp))
+				// The merge may have grown the pool; re-read the bases.
+				as, bs = cp.start[a], cp.start[b]
+			}
+			rets = append(rets, ar)
+			i++
+			j++
+		case ar < br:
+			rets, parents = append(rets, ar), append(parents, ap)
+			i++
+		default:
+			rets, parents = append(rets, br), append(parents, bp)
+			j++
+		}
+	}
+	for ; i < al; i++ {
+		rets, parents = append(rets, cp.rets[as+i]), append(parents, cp.parents[as+i])
+	}
+	for ; j < bl; j++ {
+		rets, parents = append(rets, cp.rets[bs+j]), append(parents, cp.parents[bs+j])
+	}
+	var r int32
+	if int32(len(rets)) < al+bl && len(rets) == 1 {
+		r = cp.singleton(parents[0], rets[0])
+	} else {
+		r = cp.intern(PFXCtxArray, rets, parents)
+	}
+	cp.merges[PFXMergeKey(a, b)] = r
+	return r
 }
 
 // PFXConfig is an ATN configuration: a state, the alternative it predicts and
-// its stack (a frame index, -1 for empty).
+// its context (an id in the predictor's pool).
 type PFXConfig struct {
 	state int32
 	alt   int32
@@ -34,22 +228,24 @@ func (c PFXConfig) key() uint64 {
 	return uint64(uint32(c.ctx))<<32 | uint64(uint32(c.state))<<12 | uint64(uint32(c.alt)&0xfff)
 }
 
-// PFXSet is a set of uint64 keys: open addressing, cleared in O(1) by
-// bumping the generation.
-type PFXSet struct {
+// PFXMap maps uint64 keys to int32 values: open addressing, cleared in O(1)
+// by bumping the generation.
+type PFXMap struct {
 	keys []uint64
+	vals []int32
 	gens []uint32
 	gen  uint32
 	n    int
 }
 
-func (s *PFXSet) reset() {
-	s.gen++
-	s.n = 0
-	if s.keys == nil || s.gen == 0 {
-		s.keys = make([]uint64, 64)
-		s.gens = make([]uint32, 64)
-		s.gen = 1
+func (m *PFXMap) reset() {
+	m.gen++
+	m.n = 0
+	if m.keys == nil || m.gen == 0 {
+		m.keys = make([]uint64, 64)
+		m.vals = make([]int32, 64)
+		m.gens = make([]uint32, 64)
+		m.gen = 1
 	}
 }
 
@@ -60,113 +256,69 @@ func PFXMix(k uint64) uint64 {
 	return k
 }
 
-// insert adds k and reports whether it was new.
-func (s *PFXSet) insert(k uint64) bool {
-	if 2*(s.n+1) > len(s.keys) {
-		s.grow()
+// put stores v for k unless k is present; it returns the stored value and
+// whether k was new.
+func (m *PFXMap) put(k uint64, v int32) (int32, bool) {
+	if 2*(m.n+1) > len(m.keys) {
+		m.grow()
 	}
-	mask := uint64(len(s.keys) - 1)
+	mask := uint64(len(m.keys) - 1)
 	for i := PFXMix(k) & mask; ; i = (i + 1) & mask {
-		if s.gens[i] != s.gen {
-			s.gens[i] = s.gen
-			s.keys[i] = k
-			s.n++
-			return true
+		if m.gens[i] != m.gen {
+			m.gens[i], m.keys[i], m.vals[i] = m.gen, k, v
+			m.n++
+			return v, true
 		}
-		if s.keys[i] == k {
-			return false
+		if m.keys[i] == k {
+			return m.vals[i], false
 		}
 	}
 }
 
-func (s *PFXSet) grow() {
-	oldKeys, oldGens, gen := s.keys, s.gens, s.gen
-	s.keys = make([]uint64, 2*len(oldKeys))
-	s.gens = make([]uint32, 2*len(oldKeys))
-	s.gen = 1
-	s.n = 0
+func (m *PFXMap) grow() {
+	oldKeys, oldVals, oldGens, gen := m.keys, m.vals, m.gens, m.gen
+	m.keys = make([]uint64, 2*len(oldKeys))
+	m.vals = make([]int32, 2*len(oldKeys))
+	m.gens = make([]uint32, 2*len(oldKeys))
+	m.gen = 1
+	m.n = 0
 	for i, k := range oldKeys {
 		if oldGens[i] == gen {
-			s.insert(k)
+			m.put(k, oldVals[i])
 		}
 	}
 }
 
-// PFXConfigSet is an insertion-ordered set of configurations.
+// PFXConfigSet is ANTLR's ATNConfigSet: one configuration per (state, alt),
+// whose context is the merge of every context added for it.
 type PFXConfigSet struct {
 	list []PFXConfig
-	seen PFXSet
+	at   PFXMap
 }
 
-func (s *PFXConfigSet) add(c PFXConfig) {
-	if s.seen.insert(c.key()) {
-		s.list = append(s.list, c)
+func (s *PFXConfigSet) add(c PFXConfig, cp *PFXCtxPool) {
+	k := uint64(uint32(c.state))<<32 | uint64(uint32(c.alt))
+	if i, isNew := s.at.put(k, int32(len(s.list))); !isNew {
+		s.list[i].ctx = cp.merge(s.list[i].ctx, c.ctx)
+		return
 	}
+	s.list = append(s.list, c)
 }
 
 func (s *PFXConfigSet) reset() {
 	s.list = s.list[:0]
-	s.seen.reset()
+	s.at.reset()
 }
 
-// PFXPredictor holds the scratch state of full-context prediction, reused
-// across decisions.
+// PFXPredictor holds the scratch state of runtime prediction.
 type PFXPredictor struct {
-	frames  []PFXFrame
-	frameIx PFXSet
-	frameAt []int32
-	busy    PFXSet
+	full    bool
+	pool    PFXCtxPool
+	busy    PFXMap
 	sets    [3]PFXConfigSet
 	skipped []PFXConfig
 	sorted  []PFXConfig
-}
-
-// push interns the frame (ret, parent) and returns its index.
-func (pr *PFXPredictor) push(ret int32, parent int32) int32 {
-	k := uint64(uint32(ret))<<32 | uint64(uint32(parent))
-	s := &pr.frameIx
-	if 2*(s.n+1) > len(s.keys) {
-		// Rebuild the index at twice the size; frame indexes stay valid.
-		size := 2 * len(s.keys)
-		s.keys = make([]uint64, size)
-		s.gens = make([]uint32, size)
-		pr.frameAt = make([]int32, size)
-		s.gen = 1
-		s.n = 0
-		mask := uint64(size - 1)
-		for id, f := range pr.frames {
-			fk := uint64(uint32(f.ret))<<32 | uint64(uint32(f.parent))
-			i := PFXMix(fk) & mask
-			for s.gens[i] == s.gen {
-				i = (i + 1) & mask
-			}
-			s.gens[i], s.keys[i], pr.frameAt[i] = s.gen, fk, int32(id)
-			s.n++
-		}
-	}
-	mask := uint64(len(s.keys) - 1)
-	for i := PFXMix(k) & mask; ; i = (i + 1) & mask {
-		if s.gens[i] != s.gen {
-			id := int32(len(pr.frames))
-			pr.frames = append(pr.frames, PFXFrame{ret, parent})
-			s.gens[i], s.keys[i], pr.frameAt[i] = s.gen, k, id
-			s.n++
-			return id
-		}
-		if s.keys[i] == k {
-			return pr.frameAt[i]
-		}
-	}
-}
-
-func (pr *PFXPredictor) start() {
-	pr.frames = pr.frames[:0]
-	if pr.frameIx.keys == nil {
-		pr.frameIx.reset()
-		pr.frameAt = make([]int32, len(pr.frameIx.keys))
-	} else {
-		pr.frameIx.reset()
-	}
+	multi   bool
 }
 
 // matches reports whether consuming transition i accepts token type t.
@@ -192,35 +344,64 @@ func PFXMatches(i int32, t int32) bool {
 }
 
 // closure adds c and every configuration reachable from it without consuming
-// a token (following rule calls and returns) to out.
+// a token to out (ANTLR's closureCheckingStopState and closureWork).
 func (pr *PFXPredictor) closure(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool) {
-	if !pr.busy.insert(c.key()) {
+	if _, isNew := pr.busy.put(c.key(), 0); !isNew {
 		return
 	}
+	cp := &pr.pool
 	if PFXStateIsStop[c.state] {
-		if c.ctx < 0 {
-			// End of the start rule in full context.
-			out.add(c)
+		if !cp.isEmpty(c.ctx) {
+			for i := int32(0); i < cp.length[c.ctx]; i++ {
+				ret, parent := cp.rets[cp.start[c.ctx]+i], cp.parents[cp.start[c.ctx]+i]
+				if ret == PFXEmptyReturn {
+					if pr.full {
+						out.add(PFXConfig{c.state, c.alt, 0}, cp)
+					} else {
+						pr.follow(c, out, eofAsEpsilon)
+					}
+					continue
+				}
+				pr.closure(PFXConfig{ret, c.alt, parent}, out, eofAsEpsilon)
+			}
 			return
 		}
-		f := pr.frames[c.ctx]
-		pr.closure(PFXConfig{f.ret, c.alt, f.parent}, out, eofAsEpsilon)
+		if pr.full {
+			// End of the start rule in full context.
+			out.add(c, cp)
+			return
+		}
+		pr.follow(c, out, eofAsEpsilon)
 		return
 	}
 	if !PFXStateEpsOnly[c.state] {
-		out.add(c)
+		out.add(c, cp)
 	}
 	for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
 		switch PFXTransKind[i] {
 		case PFXKindEpsilon:
 			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, eofAsEpsilon)
 		case PFXKindRule:
-			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, pr.push(PFXTransArg[i], c.ctx)}, out, eofAsEpsilon)
+			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, cp.singleton(c.ctx, PFXTransArg[i])}, out, eofAsEpsilon)
 		default:
 			if eofAsEpsilon && PFXMatches(i, -1) {
 				pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, eofAsEpsilon)
 			}
 		}
+	}
+}
+
+// follow continues a configuration at a rule's end after every call of the
+// rule (ANTLR's rule-stop follow links, used when the caller is unknown). A
+// rule nobody calls keeps the configuration at its end.
+func (pr *PFXPredictor) follow(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool) {
+	rule := PFXStateRule[c.state]
+	if PFXFollowStart[rule] == PFXFollowStart[rule+1] {
+		out.add(c, &pr.pool)
+		return
+	}
+	for i := PFXFollowStart[rule]; i < PFXFollowStart[rule+1]; i++ {
+		pr.closure(PFXConfig{PFXFollowState[i], c.alt, c.ctx}, out, eofAsEpsilon)
 	}
 }
 
@@ -237,20 +418,23 @@ func PFXUniqueAlt(list []PFXConfig) int32 {
 }
 
 // reach computes the configurations reachable from closure by consuming t
-// (ANTLR's computeReachSet in full-context mode). The result is in out; a
-// non-zero return is an alternative decided early.
+// (ANTLR's computeReachSet). The result is in out; a non-zero return is an
+// alternative decided early.
 func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, intermediate, out *PFXConfigSet) int32 {
+	cp := &pr.pool
 	intermediate.reset()
 	pr.skipped = pr.skipped[:0]
 	for _, c := range closure.list {
 		if PFXStateIsStop[c.state] {
-			pr.skipped = append(pr.skipped, c)
+			if pr.full || t == -1 {
+				pr.skipped = append(pr.skipped, c)
+			}
 			continue
 		}
 		for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
 			k := PFXTransKind[i]
 			if (k == PFXKindAtom || k == PFXKindSet) && PFXMatches(i, t) {
-				intermediate.add(PFXConfig{PFXTransTarget[i], c.alt, c.ctx})
+				intermediate.add(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, cp)
 			}
 		}
 	}
@@ -265,7 +449,7 @@ func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, intermediate, out 
 		pr.closure(c, out, t == -1)
 	}
 	if t == -1 {
-		// After EOF only configurations at the end of the start rule matter.
+		// After EOF only configurations at the end of a rule matter.
 		n := 0
 		for _, c := range out.list {
 			if PFXStateIsStop[c.state] {
@@ -274,6 +458,10 @@ func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, intermediate, out 
 			}
 		}
 		out.list = out.list[:n]
+		out.at.reset()
+		for i, c := range out.list {
+			out.at.put(uint64(uint32(c.state))<<32|uint64(uint32(c.alt)), int32(i))
+		}
 	}
 	if len(pr.skipped) > 0 {
 		inStop := false
@@ -283,91 +471,97 @@ func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, intermediate, out 
 				break
 			}
 		}
-		if !inStop {
+		if !pr.full || !inStop {
 			for _, c := range pr.skipped {
-				out.add(c)
+				out.add(c, cp)
 			}
 		}
 	}
 	return 0
 }
 
-// resolve applies ANTLR's LL stopping rule: group configurations by state and
-// by the stacks of each (state, alt); when every group's lowest alternative is
-// the same, that alternative wins.
-func (pr *PFXPredictor) resolve(set *PFXConfigSet) int32 {
+// subsets computes ANTLR's conflicting alternative subsets of set (its
+// configurations grouped by state and context). It returns the lowest
+// alternative common to all subsets' minimums (0 if they differ), sets
+// pr.multi when some subset has more than one alternative, and reports
+// whether some state is associated with exactly one alternative.
+func (pr *PFXPredictor) subsets(set *PFXConfigSet) (single int32, stateWithOneAlt bool) {
 	s := append(pr.sorted[:0], set.list...)
 	pr.sorted = s
 	slices.SortFunc(s, func(a, b PFXConfig) int {
 		if a.state != b.state {
 			return int(a.state - b.state)
 		}
-		if a.alt != b.alt {
-			return int(a.alt - b.alt)
+		if a.ctx != b.ctx {
+			return int(a.ctx - b.ctx)
 		}
-		return int(a.ctx - b.ctx)
+		return int(a.alt - b.alt)
 	})
-	result := int32(0)
-	// For each state: runs of equal (state, alt) are an alternative's stack
-	// set. Runs with identical stack sets form one ANTLR subset; its minimum
-	// alternative is the run seen first, since runs are sorted by alt.
+	pr.multi = false
+	viable := int32(0)
+	consistent := true
 	for i := 0; i < len(s); {
 		j := i
+		alts := 0
 		for j < len(s) && s[j].state == s[i].state {
-			j++
-		}
-		// Runs of this state: [i, j).
-		for r := i; r < j; {
-			re := r
-			for re < j && s[re].alt == s[r].alt {
-				re++
+			// One subset: equal (state, ctx), alternatives ascending.
+			k := j
+			for k < len(s) && s[k].state == s[j].state && s[k].ctx == s[j].ctx {
+				k++
 			}
-			first := true
-			for q := i; q < r; {
-				qe := q
-				for qe < r && s[qe].alt == s[q].alt {
-					qe++
-				}
-				if PFXSameStacks(s[q:qe], s[r:re]) {
-					first = false
+			if k-j > 1 {
+				pr.multi = true
+			}
+			if viable == 0 {
+				viable = s[j].alt
+			} else if viable != s[j].alt {
+				consistent = false
+			}
+			j = k
+		}
+		// Distinct alternatives of this state.
+		for q := i; q < j; q++ {
+			seen := false
+			for r := i; r < q; r++ {
+				if s[r].alt == s[q].alt {
+					seen = true
 					break
 				}
-				q = qe
 			}
-			if first {
-				if result == 0 {
-					result = s[r].alt
-				} else if result != s[r].alt {
-					return 0
-				}
+			if !seen {
+				alts++
 			}
-			r = re
+		}
+		if alts == 1 {
+			stateWithOneAlt = true
 		}
 		i = j
 	}
-	return result
+	if !consistent {
+		viable = 0
+	}
+	return viable, stateWithOneAlt
 }
 
-func PFXSameStacks(a, b []PFXConfig) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if a[k].ctx != b[k].ctx {
+func PFXAllInStop(list []PFXConfig) bool {
+	for _, c := range list {
+		if !PFXStateIsStop[c.state] {
 			return false
 		}
 	}
 	return true
 }
 
-// adaptivePredict picks the alternative of decision d the way ANTLR's
-// full-context prediction does, using the parser's call stack as context.
-func (p *PARSER) adaptivePredict(d int) int {
+// predictLL runs ANTLR's full-context prediction of decision d from the
+// current token, with the parser's call stack as the outer context.
+func (p *PARSER) predictLL(d int) int {
 	pr := &p.pred
-	pr.start()
-	outer := int32(-1)
+	pr.full = true
+	pr.pool.reset(false)
+	cp := &pr.pool
+	outer := int32(0)
 	for _, ret := range p.stack {
-		outer = pr.push(ret, outer)
+		outer = cp.singleton(outer, ret)
 	}
 	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
 	cur.reset()
@@ -388,7 +582,7 @@ func (p *PARSER) adaptivePredict(d int) int {
 		if alt := PFXUniqueAlt(next.list); alt != 0 {
 			return int(alt)
 		}
-		if alt := pr.resolve(next); alt != 0 {
+		if alt, _ := pr.subsets(next); alt != 0 {
 			return int(alt)
 		}
 		cur, next = next, cur
@@ -396,5 +590,158 @@ func (p *PARSER) adaptivePredict(d int) int {
 			offset++
 		}
 	}
+}
+
+// PFXDFAState is a state of a decision's SLL lookahead DFA, cached for the
+// life of the process as ANTLR caches its DFA. Walking existing edges takes
+// no lock; new states are computed under PFXDFA.mu.
+type PFXDFAState struct {
+	configs  []PFXConfig
+	alt      int32
+	conflict int32
+	edges    []atomic.Pointer[PFXDFAState]
+}
+
+// PFXDFA holds every decision's cached SLL DFA. Its context pool is never
+// reset, so cached configurations keep meaning the same contexts.
+var PFXDFA struct {
+	mu     sync.Mutex
+	starts []atomic.Pointer[PFXDFAState]
+	states map[string]*PFXDFAState
+	pr     PFXPredictor
+	key    []byte
+}
+
+// PFXDFAError marks an edge on which no alternative is viable.
+var PFXDFAError = &PFXDFAState{}
+
+func init() {
+	PFXDFA.starts = make([]atomic.Pointer[PFXDFAState], len(PFXDecisionState))
+	PFXDFA.states = map[string]*PFXDFAState{}
+	PFXDFA.pr.pool.reset(true)
+}
+
+// PFXDFAIntern returns decision d's cached state for the configurations in set.
+func PFXDFAIntern(d int, set *PFXConfigSet) *PFXDFAState {
+	pr := &PFXDFA.pr
+	s := append(pr.sorted[:0], set.list...)
+	pr.sorted = s
+	slices.SortFunc(s, func(a, b PFXConfig) int {
+		if a.state != b.state {
+			return int(a.state - b.state)
+		}
+		return int(a.alt - b.alt)
+	})
+	key := binary.LittleEndian.AppendUint32(PFXDFA.key[:0], uint32(d))
+	for _, c := range s {
+		key = binary.LittleEndian.AppendUint32(key, uint32(c.state))
+		key = binary.LittleEndian.AppendUint32(key, uint32(c.alt))
+		key = binary.LittleEndian.AppendUint32(key, uint32(c.ctx))
+	}
+	PFXDFA.key = key
+	if st, ok := PFXDFA.states[string(key)]; ok {
+		return st
+	}
+	st := &PFXDFAState{configs: slices.Clone(s), edges: make([]atomic.Pointer[PFXDFAState], PFXMaxTokenType+2)}
+	PFXDFA.states[string(key)] = st
+	return st
+}
+
+// PFXDFAStart returns decision d's start state, computing it once.
+func PFXDFAStart(d int) *PFXDFAState {
+	PFXDFA.mu.Lock()
+	defer PFXDFA.mu.Unlock()
+	if st := PFXDFA.starts[d].Load(); st != nil {
+		return st
+	}
+	pr := &PFXDFA.pr
+	pr.full = false
+	cur := &pr.sets[0]
+	cur.reset()
+	pr.busy.reset()
+	s := PFXDecisionState[d]
+	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
+		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, 0}, cur, false)
+	}
+	st := PFXDFAIntern(d, cur)
+	PFXDFA.starts[d].Store(st)
+	return st
+}
+
+// PFXDFANext computes and caches the edge of from on token t (ANTLR's
+// computeTargetState in SLL mode).
+func PFXDFANext(d int, from *PFXDFAState, t int32) *PFXDFAState {
+	PFXDFA.mu.Lock()
+	defer PFXDFA.mu.Unlock()
+	if st := from.edges[t+1].Load(); st != nil {
+		return st
+	}
+	pr := &PFXDFA.pr
+	pr.full = false
+	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
+	cur.reset()
+	for _, c := range from.configs {
+		cur.add(c, &pr.pool)
+	}
+	var st *PFXDFAState
+	if alt := pr.reach(cur, t, intermediate, next); alt != 0 {
+		st = &PFXDFAState{alt: alt}
+	} else if len(next.list) == 0 {
+		st = PFXDFAError
+	} else if alt := PFXUniqueAlt(next.list); alt != 0 {
+		st = &PFXDFAState{alt: alt}
+	} else if _, oneAlt := pr.subsets(next); PFXAllInStop(next.list) || (pr.multi && !oneAlt) {
+		// An SLL conflict: ANTLR's SLL answer is the lowest conflicting alternative.
+		low := next.list[0].alt
+		for _, c := range next.list {
+			low = min(low, c.alt)
+		}
+		st = &PFXDFAState{conflict: low}
+	} else {
+		st = PFXDFAIntern(d, next)
+	}
+	from.edges[t+1].Store(st)
+	return st
+}
+
+// adaptivePredict predicts decision d as ANTLR does: SLL prediction over the
+// cached DFA and, on an SLL conflict, the lowest conflicting alternative in SLL
+// mode or full-context prediction in LL mode.
+func (p *PARSER) adaptivePredict(d int) int {
+	st := PFXDFA.starts[d].Load()
+	if st == nil {
+		st = PFXDFAStart(d)
+	}
+	for i := 1; ; i++ {
+		t := p.la(i)
+		if int(t)+1 >= len(st.edges) {
+			p.noViableAlt(d)
+		}
+		next := st.edges[t+1].Load()
+		if next == nil {
+			next = PFXDFANext(d, st, t)
+		}
+		switch {
+		case next == PFXDFAError:
+			p.noViableAlt(d)
+		case next.alt > 0:
+			return int(next.alt)
+		case next.conflict > 0:
+			if p.ll {
+				return p.predictLL(d)
+			}
+			return int(next.conflict)
+		}
+		st = next
+	}
+}
+
+// conflictPredict settles an SLL conflict the static automaton found: SLL mode
+// takes ANTLR's SLL answer, LL mode runs full-context prediction.
+func (p *PARSER) conflictPredict(d int, sllAlt int) int {
+	if !p.ll {
+		return sllAlt
+	}
+	return p.predictLL(d)
 }
 `

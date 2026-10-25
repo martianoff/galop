@@ -62,7 +62,7 @@ func companion(in codegen.Input, opts codegen.Options) Either[Array[string], Arr
 func hasAdaptive(la analysis.Lookahead) bool = la match {
     case analysis.Adaptive(_) => true
     case analysis.Automaton(states) => states.Exists((s) => s.Final match {
-        case Some(analysis.FinalFullLL()) => true
+        case Some(analysis.FinalFullLL(_)) => true
         case _ => false
     })
     case analysis.Switch(_, cases) => cases.Exists((c) => hasAdaptive(c.Then))

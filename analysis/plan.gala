@@ -42,8 +42,11 @@ struct DFAEdge(Tokens atn.IntervalSet, Target int)
 sealed type DFAFinal {
     // FinalPredict picks Alt.
     case FinalPredict(Alt int)
-    // FinalFullLL is an SLL conflict: run full-context prediction from the decision start.
-    case FinalFullLL()
+    // FinalFullLL needs runtime prediction. MinAlt is set for an SLL conflict and is
+    // ANTLR's SLL-mode answer (the lowest conflicting alternative); LL mode runs
+    // full-context prediction instead. MinAlt is None where construction stopped at a
+    // bound: the runtime continues with SLL prediction.
+    case FinalFullLL(MinAlt Option[int])
 }
 
 // LookaheadCase is one branch of a Switch.

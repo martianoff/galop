@@ -40,6 +40,10 @@ func tables(e env) string {
         case _ => false
     })
     val epsOnly = states.Map((s) => s.Out.NonEmpty() && s.Out.ForAll(_.IsEpsilon()))
+    // Every rule's call sites' follow states: where SLL prediction continues after a
+    // rule when the caller is unknown (ANTLR's rule-stop follow links).
+    val follows = ArrayTabulate(e.parser.RuleNames.Size(), (r) => e.parser.Callers(r).Map(_.Follow))
+    val followStarts = follows.FoldLeft(ArrayOf(0), (acc, fs) => acc.Append(acc.Last() + fs.Size()))
     val x = e.pfx
     ArrayOf(
         "// The parser ATN, for adaptive prediction.",
@@ -50,6 +54,10 @@ func tables(e env) string {
         s"\t${x}KindSet     = $kindSet",
         ")",
         "",
+        s"// ${x}MaxTokenType is the largest token type; DFA edges are indexed by type + 1.",
+        s"const ${x}MaxTokenType = ${e.vocab.MaxType()}",
+        "",
+        goSlice(s"${x}StateRule", "int32", states.Map((s) => s"${s.Rule}")),
         goSlice(s"${x}StateIsStop", "bool", isStop.Map((b) => s"$b")),
         goSlice(s"${x}StateEpsOnly", "bool", epsOnly.Map((b) => s"$b")),
         goSlice(s"${x}TransStart", "int32", starts.Map((n) => s"$n")),
@@ -57,6 +65,8 @@ func tables(e env) string {
         goSlice(s"${x}TransTarget", "int32", all.Map((t) => s"${t.Target}")),
         goSlice(s"${x}TransArg", "int32", all.Map((t) => s"${t.Arg}")),
         goSlice(s"${x}DecisionState", "int32", e.parser.Decisions.Map((d) => s"${d.State}")),
+        goSlice(s"${x}FollowStart", "int32", followStarts.Map((n) => s"$n")),
+        goSlice(s"${x}FollowState", "int32", follows.FlatMap((fs) => fs).Map((n) => s"$n")),
         s"var ${x}Sets = [][]int32{",
     ).AppendAll(sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},"))
         .Append("}")
