@@ -23,6 +23,8 @@ jobs:
   cli:
     name: gala test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # A hard ceiling: a lane that runs longer than this is a bug, not a slow day.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -31,18 +33,30 @@ jobs:
             asset: gala-linux-amd64
           - os: macos-latest
             asset: gala-darwin-arm64
+            # Compiling one galop package can take 4-6 GB (Go instantiates every
+            # collection method per element type). The 7 GB macOS runner swapped
+            # for hours with three compiles at once; one at a time with a tighter
+            # GC fits.
+            goflags: -p=1
+            gogc: "25"
           - os: windows-latest
             asset: gala-windows-amd64.exe
     defaults:
       run:
         shell: bash
+    env:
+      GOFLAGS: ${{ matrix.goflags }}
+      GOGC: ${{ matrix.gogc }}
     steps:
       - uses: actions/checkout@v5
 
+      # Caches Go's build cache, so unchanged packages (the GALA stdlib, and
+      # galop packages a change doesn't touch) aren't recompiled.
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
-          cache: false
+          cache: true
+          cache-dependency-path: gala.mod
 
       - name: Install GALA CLI
         run: |
@@ -75,6 +89,7 @@ jobs:
   bazel:
     name: bazel test
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
