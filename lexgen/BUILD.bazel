@@ -35,6 +35,7 @@ gala_test(
     deps = [
         "//atn",
         "//codegen",
+        "//diag",
         "//g4",
         "@gala//collection_immutable",
         "@gala//concurrent",

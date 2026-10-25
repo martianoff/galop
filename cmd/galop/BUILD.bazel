@@ -5,6 +5,7 @@ gala_binary(
     srcs = ["main.gala"],
     deps = [
         "//codegen",
+        "//golang",
         "//tool",
         "@gala//collection_immutable",
     ],
