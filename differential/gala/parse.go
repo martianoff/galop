@@ -26,8 +26,9 @@ const (
 )
 
 // Parser parses a whole token stream of a GALA file into its sourceFile tree.
-// The error reports syntax errors; the tree is ANTLR's error-recovered tree
-// even then. ANTLR's parser and a galop-generated one both fit this type.
+// The error reports syntax errors. ANTLR's parser then still returns its
+// error-recovered tree; galop's generated parser, which has no error recovery
+// yet, returns no tree. Both fit this type.
 type Parser func(stream antlr.TokenStream) (antlr.ParserRuleContext, error)
 
 // bom is the UTF-8 encoding of U+FEFF, the byte order mark.

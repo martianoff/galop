@@ -180,12 +180,14 @@ val fakeGo = codegen.Target(
         val content = s"package=${opts.Package} listener=${opts.Listener} visitor=${opts.Visitor} flavor=${opts.Define("flavor").GetOrElse("-")} lexer=${in.Compiled.Lexer.IsDefined()}"
         return Right[Array[string], Array[codegen.OutputFile]](ArrayOf(codegen.OutputFile(name + "_galop_lexer.go", content)))
     },
+    FileNames = (g, c, opts) => ArrayOf(strings.ToLower(g.Name) + "_galop_lexer.go"),
 )
 
-// failing is a target that rejects every grammar.
+// failing is a target that rejects every grammar, though it can name its files.
 val failing = codegen.Target(
     Language = () => "Go",
     Generate = (in, opts) => Left[Array[string], Array[codegen.OutputFile]](ArrayOf(s"cannot handle ${in.Grammar.Name}")),
+    FileNames = (g, c, opts) => ArrayOf(strings.ToLower(g.Name) + "_galop_lexer.go"),
 )
 
 // lexerGrammar quotes its option value, which targets see unquoted.
@@ -215,7 +217,10 @@ func TestDependListsFiles(t T) T {
     val want = ArrayOf("out/g/lex_galop_lexer.go", "out/g/Lex.ID.dot", "out/g/Lex.WS.dot")
         .Map((p) => strings.ReplaceAll(p, "/", sep) + " : g/Lex.g4\n").MkString("")
     val t1 = Eq(t, out, Outcome(want, "", 0))
-    Eq(t1, m.writes, EmptyArray[string]())
+    val t2 = Eq(t1, m.writes, EmptyArray[string]())
+    // As in ANTLR, -depend generates nothing, so a grammar the target would
+    // reject still lists its files.
+    Eq(t2, run(m, ArrayOf(failing), "-depend g/Lex.g4"), Outcome(strings.ReplaceAll("g/lex_galop_lexer.go", "/", sep) + " : g/Lex.g4\n", "", 0))
 }
 
 func TestATNWritesDiagrams(t T) T {
@@ -291,9 +296,14 @@ func TestFileNameMustMatchGrammarName(t T) T {
 }
 
 func TestGrammarOptionProblems(t T) T {
-    val m = newMemory(("P.g4", "parser grammar P;\noptions { tokenVocab = L; k = 2; }\na : A ;\n"))
-    Eq(t, run(m, ArrayOf(fakeGo), "-check P.g4").Stderr,
-        "error(500): P.g4:2:10: galop does not support the tokenVocab option yet\nwarning(83): P.g4:2:26: unsupported option k\n")
+    val m = newMemory(("P.g4", "parser grammar P;\noptions { tokenVocab = L; k = 2; caseInsensitive = true; }\na : A ;\n"))
+    val t1 = Eq(t, run(m, ArrayOf(fakeGo), "-check P.g4").Stderr,
+        "error(500): P.g4:2:10: galop does not support the tokenVocab option yet\n" +
+            "warning(83): P.g4:2:26: unsupported option k\n" +
+            "error(500): P.g4:2:33: galop does not support the caseInsensitive option yet\n")
+    // The same option on the command line is reported before any grammar is read.
+    Eq(t1, run(m, ArrayOf(fakeGo), "-DcaseInsensitive=true P.g4").Stderr,
+        "error(500):  galop does not support the caseInsensitive option yet\n")
 }
 
 func TestWerror(t T) T {

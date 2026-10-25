@@ -18,12 +18,16 @@ go_library(
 go_test(
     name = "diff_test",
     size = "medium",
-    srcs = ["corpus_test.go"],
+    srcs = [
+        "corpus_test.go",
+        "diff_test.go",
+    ],
     args = ["-manifest=$(rlocationpath //differential:corpus)"],
     data = ["//differential:corpus"],
     embed = [":diff"],
     deps = [
         "//differential/corpus",
         "//differential/gala",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
     ],
 )

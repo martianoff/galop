@@ -42,15 +42,15 @@ func RuleDOT(a atn.ATN, rule int) string {
 // reachable lists, in increasing order, the states a rule's sub-network
 // reaches from its start state without entering called rules.
 func reachable(a atn.ATN, start int, stop int) Array[int] =
-    explore(a, stop, ArrayOf(start), ArrayOf(start)).Sorted()
+    explore(a, stop, ArrayOf(start), EmptyHashSet[int]().Add(start)).ToArray().Sorted()
 
 // explore visits the states in work breadth first, adding the ones not yet
 // seen, and returns every state seen.
-func explore(a atn.ATN, stop int, work Array[int], seen Array[int]) Array[int] = work match {
+func explore(a atn.ATN, stop int, work Array[int], seen HashSet[int]) HashSet[int] = work match {
     case Array(id, rest...) => {
         val next = if (id == stop) EmptyArray[int]() else a.State(id).Out.Map(nextState)
         val fresh = next.Distinct().Filter((n) => !seen.Contains(n))
-        explore(a, stop, rest.AppendAll(fresh), seen.AppendAll(fresh))
+        explore(a, stop, rest.AppendAll(fresh), fresh.FoldLeft(seen, (acc, n) => acc.Add(n)))
     }
     case _ => seen
 }

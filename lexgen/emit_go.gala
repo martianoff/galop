@@ -21,13 +21,25 @@ val DepthOption = "lexerDepth"
 // declaring type typeName in package opts.Package (ANTLR's default, `parser`, when empty).
 // The DFA keeps rule-call stacks up to the `lexerDepth` define (default 12).
 func GoLexerFile(in codegen.Input, opts codegen.Options, name string, typeName string) Either[Array[string], codegen.OutputFile] {
-    val depth = opts.Define(DepthOption).FlatMap((v) => intArg(v)).GetOrElse(Options().MaxDepth)
     val pkg = if (opts.Package == "") "parser" else opts.Package
-    in.Compiled.Lexer match {
-        case Some(lexer) => NewModel(lexer, in.Grammar.Channels)
-            .FlatMap((m) => Build(m, Options(MaxDepth = depth)))
-            .Map((d) => codegen.OutputFile(name, EmitGo(d, pkg, in.Grammar.Name, typeName)))
-        case None() => Left(ArrayOf(s"grammar ${in.Grammar.Name} has no lexer rules"))
+    lexerDepth(opts) match {
+        case Left(msg) => Left(ArrayOf(msg))
+        case Right(depth) => in.Compiled.Lexer match {
+            case Some(lexer) => NewModel(lexer, in.Grammar.Channels)
+                .FlatMap((m) => Build(m, Options(MaxDepth = depth)))
+                .Map((d) => codegen.OutputFile(name, EmitGo(d, pkg, in.Grammar.Name, typeName)))
+            case None() => Left(ArrayOf(s"grammar ${in.Grammar.Name} has no lexer rules"))
+        }
+    }
+}
+
+// lexerDepth is the `lexerDepth` define, or the default. It must be a positive
+// number: the static DFA is only finite with a bound on rule-call depth.
+func lexerDepth(opts codegen.Options) Either[string, int] = opts.Define(DepthOption) match {
+    case None() => Right(Options().MaxDepth)
+    case Some(v) => intArg(v) match {
+        case Some(n) if n > 0 => Right(n)
+        case _ => Left(s"$DepthOption must be a positive number, not '$v'")
     }
 }
 

@@ -148,7 +148,8 @@ sources for a `go_library`.
 
 Not supported yet, and reported as errors rather than ignored: rule arguments,
 `returns`/`locals`, rule-level options and actions, element options
-(`<assoc=right>`), lexer modes, grammar imports.
+(`<assoc=right>`), lexer modes, grammar imports, and the `tokenVocab` and
+`caseInsensitive` options.
 
 ## Development
 

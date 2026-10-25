@@ -122,3 +122,44 @@ func TestNames(t T) T {
     val t6 = Eq(t5, n.Context("éclair"), "ÉclairContext")
     Eq(t6, n.RuleMethod("ärger"), "Ärger")
 }
+
+func TestSingleLabeledAlternative(t T) T {
+    // A label on a rule's only alternative still makes the label's context.
+    val code = parserOf(generate(`grammar S;
+r : a=ID # Only ;
+ID : [a-z]+ ;
+`, EmptyArray[g4.OptionEntry]()))
+    val t1 = IsTrue(t, strings.Contains(code, "localctx = NewOnlyContext(nil, localctx)"))
+    IsTrue(t1, strings.Contains(code, "localctx.(*OnlyContext).a = tok"))
+}
+
+func TestParserAndLexerGrammarNames(t T) T {
+    // ANTLR appends `Parser` to the recognizer name of a combined grammar
+    // only; galop's own types drop the grammar's `Parser`/`Lexer` suffix.
+    val parser = generate("parser grammar ExprParser;\nr : ID ;\n", EmptyArray[g4.OptionEntry]())
+    val lexer = generate("lexer grammar ExprLexer;\nID : [a-z]+ ;\n", EmptyArray[g4.OptionEntry]())
+    (parser, lexer) match {
+        case (Right(pfiles), Right(lfiles)) => {
+            val code = pfiles.Head().Content
+            val t1 = Eq(t, pfiles.Map(_.Name), ArrayOf("expr_galop_parser.go"))
+            val t2 = IsTrue(t1, strings.Contains(code, "p.match(localctx, ExprParserID)"))
+            val t3 = IsFalse(t2, strings.Contains(code, "ExprParserParser"))
+            val t4 = IsTrue(t3, strings.Contains(code, "type ExprGalopParser struct"))
+            val t5 = Eq(t4, lfiles.Map(_.Name), ArrayOf("expr_galop_lexer.go"))
+            IsTrue(t5, strings.Contains(lfiles.Head().Content, "type ExprGalopLexer struct"))
+        }
+        case _ => t.Error(s"generate: $parser $lexer")
+    }
+}
+
+func TestFileNamesMatchGenerate(t T) T = g4.Parse(exprGrammar) match {
+    case Right(g) => atn.Compile(g) match {
+        case Right(c) => {
+            val names = Target("test").FileNames(g, c, codegen.Options())
+            val generated = generate(exprGrammar, EmptyArray[g4.OptionEntry]())
+            Eq(t, Right[Array[string], Array[string]](names), generated.Map((files) => files.Map(_.Name)))
+        }
+        case Left(errs) => t.Error(errs.MkString("; "))
+    }
+    case Left(d) => t.Error(d.String())
+}

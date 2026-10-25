@@ -100,13 +100,13 @@ struct closureItem(Kind int, State int, Arg int)
 // action and predicate transitions inside one rule. The runtime only handles
 // rule calls and returns itself.
 func staticClosure(a atn.ATN, s int) Array[closureItem] =
-    visitClosure(a, s, Tuple(EmptyArray[closureItem](), EmptyArray[int]())).V1
+    visitClosure(a, s, Tuple(EmptyArray[closureItem](), EmptyHashSet[int]())).V1
 
-func visitClosure(a atn.ATN, s int, acc Tuple[Array[closureItem], Array[int]]) Tuple[Array[closureItem], Array[int]] {
+func visitClosure(a atn.ATN, s int, acc Tuple[Array[closureItem], HashSet[int]]) Tuple[Array[closureItem], HashSet[int]] {
     if acc.V2.Contains(s) {
         return acc
     }
-    val seen = Tuple(acc.V1, acc.V2.Append(s))
+    val seen = Tuple(acc.V1, acc.V2.Add(s))
     val st = a.State(s)
     st.Kind match {
         case atn.RuleStopState() => Tuple(seen.V1.Append(closureItem(closStop, s, 0)), seen.V2)

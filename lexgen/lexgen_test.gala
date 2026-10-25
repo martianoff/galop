@@ -7,6 +7,7 @@ import (
     "martianoff/gala/strings"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/diag"
     "github.com/martianoff/galop/g4"
 )
@@ -192,4 +193,14 @@ ID : [a-z]+ ;
     val src = EmitGo(dfaOf(g), "k", "K", "kLexer")
     val t1 = IsTrue(t, strings.Contains(src, "galop: dynamic DFA edge without an ATN"))
     IsFalse(t1, strings.Contains(src, "Reach("))
+}
+
+func TestLexerDepthOption(t T) T {
+    // Zero or a negative depth would leave the static DFA unbounded.
+    val depth = (v string) => lexerDepth(codegen.Options(Defines = ArrayOf(g4.OptionEntry(DepthOption, v, g4.NoPos))))
+    val t1 = Eq(t, lexerDepth(codegen.Options()), Right[string, int](12))
+    val t2 = Eq(t1, depth("4"), Right[string, int](4))
+    val t3 = Eq(t2, depth("0"), Left[string, int]("lexerDepth must be a positive number, not '0'"))
+    val t4 = Eq(t3, depth("-3"), Left[string, int]("lexerDepth must be a positive number, not '-3'"))
+    Eq(t4, depth("deep"), Left[string, int]("lexerDepth must be a positive number, not 'deep'"))
 }

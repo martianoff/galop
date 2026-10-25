@@ -211,15 +211,21 @@ func emitRule(e env, r atn.RuleIR) string {
         "\tp.enter(localctx)",
     )
     val body = r.Decision match {
-        case Some(d) => ArrayOf(s"\tswitch p.decide$d() {").AppendAll(r.Alts.ZipWithIndex().FlatMap((ai) => {
-            val alt = ai.V1
-            val altCtx = alt.Label.Map((l) => e.names.Context(l)).GetOrElse(ctxType)
-            val relabel = alt.Label.Map((l) => ArrayOf(s"\t\tlocalctx = New${e.names.Context(l)}(nil, localctx)")).GetOrElse(EmptyArray[string]())
-            ArrayOf(s"\tcase ${ai.V2 + 1}:").AppendAll(relabel).AppendAll(emitSteps(e, alt.Steps, "\t\t", altCtx))
-        })).Append("\t}")
-        case None() => r.Alts.FlatMap((alt) => emitSteps(e, alt.Steps, "\t", alt.Label.Map((l) => e.names.Context(l)).GetOrElse(ctxType)))
+        case Some(d) => ArrayOf(s"\tswitch p.decide$d() {").AppendAll(r.Alts.ZipWithIndex().FlatMap((ai) =>
+            ArrayOf(s"\tcase ${ai.V2 + 1}:").AppendAll(emitAlt(e, ai.V1, "\t\t", ctxType))
+        )).Append("\t}")
+        case None() => r.Alts.FlatMap((alt) => emitAlt(e, alt, "\t", ctxType))
     }
     header.AppendAll(body).AppendAll(ArrayOf("\tp.exit(localctx)", "\treturn localctx", "}")).MkString("\n") + "\n"
+}
+
+// emitAlt emits one alternative of a rule. A labeled alternative first turns
+// localctx into the label's context (`# Only` makes an OnlyContext), as ANTLR
+// does, whether or not the rule has other alternatives.
+func emitAlt(e env, alt atn.AltIR, ind string, ruleCtx string) Array[string] = alt.Label match {
+    case Some(l) => ArrayOf(s"${ind}localctx = New${e.names.Context(l)}(nil, localctx)")
+        .AppendAll(emitSteps(e, alt.Steps, ind, e.names.Context(l)))
+    case None() => emitSteps(e, alt.Steps, ind, ruleCtx)
 }
 
 func emitSteps(e env, steps Array[atn.Step], ind string, ctxType string) Array[string] =

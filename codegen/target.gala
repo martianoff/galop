@@ -46,6 +46,9 @@ type Target interface {
     Language() string
     // Generate returns the files for in, or error messages.
     Generate(in Input, opts Options) Either[Array[string], Array[OutputFile]]
+    // FileNames lists the files Generate would write for grammar g compiled to
+    // c, without analyzing or generating anything: `-depend`, as in ANTLR.
+    FileNames(g g4.Grammar, c atn.Compiled, opts Options) Array[string]
 }
 
 // Offsets lays groups of the given sizes end to end in one flat table: the

@@ -56,6 +56,10 @@ val GrammarOptions = ArrayOf(
     "accessLevel", "exportMacro", "caseInsensitive", "flavor", "lexerDepth",
 )
 
+// UnsupportedOptions are grammar options ANTLR knows that change what a grammar
+// means and galop does not implement yet; they are error 500, never ignored.
+val UnsupportedOptions = ArrayOf("tokenVocab", "caseInsensitive")
+
 // flagOptions are the options that take no value.
 val flagOptions = ArrayOf(
     "-atn", "-listener", "-no-listener", "-visitor", "-no-visitor", "-depend", "-Werror",
@@ -169,6 +173,7 @@ func defineOf(arg string) Either[diag.Diagnostic, g4.OptionEntry] {
     val (name, value, found) = strings.Cut(strings.TrimPrefix(arg, "-D"), "=")
     if (!found || name == "" || value == "") Left(diag.BadOptionSetSyntax.New(arg))
     else if (!GrammarOptions.Contains(name)) Left(diag.IllegalOption.New(name))
+    else if (UnsupportedOptions.Contains(name)) Left(diag.Unsupported.New(s"the $name option"))
     else Right(g4.OptionEntry(name, value, g4.NoPos))
 }
 

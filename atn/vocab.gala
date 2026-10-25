@@ -53,12 +53,13 @@ func (v Vocabulary) Display(t int) string =
 
 // BuildVocabulary numbers the tokens of g the way ANTLR does.
 func BuildVocabulary(g g4.Grammar) Vocabulary {
-    val aliases = literalAliases(g)
+    val claimed = literalRules(g)
+    val aliases = claimed.Filter((p) => claimed.Count(_.V1 == p.V1) == 1)
     val implicitLits = g.Rules.Filter((r) => !r.IsLexer())
         .FlatMap(_.Nodes())
         .Collect({ case g4.Literal(v) => v })
         .Distinct()
-        .Filter((v) => !aliases.Exists((al) => al.V1 == v))
+        .Filter((v) => !claimed.Exists(_.V1 == v))
     val implicitCount = implicitLits.Size()
     val lexerNames = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Map(_.Name)
     val declared = lexerNames.AppendAll(g.Tokens.Filter((t) => !lexerNames.Contains(t)))
@@ -77,19 +78,16 @@ func BuildVocabulary(g g4.Grammar) Vocabulary {
     Vocabulary(names, literals, implicit)
 }
 
-// literalAliases pairs a literal with the lexer rule that is exactly that
-// literal (`VAL: 'val';`), as (literal, rule name). A parser-rule literal with
-// an alias uses the rule's type instead of getting an implicit token. A literal
-// claimed by more than one rule keeps the first.
-func literalAliases(g g4.Grammar) Array[Tuple[string, string]] {
-    val pairs = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Collect((r) => r.Alts match {
+// literalRules pairs a literal with each lexer rule that is exactly that
+// literal (`VAL: 'val';`), as (literal, rule name). A literal one rule claims
+// is an alias: a parser-rule literal uses the rule's type instead of getting an
+// implicit token. As in ANTLR, a literal two rules claim is no alias and gets
+// no implicit token either, so a parser rule that uses it is error 126.
+func literalRules(g g4.Grammar) Array[Tuple[string, string]] =
+    g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Collect((r) => r.Alts match {
         case Array(alt) => alt.Elements match {
             case Array(g4.Literal(v)) => Some(Tuple(v, r.Name))
             case _ => None[Tuple[string, string]]()
         }
         case _ => None[Tuple[string, string]]()
     })
-    pairs.FoldLeft(EmptyArray[Tuple[string, string]](), (acc, p) =>
-        if (acc.Exists(_.V1 == p.V1)) acc else acc.Append(p)
-    )
-}

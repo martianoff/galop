@@ -55,11 +55,29 @@ func Compare(f corpus.File, a, b gala.Parser) Result {
 	treeA, errA := a(gala.Tokens(f.Src))
 	treeB, errB := b(gala.Tokens(f.Src))
 	r := Result{File: f, ErrA: errA, ErrB: errB}
-	r.Same = gala.TreeString(treeA) == gala.TreeString(treeB)
-	if !r.Same {
-		r.Diff = FirstDiff(treeA, treeB)
+	// A parser may return no tree with its syntax error. Two missing trees
+	// agree; a missing tree and a tree differ at the root.
+	switch {
+	case treeA == nil && treeB == nil:
+		r.Same = true
+	case treeA == nil || treeB == nil:
+		r.Diff = fmt.Sprintf("at the root\n  a: %s\n  b: %s", render(treeA), render(treeB))
+	default:
+		r.Same = gala.TreeString(treeA) == gala.TreeString(treeB)
+		if !r.Same {
+			r.Diff = FirstDiff(treeA, treeB)
+		}
 	}
 	return r
+}
+
+// render is a tree in ToStringTree form, clipped for a report, or a note that
+// the parser returned none.
+func render(t antlr.ParserRuleContext) string {
+	if t == nil {
+		return "(no tree)"
+	}
+	return clip(gala.TreeString(t))
 }
 
 // FirstDiff describes the first node, in document order, where a and b

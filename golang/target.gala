@@ -29,26 +29,42 @@ func (t goTarget) Generate(in codegen.Input, opts codegen.Options) Either[Array[
         case other => Left(ArrayOf(s"Go target: unknown flavor '$other' (supported: companion)"))
     }
 
-// fileBase is the prefix of the generated files' names, as ANTLR's Go target
-// names its files: the grammar name lowercased, without a trailing `Parser`
-// for a parser grammar or `Lexer` for a lexer grammar.
-func fileBase(g g4.Grammar) string {
-    val trimmed = g.Kind match {
-        case g4.ParserOnly() if g.Name != "Parser" => strings.TrimSuffix(g.Name, "Parser")
-        case g4.LexerOnly() if g.Name != "Lexer" => strings.TrimSuffix(g.Name, "Lexer")
-        case _ => g.Name
-    }
-    strings.ToLower(trimmed)
+// baseName is the grammar name without the trailing `Parser` of a parser
+// grammar or `Lexer` of a lexer grammar, as ANTLR's Go target trims it.
+// galop names its own types after it: `ExprParser` and `Expr` both give
+// `ExprGalopParser`.
+func baseName(g g4.Grammar) string = g.Kind match {
+    case g4.ParserOnly() if g.Name != "Parser" => strings.TrimSuffix(g.Name, "Parser")
+    case g4.LexerOnly() if g.Name != "Lexer" => strings.TrimSuffix(g.Name, "Lexer")
+    case _ => g.Name
 }
+
+// fileBase is the prefix of the generated files' names, as ANTLR's Go target
+// names its files: the base name lowercased.
+func fileBase(g g4.Grammar) string = strings.ToLower(baseName(g))
+
+// isCombined reports whether g is a combined grammar (parser and lexer rules).
+func isCombined(g g4.Grammar) bool = g.Kind match {
+    case g4.Combined() => true
+    case _ => false
+}
+
+func parserFileName(g g4.Grammar) string = fileBase(g) + "_galop_parser.go"
+
+func lexerFileName(g g4.Grammar) string = fileBase(g) + "_galop_lexer.go"
+
+// FileNames lists the companion files: a parser for a grammar with parser
+// rules, a lexer for one with lexer rules.
+func (t goTarget) FileNames(g g4.Grammar, c atn.Compiled, opts codegen.Options) Array[string] =
+    ArrayOf(c.Parser.Map((_) => parserFileName(g)), c.Lexer.Map((_) => lexerFileName(g))).Collect((name) => name)
 
 // companion generates the fast parser and lexer that sit next to ANTLR's
 // generated parser and lexer: `<base>_galop_parser.go` for a grammar with
 // parser rules, `<base>_galop_lexer.go` for one with lexer rules.
 func companion(in codegen.Input, opts codegen.Options, version string) Either[Array[string], Array[codegen.OutputFile]] {
-    val base = fileBase(in.Grammar)
-    val parser = companionParserFile(in, opts, version, base + "_galop_parser.go")
+    val parser = companionParserFile(in, opts, version, parserFileName(in.Grammar))
     val lexer = in.Compiled.Lexer match {
-        case Some(_) => lexgen.GoLexerFile(in, opts, base + "_galop_lexer.go", in.Grammar.Name + "GalopLexer").Map((f) => ArrayOf(f))
+        case Some(_) => lexgen.GoLexerFile(in, opts, lexerFileName(in.Grammar), baseName(in.Grammar) + "GalopLexer").Map((f) => ArrayOf(f))
         case None() => Right[Array[string], Array[codegen.OutputFile]](EmptyArray[codegen.OutputFile]())
     }
     parser match {
@@ -67,10 +83,11 @@ func companionParserFile(in codegen.Input, opts codegen.Options, version string,
     (compiled.Parser, in.Analysis) match {
         case (Some(parser), Some(an)) => {
             val grammar = in.Grammar.Name
+            val base = baseName(in.Grammar)
             val e = env(
-                names = Names(grammar),
-                pfx = grammar + "Galop",
-                parserType = grammar + "GalopParser",
+                names = Names(Grammar = grammar, Combined = isCombined(in.Grammar)),
+                pfx = base + "Galop",
+                parserType = base + "GalopParser",
                 vocab = compiled.Vocab,
                 parser = parser,
                 rules = compiled.Rules,

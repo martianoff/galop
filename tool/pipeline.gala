@@ -128,6 +128,8 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
         case Right(c) => stage.Action match {
             case Validate(roundTrip) => done(validated(path, g, roundTrip))
             case PrintReport() => done(report(path, c))
+            // -depend only needs the file names, which come from the compiled grammar.
+            case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
             case _ => {
                 val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))
                 FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
@@ -144,9 +146,9 @@ func nameProblems(path string, g g4.Grammar) Array[diag.Diagnostic] =
     else ArrayOf(diag.FileAndGrammarNameDiffer.New(g.Name, fileName(path)).At(g.Pos.Line, g.Pos.Col))
 
 // optionProblems checks the grammar's own `options {}`: an option galop does
-// not know is ANTLR's warning 83; tokenVocab is not supported yet.
+// not know is ANTLR's warning 83; one it does not implement yet is error 500.
 func optionProblems(g g4.Grammar) Array[diag.Diagnostic] = g.Options.Collect((o) => o.Name match {
-    case "tokenVocab" => Some(diag.Unsupported.New("the tokenVocab option").At(o.Pos.Line, o.Pos.Col))
+    case name if UnsupportedOptions.Contains(name) => Some(diag.Unsupported.New(s"the $name option").At(o.Pos.Line, o.Pos.Col))
     case name if !GrammarOptions.Contains(name) => Some(diag.IllegalOption.New(name).At(o.Pos.Line, o.Pos.Col))
     case _ => None[diag.Diagnostic]()
 })
@@ -194,19 +196,22 @@ func backEnd(cfg Config, kit Toolkit, path string, a Analyzed) FileResult {
         Defines = mergedOptions(cfg, g),
     )
     val language = opts.Define("language").GetOrElse(DefaultLanguage)
+    val diagrams = if (cfg.ATN) ATNFiles(g, a.Compiled) else EmptyArray[codegen.OutputFile]()
     kit.Targets.Find(_.Language() == language) match {
         case None() => problemsOnly(ArrayOf(diag.CannotCreateTargetGenerator.New(language, kit.Version)))
-        case Some(t) => t.Generate(codegen.Input(g, a.Compiled, a.Analysis), opts) match {
-            case Left(msgs) => problemsOnly(
-                msgs.Map((m) => diag.CodeGenerationFailed.New(language, m).At(g.Pos.Line, g.Pos.Col).In(path)),
-            )
-            case Right(files) => {
-                val diagrams = if (cfg.ATN) ATNFiles(g, a.Compiled) else EmptyArray[codegen.OutputFile]()
-                val outputs = files.AppendAll(diagrams).Map((f) => (OutputPath(cfg, path, f.Name), f.Content))
-                cfg.Action match {
-                    case Depend() => printed(outputs.Map((o) => s"${o.V1} : $path\n").MkString(""))
-                    case _ => problemsOnly(writeAll(kit.Files, outputs))
-                }
+        case Some(t) => cfg.Action match {
+            case Depend() => {
+                val names = t.FileNames(g, a.Compiled, opts).AppendAll(diagrams.Map(_.Name))
+                printed(names.Map((name) => s"${OutputPath(cfg, path, name)} : $path\n").MkString(""))
+            }
+            case _ => t.Generate(codegen.Input(g, a.Compiled, a.Analysis), opts) match {
+                case Left(msgs) => problemsOnly(
+                    msgs.Map((m) => diag.CodeGenerationFailed.New(language, m).At(g.Pos.Line, g.Pos.Col).In(path)),
+                )
+                case Right(files) => problemsOnly(writeAll(
+                    kit.Files,
+                    files.AppendAll(diagrams).Map((f) => (OutputPath(cfg, path, f.Name), f.Content)),
+                ))
             }
         }
     }

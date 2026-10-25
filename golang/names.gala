@@ -37,11 +37,14 @@ func escape(name string) string = if (reservedWords.Contains(name)) name + "_" e
 // it may be any Unicode letter, not only ASCII.
 func capitalize(name string) string = strings.S(name).Capitalize().ToString()
 
-// Names derives the Go identifiers of one grammar.
-struct Names(Grammar string)
+// Names derives the Go identifiers of one grammar; Combined says whether it
+// is a combined grammar rather than a parser grammar.
+struct Names(Grammar string, Combined bool = true)
 
-// ParserType is ANTLR's parser struct name: `galaParser`.
-func (n Names) ParserType() string = n.Grammar + "Parser"
+// ParserType is ANTLR's parser struct name, its recognizer name: the grammar
+// name, with `Parser` appended for a combined grammar (`galaParser`) but not
+// for a parser grammar (`parser grammar ExprParser` gives `ExprParser`).
+func (n Names) ParserType() string = if (n.Combined) n.Grammar + "Parser" else n.Grammar
 
 // TokenConst is ANTLR's constant for a token: `galaParserIDENTIFIER`.
 func (n Names) TokenConst(token string) string = n.ParserType() + token
