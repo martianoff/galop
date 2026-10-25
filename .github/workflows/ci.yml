@@ -19,30 +19,47 @@ concurrency:
 env:
   GALA_VERSION: "0.93.1"
 
+# Compiling one galop package can take 4-6 GB, because Go instantiates every
+# collection method per element type (martianoff/gala#872). Unbounded parallel
+# compiles ran both the 16 GB Linux runner and the 7 GB macOS runner out of
+# memory. GOGC=25 keeps one compile near 4 GB; -p caps how many run at once.
+#
+# Pull requests run the two fast lanes: Bazel (every test, the ANTLR
+# differential, the grammar corpus check) and `gala test` on Linux. The full CLI
+# lanes on macOS and Windows run on pushes to main and on demand, until #872
+# makes cold compiles cheap enough for pull requests.
 jobs:
+  bazel:
+    name: bazel test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      - name: Build and test
+        run: bazel test //... --jobs=2
+
+      # BUILD files are generated; a stale one means someone added or removed a
+      # .gala file without running gazelle.
+      - name: BUILD files are up to date
+        run: |
+          bazel run //:gazelle
+          git diff --exit-code -- '*.bazel'
+
   cli:
     name: gala test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # A hard ceiling: a lane that runs longer than this is a bug, not a slow day.
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
-        # Compiling one galop package can take 4-6 GB, because Go instantiates
-        # every collection method per element type (martianoff/gala#872).
-        # Unbounded parallel compiles ran both the 16 GB Linux runner and the
-        # 7 GB macOS runner out of memory. A tighter GC keeps one compile near
-        # 4 GB; -p caps how many run at once.
-        include:
-          - os: ubuntu-latest
-            asset: gala-linux-amd64
-            goflags: -p=2
-          - os: macos-latest
-            asset: gala-darwin-arm64
-            goflags: -p=1
-          - os: windows-latest
-            asset: gala-windows-amd64.exe
-            goflags: -p=2
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":45},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":30}]') }}
     defaults:
       run:
         shell: bash
@@ -76,39 +93,13 @@ jobs:
       - name: Unit tests
         run: gala test
 
-      - name: Build CLI
+      # Pull requests check the CLI build and the grammar corpus in Bazel; the
+      # full lanes also build the binary with `gala build` and run the corpus
+      # check through it.
+      - name: Build CLI and check grammar corpus
+        if: github.event_name != 'pull_request'
         run: |
           bin=galop
           if [ "$RUNNER_OS" = "Windows" ]; then bin=galop.exe; fi
           gala build -o "$bin" ./cmd/galop
-          echo "GALOP=./$bin" >> "$GITHUB_ENV"
-
-      # The corpus check: every grammar under testdata/grammars parses, passes
-      # the semantic checks, and round-trips through the formatter.
-      - name: Check grammar corpus
-        run: '"$GALOP" -check -roundtrip testdata/grammars/*.g4'
-
-  bazel:
-    name: bazel test
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: bazel-contrib/setup-bazel@0.15.0
-        with:
-          bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}
-          repository-cache: true
-
-      - name: Build and test
-        # The generated parsers make a few Go compiles very large; running four of
-        # them at once ran the 16 GB runner out of memory.
-        run: bazel test //... --jobs=2
-
-      # BUILD files are generated; a stale one means someone added or removed a
-      # .gala file without running gazelle.
-      - name: BUILD files are up to date
-        run: |
-          bazel run //:gazelle
-          git diff --exit-code -- '*.bazel'
+          "./$bin" -check -roundtrip testdata/grammars/*.g4

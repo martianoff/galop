@@ -30,7 +30,7 @@ jobs:
             goflags: -p=2
             gala: gala-windows-amd64.exe
             target: galop-windows-amd64.exe
-    timeout-minutes: 30
+    timeout-minutes: 60
     # Same memory limits as CI; see the comment in ci.yml.
     env:
       GOFLAGS: ${{ matrix.goflags }}
