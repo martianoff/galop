@@ -1,0 +1,195 @@
+package lexgen
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+    "martianoff/gala/go_builtins"
+    "martianoff/gala/strings"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+)
+
+// built compiles a lexer grammar into a model and DFA; a problem fails the test with a panic.
+func built(src string, opts Options) DFA = g4.Parse(src) match {
+    case Right(g) => atn.Compile(g) match {
+        case Right(c) => NewModel(c.Lexer.Get(), g.Channels).FlatMap((m) => Build(m, opts)) match {
+            case Right(d) => d
+            case Left(errs) => go_builtins.Panic(s"lexgen: ${errs.MkString("; ")}")
+        }
+        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+}
+
+func dfaOf(src string) DFA = built(src, Options())
+
+// names renders tokens as `NAME:text` (EOF as `EOF`), hidden-channel tokens with a `~`.
+func names(d DFA, l Lexed) string = l.Tokens.Map((tok) => {
+    val name = d.Model.ATN.Vocab.Name(tok.Type)
+    val hidden = if (tok.Channel == ChannelDefault) "" else s"~${tok.Channel}"
+    if (tok.Type == TokenEOF) "EOF" else s"$name$hidden:${tok.Text}"
+}).MkString(" ")
+
+func lexNames(src string, input string) string {
+    val d = dfaOf(src)
+    names(d, d.Tokenize(input))
+}
+
+func TestRulePriorityBreaksTies(t T) T {
+    val g = `lexer grammar L;
+IF : 'if' ;
+ID : [a-z]+ ;
+WS : ' '+ -> skip ;
+`
+    // `if` matches IF and ID equally long: the earlier rule wins. `iff` is longer as ID.
+    Eq(t, lexNames(g, "if iff i"), "IF:if ID:iff ID:i EOF")
+}
+
+func TestImplicitLiteralTokensComeFirst(t T) T {
+    val g = `grammar P;
+s : 'val' ID ;
+ID : [a-z]+ ;
+WS : ' '+ -> skip ;
+`
+    // The parser literal 'val' becomes T__0, which precedes ID.
+    Eq(t, lexNames(g, "val value"), "T__0:val ID:value EOF")
+}
+
+func TestLongestMatchBacksUp(t T) T {
+    val g = `lexer grammar L;
+A : 'a' | 'abc' ;
+B : 'b' ;
+`
+    // After `ab` the DFA fails on the next `a`; the longest accepted prefix is `a`.
+    Eq(t, lexNames(g, "ababc"), "A:a B:b A:abc EOF")
+}
+
+func TestNonGreedyCommentStopsAtFirstEnd(t T) T {
+    val g = `lexer grammar L;
+COMMENT : '/*' .*? '*/' -> channel(HIDDEN) ;
+DIV : '/' ;
+STAR : '*' ;
+ID : [a-z]+ ;
+WS : ' '+ -> skip ;
+`
+    Eq(t, lexNames(g, "/* a */ b */"), "COMMENT~1:/* a */ ID:b STAR:* DIV:/ EOF")
+}
+
+func TestGreedyLoopRunsToLastEnd(t T) T {
+    val g = `lexer grammar L;
+COMMENT : '/*' .* '*/' ;
+WS : ' '+ -> skip ;
+`
+    Eq(t, lexNames(g, "/* a */ b */"), "COMMENT:/* a */ b */ EOF")
+}
+
+val nestedGrammar = `lexer grammar N;
+BLOCK : '{' BODY '}' ;
+fragment BODY : ( '{' BODY '}' | ~[{}] )* ;
+ID : [a-z]+ ;
+WS : ' '+ -> skip ;
+`
+
+func TestRecursiveFragmentBeyondStaticDepth(t T) T {
+    val shallow = built(nestedGrammar, Options(MaxDepth = 3))
+    val deep = built(nestedGrammar, Options(MaxDepth = 40))
+    val input = "{a{b{c{d{e{f}e}d}c}b}a} x {y}"
+    val t1 = IsTrue(t, shallow.HasDynamicEdges())
+    val t2 = IsTrue(t1, deep.States.Size() > shallow.States.Size())
+    val t3 = Eq(t2, names(shallow, shallow.Tokenize(input)), "BLOCK:{a{b{c{d{e{f}e}d}c}b}a} ID:x BLOCK:{y} EOF")
+    Eq(t3, shallow.Tokenize(input), deep.Tokenize(input))
+}
+
+func TestUnbalancedRecursiveFragmentReportsError(t T) T {
+    val d = built(nestedGrammar, Options(MaxDepth = 3))
+    val l = d.Tokenize("{a{b{c{d{e}}} x")
+    // ANTLR scans to the end looking for the closing braces, reports the whole
+    // attempt, then skips one character past it (here there is none).
+    val t1 = Eq(t, l.Errors, ArrayOf("1:0 token recognition error at: '{a{b{c{d{e}}} x'"))
+    Eq(t1, names(d, l), "EOF")
+}
+
+func TestCommands(t T) T {
+    val g = `lexer grammar L;
+channels { COMMENTS }
+AT : '@' -> more ;
+ID : [a-z]+ ;
+NUM : [0-9]+ -> type(ID) ;
+HASH : '#' ~[\n]* -> channel(COMMENTS) ;
+WS : [ \n]+ -> skip ;
+`
+    // `more` keeps `@` for the next token; type(ID) re-types NUM; COMMENTS is channel 2.
+    Eq(t, lexNames(g, "@ab 12 # note\nx"), "ID:@ab ID:12 HASH~2:# note ID:x EOF")
+}
+
+func TestPositions(t T) T {
+    val g = `lexer grammar L;
+ID : [a-zé]+ ;
+WS : [ \n]+ -> skip ;
+`
+    val toks = dfaOf(g).Tokenize("ab\n  éé x").Tokens
+    val t1 = Eq(t, toks.Get(1), Token(1, 0, 5, 6, 2, 2, "éé"))
+    val t2 = Eq(t1, toks.Get(2), Token(1, 0, 8, 8, 2, 5, "x"))
+    Eq(t2, toks.Get(3), Token(TokenEOF, 0, 9, 8, 2, 6, "<EOF>"))
+}
+
+func TestRecognitionErrorRecovery(t T) T {
+    val g = `lexer grammar L;
+ID : [a-z]+ ;
+ARROW : '->' ;
+WS : ' '+ -> skip ;
+`
+    val d = dfaOf(g)
+    val l = d.Tokenize("a ? -b")
+    // `?` matches nothing; `-b` gets as far as `-` and fails on `b`, so the
+    // error covers `-b` and recovery skips `b` too.
+    val t1 = Eq(t, l.Errors, ArrayOf("1:2 token recognition error at: '?'", "1:4 token recognition error at: '-b'"))
+    Eq(t1, names(d, l), "ID:a EOF")
+}
+
+func TestEmptyInput(t T) T {
+    val g = `lexer grammar L;
+ID : [a-z]+ ;
+`
+    Eq(t, dfaOf(g).Tokenize("").Tokens, ArrayOf(Token(TokenEOF, 0, 0, -1, 1, 0, "<EOF>")))
+}
+
+func TestPartitionClasses(t T) T {
+    val classes = Partition(ArrayOf(atn.RangeSet(97, 122), atn.SetOf(101), atn.RangeSet(48, 57)))
+    // Classes are numbered by smallest member; members of a class agree on every set.
+    Eq(t, classes.Map(_.String()).MkString(" "), "{0..47, 58..96, 123..1114111} {48..57} {97..100, 102..122} {101}")
+}
+
+func TestUnsupportedCommandsAreReported(t T) T {
+    val g = `lexer grammar L;
+A : 'a' -> pushMode(X) ;
+`
+    val errs = g4.Parse(g).Map((gr) => atn.Compile(gr).Map((c) => NewModel(c.Lexer.Get(), gr.Channels).IsLeft()))
+    Eq(t, errs, Right[g4.Diagnostic, Either[Array[string], bool]](Right[Array[string], bool](true)))
+}
+
+func TestParallelAndSequentialBuildsAgree(t T) T {
+    val a = built(nestedGrammar, Options(MaxDepth = 6, Parallel = true))
+    val b = built(nestedGrammar, Options(MaxDepth = 6, Parallel = false))
+    Eq(t, a.Edges, b.Edges)
+}
+
+func TestEmitGoWithSimulator(t T) T {
+    val src = EmitGo(built(nestedGrammar, Options(MaxDepth = 3)), "nested", "N", "NLexer")
+    val t1 = IsTrue(t, strings.Contains(src, "package nested\n"))
+    val t2 = IsTrue(t1, strings.Contains(src, "func NewNLexer(input antlr.CharStream) *NLexer {"))
+    val t3 = IsTrue(t2, strings.Contains(src, "var _ antlr.Lexer = (*NLexer)(nil)"))
+    // Past the static depth the lexer finishes the token on the ATN.
+    IsTrue(t3, strings.Contains(src, "func galopNLexerReach("))
+}
+
+func TestEmitGoWithoutSimulator(t T) T {
+    val g = `lexer grammar K;
+ID : [a-z]+ ;
+`
+    val src = EmitGo(dfaOf(g), "k", "K", "kLexer")
+    val t1 = IsTrue(t, strings.Contains(src, "galop: dynamic DFA edge without an ATN"))
+    val t2 = IsFalse(t1, strings.Contains(src, "Reach("))
+    Eq(t2, GoLexerFileName("MyGrammar"), "mygrammar_galop_lexer.go")
+}

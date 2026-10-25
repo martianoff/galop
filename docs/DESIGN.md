@@ -106,15 +106,54 @@ example lookahead. It is the grammar lint the roadmap describes.
 ## Lexer (`lexgen`)
 
 Builds a DFA from the lexer ATN by subset construction over ordered configuration
-lists (ATN state, alternative/rule, rule-call stack, passed-non-greedy flag),
-reproducing ANTLR's `LexerATNSimulator`: rule order breaks ties, a configuration
-that passed a non-greedy decision stops its alternative once it accepts, and
-lexer commands travel with the configuration. Recursive fragments make the
-configuration stacks unbounded, so the static DFA is built up to a nesting
-depth; a transition beyond it hands over to a small runtime simulator over the same
-tables, so behaviour is exact at any depth and fast at normal depths. Character
-classes are partitioned into disjoint intervals; the emitted DFA indexes ASCII by
-table and falls back to interval search above it.
+lists (ATN state, alternative/rule, rule-call stack, passed-non-greedy flag, lexer
+actions), reproducing ANTLR's `LexerATNSimulator`: closure runs in ANTLR's order,
+the first configuration to reach a token rule's stop state decides the token (rule
+order breaks ties), an alternative that has accepted stops its configurations that
+passed a non-greedy decision, lexer commands travel with the configuration (and are
+ignored inside a called rule), and the longest accepted prefix wins.
+
+- **Alphabet.** Code points are partitioned into classes that every transition
+  treats alike (62 for `gala.g4`); DFA edges are per class.
+- **Recursive fragments.** Rule-call stacks are unbounded (`BRACE_CONTENT` calls
+  itself), so the static DFA keeps stacks up to a depth (`lexerDepth`, default 12:
+  274 states for `gala.g4`, about 8 more per level). An edge that would need a
+  deeper stack is *dynamic*: the generated lexer then re-matches that token on the
+  ATN, from the token's start, with a small simulator over emitted ATN tables. The
+  answer is ANTLR's at any depth; only deeply nested tokens pay for it.
+- **Reference.** `DFA.Tokenize` runs the DFA the way `BaseLexer.NextToken` runs
+  ANTLR's simulator (skip, more, type, channel, EOF, error recovery). The unit
+  tests use it, and the generated Go lexer follows it.
+- **Not supported yet:** lexer modes, predicates and embedded actions in lexer
+  rules (reported as errors), and `EOF` inside lexer rules.
+
+ANTLR's Go runtime compares two lexer configurations with no actions as equal
+whenever their hashes collide, whatever their states; galop compares them in full.
+This only matters on a 32-bit hash collision inside one configuration set.
+
+### The Go lexer (companion flavor)
+
+`lexgen.GoLexerFile` writes `<grammar>_galop_lexer.go` into the package of ANTLR's
+generated code. The type embeds `*antlr.BaseLexer` and implements `antlr.Lexer`, so
+it replaces ANTLR's lexer without an adapter: a token source that wraps an
+`antlr.Lexer` (as GALA's line-break rule does), `antlr.CommonTokenStream`, error
+listeners and token factories all work unchanged. Tokens are created by the lexer's
+token factory (`*antlr.CommonToken` by default) with ANTLR's type, channel,
+code-point start/stop, line and column; after each token the input stream sits
+where ANTLR's lexer leaves it, so `GetInputStream().LA(1)` still reads the next
+character. Token recognition errors go to the error listeners with ANTLR's message
+and position, and recovery skips the same characters.
+
+A standalone token source is not an option: `antlr.TokenSource` has an unexported
+method, so only a type embedding an antlr type can implement it.
+As in ANTLR's lexer, the line and column live in `Interpreter`, a
+`*antlr.LexerATNSimulator`; callers may set its `Line` and `CharPositionInLine`
+before the first token (GALA does for `ParseExpressionAt`). That simulator only
+counts: it holds no ATN, and `GetATN()` returns nil.
+
+The lexer scans the input's text directly with tables indexed by class (an ASCII
+table, binary search above it). All tables are immutable package-level data, so
+lexers on different goroutines share no state and need no cache isolation.
 
 ## Code generation (`codegen`, `golang`)
 

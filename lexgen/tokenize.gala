@@ -1,0 +1,179 @@
+package lexgen
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/go_interop"
+)
+
+// Tokenize runs a DFA the way ANTLR's BaseLexer.NextToken runs its
+// simulator, producing the same tokens and error messages. It is the
+// reference the generated Go lexer follows, and what the unit tests use.
+
+// TokenEOF is the type of the end-of-input token.
+val TokenEOF = -1
+
+// Token is a token as ANTLR's lexer emits it. Start and Stop are code-point
+// indexes (Stop is inclusive); Column counts code points from the line start.
+struct Token(Type int, Channel int, Start int, Stop int, Line int, Column int, Text string)
+
+// Lexed is the result of Tokenize: the tokens through EOF, and each token
+// recognition error as `line:column message`, as ANTLR reports it.
+struct Lexed(Tokens Array[Token], Errors Array[string])
+
+// Effect is what a list of lexer actions does to the token: the type it sets
+// (a token type, TypeSkip or TypeMore) and the channel it sets, if any. Later
+// actions win, as they run in order.
+struct Effect(Type Option[int], Channel Option[int])
+
+// EffectOf folds the actions with ids actions.
+func (m Model) EffectOf(actions Array[int]) Effect =
+    actions.FoldLeft(Effect(None[int](), None[int]()), (e, id) => m.Actions.Get(id) match {
+        case SkipAction() => e.Copy(Type = Some(TypeSkip))
+        case MoreAction() => e.Copy(Type = Some(TypeMore))
+        case TypeAction(t) => e.Copy(Type = Some(t))
+        case ChannelAction(c) => e.Copy(Channel = Some(c))
+    })
+
+// Position is a place in the input: Index is a code-point index, and the
+// column there is Index - ColBase.
+struct Position(Index int, Line int, ColBase int)
+
+func (p Position) Column() int = p.Index - p.ColBase
+
+// advance is p after consuming code point c, as ANTLR's simulator counts lines.
+func (p Position) advance(c int) Position =
+    if (c == '\n') Position(p.Index + 1, p.Line + 1, p.Index + 1) else Position(p.Index + 1, p.Line, p.ColBase)
+
+// MatchResult is the outcome of one match from a position.
+sealed type MatchResult {
+    // Matched accepted a token ending at End (exclusive) with Accept's prediction and actions.
+    case Matched(Accept Accept, End Position)
+    // NoMatch found no token; Stop is where the scan stopped.
+    case NoMatch(Stop Position)
+}
+
+// Lookup finds code points' classes by binary search over the class runs.
+struct Lookup(Ranges Array[ClassRange])
+
+func (l Lookup) ClassOf(c int) int {
+    var lo = 0
+    var hi = l.Ranges.Size() - 1
+    // Reason 1: binary search on the per-character path.
+    for lo < hi {
+        val mid = (lo + hi + 1) / 2
+        if l.Ranges.Get(mid).Lo <= c {
+            lo = mid
+        } else {
+            hi = mid - 1
+        }
+    }
+    l.Ranges.Get(lo).Class
+}
+
+// MatchDFA runs the DFA from pos over cps, longest match first. A dynamic edge
+// hands the whole token over to MatchATN.
+func (d DFA) MatchDFA(cps Array[int], lookup Lookup, from Position) MatchResult {
+    var state = 0
+    var at = from
+    var accepted = d.States.Get(0).Accept.Map((a) => Matched(a, from))
+    // Reason 5 (a lexer's scan loop): it stops where the DFA has no edge.
+    for at.Index < cps.Size() {
+        val c = cps.Get(at.Index)
+        val next = d.Edges.Get(state).Get(lookup.ClassOf(c))
+        if next == DynamicEdge {
+            return MatchATN(Sim(d.Model, 0), cps, lookup, from)
+        }
+        if next == ErrorEdge {
+            break
+        }
+        at = at.advance(c)
+        state = next
+        val here = at
+        d.States.Get(next).Accept.ForEach((a) => {
+            accepted = Some(Matched(a, here))
+        })
+    }
+    accepted match {
+        case Some(m) => m
+        case None() => NoMatch(at)
+    }
+}
+
+// MatchATN runs ANTLR's lexer simulation directly on the ATN, with no limit
+// on rule-call depth.
+func MatchATN(sim Sim, cps Array[int], lookup Lookup, from Position) MatchResult {
+    var configs = sim.Start().configs
+    var at = from
+    var accepted = sim.AcceptOf(configs).Map((a) => Matched(a, from))
+    // Reason 5: the same scan loop over configuration sets.
+    for at.Index < cps.Size() {
+        val c = cps.Get(at.Index)
+        val reach = sim.Reach(configs, lookup.ClassOf(c)).configs
+        if reach.IsEmpty() {
+            break
+        }
+        at = at.advance(c)
+        configs = reach
+        val here = at
+        sim.AcceptOf(reach).ForEach((a) => {
+            accepted = Some(Matched(a, here))
+        })
+    }
+    accepted match {
+        case Some(m) => m
+        case None() => NoMatch(at)
+    }
+}
+
+// Tokenize lexes input with d, starting at line 1, column 0.
+func (d DFA) Tokenize(input string) Lexed {
+    val cps = ArrayFromSlice(ToRunes(input)).Map((r) => int(r))
+    val lookup = Lookup(d.Model.ClassRanges())
+    val n = cps.Size()
+    val text = (start int, stop int) string =>
+        if (start < n && stop < n) cps.Slice(start, stop + 1).Map((c) => string(rune(c))).MkString("") else "<EOF>"
+    var at = Position(0, 1, 0)
+    var tokens = EmptyArray[Token]()
+    var errors = EmptyArray[string]()
+    var hitEOF = false
+    // Reason 5: one token per iteration, as BaseLexer.NextToken.
+    for {
+        if hitEOF {
+            tokens = tokens.Append(Token(TokenEOF, ChannelDefault, at.Index, at.Index - 1, at.Line, at.Column(), text(at.Index, at.Index - 1)))
+            break
+        }
+        val start = at
+        var channel = ChannelDefault
+        var tokenType = TypeMore
+        for tokenType == TypeMore {
+            val segment = at
+            tokenType = d.MatchDFA(cps, lookup, segment) match {
+                case Matched(acc, end) => {
+                    val effect = d.Model.EffectOf(acc.Actions)
+                    effect.Channel.ForEach((ch) => {
+                        channel = ch
+                    })
+                    at = end
+                    effect.Type.GetOrElse(acc.Prediction)
+                }
+                case NoMatch(stop) if stop.Index >= n && stop.Index == segment.Index => TokenEOF
+                case NoMatch(stop) => {
+                    val shown = text(start.Index, if (stop.Index < n) stop.Index else n - 1)
+                    errors = errors.Append(s"${start.Line}:${start.Column()} token recognition error at: '$shown'")
+                    at = if (stop.Index < n) stop.advance(cps.Get(stop.Index)) else stop
+                    TypeSkip
+                }
+            }
+            if at.Index >= n {
+                hitEOF = true
+            }
+        }
+        if tokenType != TypeSkip {
+            tokens = tokens.Append(Token(tokenType, channel, start.Index, at.Index - 1, start.Line, start.Column(), text(start.Index, at.Index - 1)))
+            if tokenType == TokenEOF {
+                break
+            }
+        }
+    }
+    Lexed(tokens, errors)
+}
