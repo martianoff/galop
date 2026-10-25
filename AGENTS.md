@@ -55,6 +55,7 @@ AI-assisted contributions are welcome; the disclosure rules are in
 | `g4/` | The `.g4` reader: lexer, parser, grammar model, formatter, semantic checks |
 | `cmd/galop/` | The `galop` CLI |
 | `testdata/grammars/` | Corpus grammars, copied verbatim from upstream |
+| `differential/` | Go harness (Bazel only): ANTLR's reference parser for `gala.g4`, tree diffing and benchmarks over the GALA corpus; see its README |
 | `docs/ROADMAP.md` | Goals, design, milestones |
 
 Packages planned by the roadmap: `analysis/` (FIRST/FOLLOW, decision classification,

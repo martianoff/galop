@@ -18,3 +18,7 @@ build --action_env=PATH
 build --worker_quit_after_build
 
 test --test_output=errors
+
+# The differential harness runs the ANTLR tool; fetch a JDK instead of relying
+# on one being installed.
+build --java_runtime_version=remotejdk_17 --tool_java_runtime_version=remotejdk_17
