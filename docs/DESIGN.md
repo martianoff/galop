@@ -5,16 +5,16 @@ becomes a parser, and the contracts between the packages that do it.
 
 ## Pipeline
 
-```
-.g4 text ──g4.Parse──▶ g4.Grammar ──g4.Check──▶ (diagnostics)
-                           │
-                     atn.Compile
-                           ▼
-        atn.Compiled { Vocab, Parser ATN + rule IR, Lexer ATN }
-              │                                │
-      analysis.Analyze                    lexgen (DFA)
-              ▼                                ▼
-        decision plans  ───────▶  codegen.Target (Go) ──▶ files
+```mermaid
+flowchart LR
+    src[".g4 text"] -->|g4.Parse| grammar["g4.Grammar"]
+    grammar -->|g4.Check| diags["diagnostics"]
+    grammar -->|atn.Compile| compiled["atn.Compiled<br/>Vocab, parser ATN + rule IR, lexer ATN"]
+    compiled -->|analysis.Analyze| plans["decision plans"]
+    compiled -->|lexgen| dfa["lexer DFA"]
+    plans --> target["codegen.Target (Go)"]
+    dfa --> target
+    target --> files["generated files"]
 ```
 
 | Package | Role |
