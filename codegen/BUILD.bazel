@@ -1,0 +1,14 @@
+load("@rules_gala//gala:defs.bzl", "gala_library")
+
+gala_library(
+    name = "codegen",
+    srcs = ["target.gala"],
+    importpath = "github.com/martianoff/galop/codegen",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//analysis",
+        "//atn",
+        "//g4",
+        "@gala//collection_immutable",
+    ],
+)

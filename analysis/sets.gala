@@ -1,0 +1,112 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+    m "martianoff/gala/collection_mutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// FIRST, FOLLOW and nullability per rule, computed over the parser ATN by
+// fixpoint iteration. They summarize the grammar for the report and for code
+// generation (expected-token sets); decision lookahead is computed separately
+// with exact call stacks.
+
+// look is what can start a path from one state to the end of its rule: the
+// tokens it can begin with, and whether it can reach the rule's end without
+// consuming anything.
+struct look(Tokens atn.IntervalSet, ReachesEnd bool)
+
+// lookFrom walks rule-local paths from state from, using the current FIRST and
+// nullability of the rules it calls.
+func lookFrom(a atn.ATN, from int, first Array[atn.IntervalSet], nullable Array[bool]) look {
+    val seen = m.EmptyHashSet[int]()
+    var work = ListOf(from)
+    var tokens = atn.EmptySet()
+    var reachesEnd = false
+    // A worklist: visiting a state queues its successors.
+    for work.NonEmpty() {
+        val s = work.Head()
+        work = work.Tail()
+        if seen.Add(s) {
+            val st = a.State(s)
+            if isRuleStop(st) {
+                reachesEnd = true
+            }
+            st.Out.ForEach((t) => t match {
+                case atn.Epsilon(target) => work = work.Prepend(target)
+                case atn.RuleCall(_, rule, follow) => {
+                    tokens = tokens.Union(first.Get(rule))
+                    if nullable.Get(rule) {
+                        work = work.Prepend(follow)
+                    }
+                }
+                case atn.Atom(_, label) => tokens = tokens.Union(atn.SetOf(label))
+                case atn.SetMatch(_, set) => tokens = tokens.Union(set)
+                case atn.LexerActions(target, _) => work = work.Prepend(target)
+                case atn.Predicate(target, _, _) => work = work.Prepend(target)
+                case atn.Action(target, _, _) => work = work.Prepend(target)
+            })
+        }
+    }
+    look(tokens, reachesEnd)
+}
+
+func isRuleStop(s atn.State) bool = s.Kind match {
+    case atn.RuleStopState() => true
+    case _ => false
+}
+
+// firstSets computes FIRST and nullability of every rule.
+func firstSets(a atn.ATN) Tuple[Array[atn.IntervalSet], Array[bool]] {
+    val none = ArrayFill(a.RuleNames.Size(), false)
+    firstRound(a, none.Map((_) => atn.EmptySet()), none)
+}
+
+// firstRound recomputes every rule's FIRST and nullability from the current
+// ones until nothing changes. Both only grow, so equal sizes mean equal sets.
+func firstRound(a atn.ATN, first Array[atn.IntervalSet], nullable Array[bool]) Tuple[Array[atn.IntervalSet], Array[bool]] {
+    val looks = a.RuleStart.Map((start) => lookFrom(a, start, first, nullable))
+    val grew = looks.ZipWithIndex().Exists((p) =>
+        p.V1.Tokens.Size() != first.Get(p.V2).Size() || p.V1.ReachesEnd != nullable.Get(p.V2)
+    )
+    if (grew) firstRound(a, looks.Map(_.Tokens), looks.Map(_.ReachesEnd)) else (first, nullable)
+}
+
+// callSite is a call of rule Callee from rule Caller that returns to Follow.
+struct callSite(Caller int, Callee int, Follow int)
+
+// callSites lists every rule call in the ATN, in state order.
+func callSites(a atn.ATN) Array[callSite] =
+    a.States.FlatMap((s) => s.Out.Collect({
+        case atn.RuleCall(_, callee, follow) => callSite(s.Rule, callee, follow)
+    }))
+
+// startRules marks the rules no other rule calls: where a parse can begin, so
+// EOF can follow them.
+func startRules(a atn.ATN, sites Array[callSite]) Array[bool] =
+    ArrayTabulate(a.RuleNames.Size(), (r) => !sites.Exists((cs) => cs.Callee == r && cs.Caller != r))
+
+// followSets computes the global FOLLOW set of every rule: the tokens that can
+// come right after a call of it in any context. EOF follows the start rules.
+func followSets(
+    a atn.ATN,
+    sites Array[callSite],
+    starts Array[bool],
+    first Array[atn.IntervalSet],
+    nullable Array[bool],
+) Array[atn.IntervalSet] {
+    // What can follow each call site inside its own rule.
+    val after = sites.Map((cs) => (cs, lookFrom(a, cs.Follow, first, nullable)))
+    followRound(after, starts.Map((s) => if (s) atn.SetOf(atn.TokenEOF) else atn.EmptySet()))
+}
+
+// followRound grows every rule's FOLLOW from its call sites until nothing changes.
+func followRound(after Array[Tuple[callSite, look]], follow Array[atn.IntervalSet]) Array[atn.IntervalSet] {
+    val grown = after.FoldLeft(follow, (acc, p) => {
+        val (cs, l) = p
+        val fromCaller = if (l.ReachesEnd) acc.Get(cs.Caller) else atn.EmptySet()
+        acc.Updated(cs.Callee, acc.Get(cs.Callee).Union(l.Tokens).Union(fromCaller))
+    })
+    if (grown.Zip(follow).Exists((p) => p.V1.Size() != p.V2.Size())) followRound(after, grown) else follow
+}

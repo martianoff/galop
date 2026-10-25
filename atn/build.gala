@@ -1,6 +1,8 @@
 package atn
 
 import (
+    "strings"
+
     . "martianoff/gala/collection_immutable"
 
     "github.com/martianoff/galop/g4"
@@ -153,7 +155,7 @@ func (b Ptr[builder]) rule(index int, r g4.Rule) RuleIR {
             RuleIR(index, r.Name, None[int](), ArrayOf(AltIR(only.Label, p.Steps)))
         }
         case _ => {
-            val choice = b.choice(index, r.Alts, s"${r.Name} : ${g4.FormatRule(r)}")
+            val choice = b.choice(index, r.Alts, s"${r.Name} : ${ruleBody(r)}")
             b.eps(start, choice.Frag.Entry)
             b.eps(choice.Frag.Exit, stop)
             choice.Steps match {
@@ -417,3 +419,7 @@ func (b Ptr[builder]) empty(rule int, msg string) Piece {
     val s = b.state(rule, BasicState())
     Piece(Frag(s, s), EmptyArray[Step]())
 }
+
+// ruleBody renders a rule's alternatives on one line: `a b | c`.
+func ruleBody(r g4.Rule) string =
+    strings.TrimSuffix(strings.TrimPrefix(g4.FormatElement(g4.Block(r.Alts)), "("), ")")

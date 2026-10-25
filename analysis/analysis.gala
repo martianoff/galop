@@ -1,0 +1,23 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/concurrent"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// Analyze computes FIRST, FOLLOW and nullability per rule and a decision
+// plan for every decision of the parser ATN a. Decisions are independent and
+// are analyzed concurrently; the plans come back in decision order.
+// a: a parser ATN from atn.Compile.
+// maxK: the deepest static lookahead to try before a decision is left to adaptive prediction.
+func Analyze(a atn.ATN, maxK int = MaxK) Analysis {
+    val sites = callSites(a)
+    val starts = startRules(a, sites)
+    val (first, nullable) = firstSets(a)
+    val follow = followSets(a, sites, starts, first, nullable)
+    val g = newGrammarInfo(a, sites, starts)
+    val plans = concurrent.Traverse(a.Decisions, (d) => concurrent.Future(g.planDecision(d, maxK))).Get()
+    Analysis(plans, first, follow, nullable)
+}

@@ -1,0 +1,340 @@
+package analysis
+
+// galaGrammar is testdata/grammars/gala.g4, verbatim, as a string: `gala test`
+// runs in a generated directory and cannot read testdata. Regenerate it when
+// the corpus copy changes.
+val galaGrammar = "" +
+    "grammar gala;\n" +
+    "\n" +
+    "// NL_LPAREN is a '(' that starts a line after a token that can end an\n" +
+    "// expression. No lexer rule produces it: the parser driver re-types it (see\n" +
+    "// internal/parser/newline.go). A call suffix rejects it, so such a '(' begins a\n" +
+    "// new statement. Every other '(' that can follow a name, literal, ')', ']' or\n" +
+    "// '}' accepts both (primary, parameters, sealedCase); a '(' after a keyword\n" +
+    "// (receiver, tuplePattern, import, if) is never re-typed and needs only '('.\n" +
+    "//\n" +
+    "// NL_STAR and NL_AMP are a '*' or '&' re-typed the same way when it starts a\n" +
+    "// line directly inside a block and is written against its operand (`*p`,\n" +
+    "// `&n`). Only unaryOp accepts them — multiplication, bitwise and and a pointer\n" +
+    "// type do not — so `*p = 5` or `&n` on its own line begins a new statement,\n" +
+    "// while `* b` with a space still continues the line before.\n" +
+    "tokens { NL_LPAREN, NL_STAR, NL_AMP }\n" +
+    "\n" +
+    "// Entry point\n" +
+    "sourceFile: packageClause importDeclaration* topLevelDeclaration* EOF;\n" +
+    "\n" +
+    "packageClause: PACKAGE identifier;\n" +
+    "\n" +
+    "topLevelDeclaration\n" +
+    "    : embedDeclaration\n" +
+    "    | valDeclaration\n" +
+    "    | varDeclaration\n" +
+    "    | functionDeclaration\n" +
+    "    | typeDeclaration\n" +
+    "    | structShorthandDeclaration\n" +
+    "    | sealedTypeDeclaration\n" +
+    "    | opaqueTypeDeclaration\n" +
+    "    ;\n" +
+    "\n" +
+    "embedDeclaration: EMBED VAL identifier type? '=' embedPatterns;\n" +
+    "embedPatterns: STRING (',' STRING)*;\n" +
+    "\n" +
+    "structShorthandDeclaration: 'struct' identifier (typeParameters)? parameters;\n" +
+    "\n" +
+    "sealedTypeDeclaration: SEALED 'type' identifier (typeParameters)? '{' sealedCase+ '}';\n" +
+    "// Parentheses are optional for zero-field variants: `case Debug` and `case Debug()` are both valid.\n" +
+    "// Variants with fields still require parentheses: `case Add(l Expr, r Expr)`.\n" +
+    "sealedCase: DEFAULT? CASE identifier (('(' | NL_LPAREN) sealedCaseFieldList? ')')?;\n" +
+    "sealedCaseFieldList: sealedCaseField (',' sealedCaseField)* ','?;\n" +
+    "sealedCaseField: identifier type paramDefault?;\n" +
+    "\n" +
+    "// `opaque type UserID int64`, `opaque type Id[T any] int64`: a distinct type\n" +
+    "// whose representation is its underlying type. Which underlying types are\n" +
+    "// allowed is a semantic check, not a grammatical one.\n" +
+    "opaqueTypeDeclaration: OPAQUE 'type' identifier (typeParameters)? type;\n" +
+    "\n" +
+    "declaration\n" +
+    "    : valDeclaration\n" +
+    "    | varDeclaration\n" +
+    "    | bindDeclaration\n" +
+    "    | alsoDeclaration\n" +
+    "    | useDeclaration\n" +
+    "    | functionDeclaration\n" +
+    "    | typeDeclaration\n" +
+    "    | importDeclaration\n" +
+    "    | ifStatement\n" +
+    "    | forStatement\n" +
+    "    | simpleStatement\n" +
+    "    ;\n" +
+    "\n" +
+    "importDeclaration: 'import' ( importSpec | '(' importSpec* ')' );\n" +
+    "\n" +
+    "importSpec: ('.' | identifier)? STRING;\n" +
+    "\n" +
+    "typeDeclaration: 'type' identifier (typeParameters)? (structType | interfaceType | typeAlias);\n" +
+    "\n" +
+    "typeAlias: identifier | type;\n" +
+    "\n" +
+    "structType: 'struct' '{' structField* '}';\n" +
+    "structField: (VAL | VAR)? identifier type (STRING)?;\n" +
+    "\n" +
+    "interfaceType: 'interface' '{' methodSpec* '}';\n" +
+    "methodSpec: identifier (typeParameters)? signature;\n" +
+    "\n" +
+    "valDeclaration: 'val' (tuplePattern | identifierList) (type)? '=' expressionList;\n" +
+    "varDeclaration: 'var' (tuplePattern | identifierList) (type)? ('=' expressionList)?;\n" +
+    "\n" +
+    "// Monadic binding (do-notation). Legal only inside a block whose result type is\n" +
+    "// a bindable monad. `also` must follow a `bind`/`also` in the same block; that\n" +
+    "// ordering is enforced in the transformer, not the grammar, for better errors.\n" +
+    "bindDeclaration: BIND identifier (type)? '=' expression;\n" +
+    "alsoDeclaration: ALSO identifier (type)? '=' expression;\n" +
+    "\n" +
+    "// Scoped resource binding (RAII). `use x = acquire` binds x for the rest of the\n" +
+    "// enclosing block and guarantees x.Close() runs when the block exits, on every\n" +
+    "// path — the GALA-native replacement for Go's `defer x.Close()`. Multiple `use`\n" +
+    "// bindings in a block close in reverse (LIFO) order. Desugared in the\n" +
+    "// transformer to nested resource.Using scopes; the resource must be Closeable.\n" +
+    "useDeclaration: USE identifier (type)? '=' expression;\n" +
+    "\n" +
+    "// Tuple pattern for destructuring: val (a, b) = tuple\n" +
+    "tuplePattern: '(' identifierList ')';\n" +
+    "\n" +
+    "functionDeclaration: 'func' (receiver)? identifier (typeParameters)? signature (block | '=' expression);\n" +
+    "\n" +
+    "receiver: '(' (VAL | VAR)? identifier type ')';\n" +
+    "\n" +
+    "// A signature has one result type, or a Go result list of two or more types,\n" +
+    "// `(int, error)`, for a function Go calls with several results (an io.Writer's\n" +
+    "// Write). Inside GALA such a function's result is one value, as a Go call's\n" +
+    "// is: `(T, error)` is a Try[T], `(A, B)` a Tuple[A, B].\n" +
+    "signature: parameters (type | goResults)?;\n" +
+    "goResults: '(' type (',' type)+ ')';\n" +
+    "\n" +
+    "parameters: ('(' | NL_LPAREN) parameterList? ')';\n" +
+    "parameterList: parameter (',' parameter)* ','?;\n" +
+    "// Parameters can be:\n" +
+    "// - Named with type: \"x int\", \"val x int\", \"x ...int\"\n" +
+    "// - Named without type: \"x\" (type inferred)\n" +
+    "// - Type only (for function types): \"int\", \"Option[T]\", \"...int\"\n" +
+    "// - With default value: \"x int = 42\", \"host string = \\\"localhost\\\"\"\n" +
+    "parameter: (VAL | VAR)? (identifier ELLIPSIS? type? paramDefault? | ELLIPSIS? type);\n" +
+    "paramDefault: '=' expression;\n" +
+    "\n" +
+    "ELLIPSIS: '...';\n" +
+    "\n" +
+    "typeParameters: '[' typeParameterList ']';\n" +
+    "typeParameterList: typeParameter (',' typeParameter)*;\n" +
+    "typeParameter: identifier identifier; // e.g. [T any]\n" +
+    "\n" +
+    "// Block bodies accept optional ';' separators between statements, so\n" +
+    "// Go-style one-liners like `if v < 0 { neg = true; v = -v }` parse.\n" +
+    "// Statements remain primarily newline/whitespace-separated; the semicolon\n" +
+    "// is a permissive alternative, not required.\n" +
+    "block: '{' ';'* (statement ';'*)* '}';\n" +
+    "\n" +
+    "statement\n" +
+    "    : declaration\n" +
+    "    | returnStatement\n" +
+    "    ;\n" +
+    "\n" +
+    "returnStatement: 'return' expression?;\n" +
+    "\n" +
+    "ifStatement: 'if' (simpleStatement ';')? expression block ('else' (block | ifStatement))?;\n" +
+    "\n" +
+    "forStatement: 'for' (forClause | rangeClause | forCondition)? block;\n" +
+    "forClause: simpleStatement? ';' expression? ';' simpleStatement?;\n" +
+    "forCondition: expression;\n" +
+    "rangeClause: (identifierList (':=' | '=') )? 'range' expression;\n" +
+    "\n" +
+    "simpleStatement\n" +
+    "    : incDecStmt\n" +
+    "    | assignment\n" +
+    "    | shortVarDecl\n" +
+    "    | expression\n" +
+    "    ;\n" +
+    "\n" +
+    "incDecStmt: expression ('++' | '--');\n" +
+    "\n" +
+    "identifierList: identifier (',' identifier)*;\n" +
+    "assignment: expressionList ('=' | '+=' | '-=' | '*=' | '/=') expressionList;\n" +
+    "shortVarDecl: identifierList ':=' expressionList;\n" +
+    "expressionList: expression (',' expression)*;\n" +
+    "\n" +
+    "// Expression with proper operator precedence\n" +
+    "// Uses multiple rules to separate precedence levels clearly\n" +
+    "expression\n" +
+    "    : orExpr\n" +
+    "    ;\n" +
+    "\n" +
+    "orExpr\n" +
+    "    : andExpr ('||' andExpr)*\n" +
+    "    ;\n" +
+    "\n" +
+    "andExpr\n" +
+    "    : equalityExpr ('&&' equalityExpr)*\n" +
+    "    ;\n" +
+    "\n" +
+    "equalityExpr\n" +
+    "    : relationalExpr (('==' | '!=') relationalExpr)*\n" +
+    "    ;\n" +
+    "\n" +
+    "relationalExpr\n" +
+    "    : additiveExpr (('<' | '<=' | '>' | '>=') additiveExpr)*\n" +
+    "    ;\n" +
+    "\n" +
+    "additiveExpr\n" +
+    "    : multiplicativeExpr (('+' | '-' | '|' | '^') multiplicativeExpr)*\n" +
+    "    ;\n" +
+    "\n" +
+    "multiplicativeExpr\n" +
+    "    : unaryExpr (('*' | '/' | '%' | '<<' | '>>' | '&' | '&^') unaryExpr)*\n" +
+    "    ;\n" +
+    "\n" +
+    "unaryExpr\n" +
+    "    : unaryOp unaryExpr\n" +
+    "    | postfixExpr\n" +
+    "    ;\n" +
+    "\n" +
+    "postfixExpr\n" +
+    "    : primaryExpr postfixSuffix* ('match' '{' caseClause+ '}')?\n" +
+    "    ;\n" +
+    "\n" +
+    "// A call takes a plain '(' only, never NL_LPAREN (see the tokens block).\n" +
+    "postfixSuffix\n" +
+    "    : '.' identifier\n" +
+    "    | '(' argumentList? ')'\n" +
+    "    | '[' expressionList ']'\n" +
+    "    ;\n" +
+    "\n" +
+    "primaryExpr\n" +
+    "    : lambdaExpression     // Must come before 'primary' to handle () => ... vs ()\n" +
+    "    | primary\n" +
+    "    | ifExpression\n" +
+    "    | partialFunctionLiteral\n" +
+    "    ;\n" +
+    "\n" +
+    "partialFunctionLiteral: '{' caseClause+ '}';\n" +
+    "argumentList: argument (',' argument)* ','?;  // Allow trailing comma for multiline formatting\n" +
+    "argument: (identifier '=')? (lambdaExpression | pattern);\n" +
+    "\n" +
+    "primary\n" +
+    "    : identifier\n" +
+    "    | literal\n" +
+    "    | ('(' | NL_LPAREN) tupleExpressionList? ')'\n" +
+    "    | compositeLiteral\n" +
+    "    ;\n" +
+    "\n" +
+    "// Parenthesized tuple/grouping expressions allow an optional trailing comma so\n" +
+    "// multi-line tuple literals (Elm-style `(model, cmd,)`) parse cleanly. Kept\n" +
+    "// separate from `expressionList`, which is used in statement positions\n" +
+    "// (assignments, short var decls, val declarations) where a trailing comma\n" +
+    "// would be a syntax error in the surrounding production.\n" +
+    "tupleExpressionList: expression (',' expression)* ','?;\n" +
+    "\n" +
+    "compositeLiteral: type ('{' (elementList ','?)? '}');\n" +
+    "elementList: keyedElement (',' keyedElement)*;\n" +
+    "keyedElement: (expression ':')? expression;\n" +
+    "\n" +
+    "// Lambda expressions may optionally declare their return type before '=>'\n" +
+    "// — useful when storing a lambda in a `val` where the return type isn't\n" +
+    "// determined by a target context (e.g. a typed method parameter). When\n" +
+    "// omitted, the return type is inferred from the body expression.\n" +
+    "lambdaExpression: parameters type? '=>' (expression | block);\n" +
+    "\n" +
+    "caseClause: 'case' pattern (IF guard=expression)? '=>' (bodyStmt=simpleStatement | bodyBlock=block);\n" +
+    "\n" +
+    "pattern\n" +
+    "    : expression ELLIPSIS   # restPattern\n" +
+    "    | expression            # expressionPattern\n" +
+    "    | identifier ':' type   # typedPattern\n" +
+    "    ;\n" +
+    "\n" +
+    "ifExpression: 'if' '(' expression ')' ifExprBranch 'else' ifExprBranch;\n" +
+    "ifExprBranch: block | expression;\n" +
+    "\n" +
+    "type\n" +
+    "    : qualifiedIdentifier (typeArguments)?\n" +
+    "    | '[' ']' type // slice\n" +
+    "    | '*' type     // pointer\n" +
+    "    | 'map' '[' type ']' type\n" +
+    "    | 'func' signature\n" +
+    "    ;\n" +
+    "\n" +
+    "typeArguments: '[' typeList ']';\n" +
+    "typeList: type (',' type)*;\n" +
+    "\n" +
+    "qualifiedIdentifier: identifier ('.' identifier)*;\n" +
+    "// `default` is a keyword only before `case` in a sealed type; elsewhere it is\n" +
+    "// a name, so naming a binding after the Go keyword reports GALA-E0055.\n" +
+    "identifier: IDENTIFIER | DEFAULT;\n" +
+    "\n" +
+    "literal\n" +
+    "    : INT_LIT\n" +
+    "    | FLOAT_LIT\n" +
+    "    | STRING\n" +
+    "    | CHAR_LIT\n" +
+    "    | RAW_STRING\n" +
+    "    | INTERPOLATED_STRING\n" +
+    "    | FORMAT_STRING\n" +
+    "    | 'true'\n" +
+    "    | 'false'\n" +
+    "    | 'nil'\n" +
+    "    ;\n" +
+    "\n" +
+    "// Lexer\n" +
+    "VAL: 'val';\n" +
+    "VAR: 'var';\n" +
+    "BIND: 'bind';\n" +
+    "ALSO: 'also';\n" +
+    "USE: 'use';\n" +
+    "FUNC: 'func';\n" +
+    "TYPE: 'type';\n" +
+    "STRUCT: 'struct';\n" +
+    "INTERFACE: 'interface';\n" +
+    "MATCH: 'match';\n" +
+    "CASE: 'case';\n" +
+    "IF: 'if';\n" +
+    "ELSE: 'else';\n" +
+    "FOR: 'for';\n" +
+    "RANGE: 'range';\n" +
+    "RETURN: 'return';\n" +
+    "IMPORT: 'import';\n" +
+    "PACKAGE: 'package';\n" +
+    "SEALED: 'sealed';\n" +
+    "DEFAULT: 'default';\n" +
+    "OPAQUE: 'opaque';\n" +
+    "EMBED: 'embed';\n" +
+    "COLON: ':';\n" +
+    "\n" +
+    "binaryOp: '||' | '&&' | '==' | '!=' | '<' | '<=' | '>' | '>=' | '+' | '-' | '|' | '^' | '*' | '/' | '%' | '<<' | '>>' | '&' | '&^';\n" +
+    "unaryOp: '+' | '-' | '!' | '^' | '*' | NL_STAR | '&' | NL_AMP | '<-';\n" +
+    "\n" +
+    "INTERPOLATED_STRING: 's\"' INTERP_BODY '\"';\n" +
+    "FORMAT_STRING: 'f\"' INTERP_BODY '\"';\n" +
+    "\n" +
+    "fragment INTERP_BODY: (INTERP_CHAR | '\\\\' . | '${' BRACE_CONTENT '}')*;\n" +
+    "fragment INTERP_CHAR: ~[\"\\r\\n\\\\$] | '$' ~[\"{\\r\\n\\\\];\n" +
+    "fragment BRACE_CONTENT: (BRACE_CHAR | '\\\\' . | '\"' (~[\"\\r\\n\\\\] | '\\\\' .)* '\"' | '{' BRACE_CONTENT '}')*;\n" +
+    "fragment BRACE_CHAR: ~[{}\"\\r\\n\\\\];\n" +
+    "\n" +
+    "IDENTIFIER: [a-zA-Z_] [a-zA-Z0-9_]*;\n" +
+    "// Integer literals support:\n" +
+    "//   - 0x / 0X  hex       (0x1F, 0xdead)\n" +
+    "//   - 0b / 0B  binary    (0b1010)\n" +
+    "//   - 0o / 0O  octal     (0o644) — Go 1.13+ form, matches the spec users expect\n" +
+    "//   - 0<digits> implicit octal (0644) — Go-classic form, retained for compatibility\n" +
+    "//   - plain decimal\n" +
+    "INT_LIT\n" +
+    "    : '0' [xX] [0-9a-fA-F]+\n" +
+    "    | '0' [bB] [01]+\n" +
+    "    | '0' [oO] [0-7]+\n" +
+    "    | [0-9]+\n" +
+    "    ;\n" +
+    "FLOAT_LIT: [0-9]+ '.' [0-9]* ([eE] [+-]? [0-9]+)? | '.' [0-9]+ ([eE] [+-]? [0-9]+)? | [0-9]+ [eE] [+-]? [0-9]+;\n" +
+    "STRING: '\"' (~[\"\\r\\n\\\\] | '\\\\' .)* '\"';\n" +
+    "CHAR_LIT: '\\'' (~['\\r\\n\\\\] | '\\\\' .) '\\'';\n" +
+    "RAW_STRING: '`' ~[`]* '`';\n" +
+    "WS: [ \\t\\r\\n]+ -> skip;\n" +
+    "COMMENT: '//' ~[\\r\\n]* -> channel(HIDDEN);\n" +
+    "MULTILINE_COMMENT: '/*' .*? '*/' -> channel(HIDDEN);\n"

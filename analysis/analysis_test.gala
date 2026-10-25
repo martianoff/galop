@@ -1,0 +1,239 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/go_builtins"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+)
+
+// parserATN compiles a test grammar that must be valid; a problem panics.
+func parserATN(src string) atn.ATN = g4.Parse(src) match {
+    case Right(g) => atn.Compile(g) match {
+        case Right(c) => c.Parser.Get()
+        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+}
+
+// tokens names a token set: `EOF X Y`.
+func tokens(a atn.ATN, s atn.IntervalSet) string = s.Values().Map((t) => a.Vocab.Name(t)).MkString(" ")
+
+// show renders a lookahead tree with token names: `{X:{Y:1 Z:2} W:?1,2}`.
+func show(a atn.ATN, l Lookahead) string = l match {
+    case Predict(alt) => s"$alt"
+    case Adaptive(alts) => s"?${alts.MkString(",")}"
+    case Switch(_, cases) => "{" + cases.Map((c) => tokens(a, c.Tokens) + ":" + show(a, c.Then)).MkString(" ") + "}"
+}
+
+func className(c DecisionClass) string = c match {
+    case LL1() => "LL(1)"
+    case LLk(k) => s"LL($k)"
+    case NeedsAdaptive() => "adaptive"
+}
+
+// planFor finds the plan of the decision in rule whose source text is text.
+func planFor(a atn.ATN, an Analysis, rule string, text string) DecisionPlan =
+    an.Plans.Find((p) => a.RuleNames.Get(p.Decision.Rule) == rule && p.Decision.Text == text) match {
+        case Some(p) => p
+        case None() => go_builtins.Panic(s"no decision '$text' in rule $rule; have: " +
+            an.Plans.Map((p) => s"${a.RuleNames.Get(p.Decision.Rule)}: ${p.Decision.Text}").MkString(" / "))
+    }
+
+// decision analyzes src and describes one decision as `class tree`.
+func decision(src string, rule string, text string, maxK int = MaxK) string {
+    val a = parserATN(src)
+    val p = planFor(a, Analyze(a, maxK), rule, text)
+    s"${className(p.Class)} ${show(a, p.Lookahead)}"
+}
+
+val tokensXYZ = `
+X : 'x' ; Y : 'y' ; Z : 'z' ; W : 'w' ; Q : 'q' ;
+`
+
+func TestFirstFollowNullable(t T) T {
+    val a = parserATN(`grammar F;
+s : a b EOF ;
+a : X | ;
+b : Y a Z | c ;
+c : W? ;
+` + tokensXYZ)
+    val an = Analyze(a)
+    val rule = (name string) => a.RuleIndex(name).Get()
+    val first = (name string) => tokens(a, an.First.Get(rule(name)))
+    val follow = (name string) => tokens(a, an.Follow.Get(rule(name)))
+    val nullable = (name string) => an.Nullable.Get(rule(name))
+    val t1 = Eq(t, first("s"), "EOF X Y W")
+    val t2 = Eq(t1, first("a"), "X")
+    val t3 = Eq(t2, first("b"), "Y W")
+    val t4 = Eq(t3, ArrayOf("s", "a", "b", "c").Map(nullable), ArrayOf(false, true, true, true))
+    // s is the start rule (nothing calls it), so EOF follows it.
+    val t5 = Eq(t4, follow("s"), "EOF")
+    // a is followed by b (or what follows b, since b is nullable) in s, and by Z in b.
+    val t6 = Eq(t5, follow("a"), "EOF Y Z W")
+    Eq(t6, follow("c"), "EOF")
+}
+
+func TestStaticLookahead(t T) T = RunCases[Tuple[string, string], string](t,
+    (sub, in, want) => Eq(sub, decision(`grammar D;
+` + in.V1 + tokensXYZ, "s", in.V2), want),
+    Case[Tuple[string, string], string](
+        Name = "one token decides",
+        Input = (`s : X a | Y ; a : Z ;`, "s : X a | Y"),
+        Expected = "LL(1) {X:1 Y:2}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "two tokens decide",
+        Input = (`s : X Y | X Z ;`, "s : X Y | X Z"),
+        Expected = "LL(2) {X:{Y:1 Z:2}}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "three tokens decide",
+        Input = (`s : X Y Z | X Y W ;`, "s : X Y Z | X Y W"),
+        Expected = "LL(3) {X:{Y:{Z:1 W:2}}}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "past MaxK the decision is adaptive",
+        Input = (`s : X Y Z Q | X Y Z W ;`, "s : X Y Z Q | X Y Z W"),
+        Expected = "adaptive {X:{Y:{Z:?1,2}}}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "lookahead continues through rule calls",
+        Input = (`s : a Y | a Z ; a : X ;`, "s : a Y | a Z"),
+        Expected = "LL(2) {X:{Y:1 Z:2}}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "greedy loop: enter or exit",
+        Input = (`s : (X Y)* X Z ;`, "(X Y)*"),
+        Expected = "LL(2) {X:{Y:1 Z:2}}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "non-greedy loop puts the exit first",
+        Input = (`s : (X Y)*? X Z ;`, "(X Y)*?"),
+        Expected = "LL(2) {X:{Y:2 Z:1}}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "plus loop: repeat or exit",
+        Input = (`s : (X Y)+ X Z ;`, "(X Y)+"),
+        Expected = "LL(2) {X:{Y:1 Z:2}}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "optional block and its exit",
+        Input = (`s : X? X Y ;`, "X?"),
+        Expected = "LL(2) {X:{X:1 Y:2}}",
+    ),
+    Case[Tuple[string, string], string](
+        Name = "the exit of a rule's last optional sees EOF",
+        Input = (`s : X Y? ;`, "Y?"),
+        Expected = "LL(1) {EOF:2 Y:1}",
+    ),
+)
+
+func TestNullableAlternativeSeesFollow(t T) T =
+    Eq(t, decision(`grammar N;
+s : a Z | Y a W ;
+a : X | ;
+` + tokensXYZ, "a", "a : X | "), "LL(1) {X:1 Z W:2}")
+
+func TestExitConflictsThroughGlobalFollow(t T) T =
+    // In a, `X?` may be followed by the X that s matches after a, so a lone X
+    // is decided by what comes after it: another X means the optional X was
+    // taken, EOF means it was not.
+    Eq(t, decision(`grammar G;
+s : a X EOF ;
+a : Y X? ;
+` + tokensXYZ, "a", "X?"), "LL(2) {X:{EOF:2 X:1}}")
+
+func TestGlobalFollowCoversEveryCaller(t T) T =
+    // a is called from two contexts; the exit of `X?` must account for both:
+    // after `Y` in s1 and after nothing in s2 (where EOF ends the start rule).
+    Eq(t, decision(`grammar C;
+s : W a Y | Z a ;
+a : Q X? ;
+` + tokensXYZ, "a", "X?"), "LL(1) {EOF Y:2 X:1}")
+
+func TestRecursiveRules(t T) T {
+    val src = `grammar R;
+s : e EOF ;
+e : X e Y | Z ;
+p : X p Y Q | X p Y W | Z ;
+` + tokensXYZ
+    val t1 = Eq(t, decision(src, "e", "e : X e Y | Z"), "LL(1) {X:1 Z:2}")
+    // Telling p's first two alternatives apart needs the token after the
+    // matching Y, arbitrarily far away: static lookahead cannot do it.
+    Eq(t1, decision(src, "p", "p : X p Y Q | X p Y W | Z"), "adaptive {X:{X:{X Z:?1,2} Z:{Y:?1,2}} Z:3}")
+}
+
+func TestAmbiguityGoesToTheSmallestAlternative(t T) T {
+    val src = `grammar A;
+s : a EOF ;
+a : X | q ;
+q : X (Y X)* ;
+` + tokensXYZ
+    // After X both alternatives can end a at once and then reach the same
+    // configuration, where ANTLR resolves the ambiguity to alternative 1;
+    // only Y (the loop in q) needs alternative 2.
+    Eq(t, decision(src, "a", "a : X | q"), "LL(2) {X:{EOF:1 Y:2}}")
+}
+
+func TestPredicatesMakeADecisionAdaptive(t T) T {
+    val a = parserATN(`grammar P;
+s : {p()}? X | X Y ;
+` + tokensXYZ)
+    val an = Analyze(a)
+    val p = an.Plans.Head()
+    val t1 = Eq(t, s"${className(p.Class)} ${show(a, p.Lookahead)}", "adaptive ?1,2")
+    Eq(t1, Report(a, an), `1 decisions: 0 LL(1), 0 LL(2), 0 LL(3), 1 adaptive
+
+Adaptive decisions:
+decision 0 in rule s (block): s : {p()}? X | X Y
+  alts 1,2: predicates are evaluated before the first token
+`)
+}
+
+func TestMaxKIsAParameter(t T) T {
+    val src = `grammar K;
+s : X Y Z Q | X Y Z W ;
+` + tokensXYZ
+    Eq(t, decision(src, "s", "s : X Y Z Q | X Y Z W", 4), "LL(4) {X:{Y:{Z:{W:2 Q:1}}}}")
+}
+
+func TestReport(t T) T {
+    val a = parserATN(`grammar Rep;
+s : (X Y)* X Z t u EOF ;
+t : Q W Q Y | Q W Q Z ;
+u : X | Y ;
+` + tokensXYZ)
+    Eq(t, Report(a, Analyze(a)), `3 decisions: 1 LL(1), 1 LL(2), 0 LL(3), 1 adaptive
+
+Decisions that need more than one token:
+  LL(2) decision 0 in rule s (star): (X Y)*
+
+Adaptive decisions:
+decision 1 in rule t (block): t : Q W Q Y | Q W Q Z
+  alts 1,2 both start with: 'q' 'w' 'q'
+`)
+}
+
+// The decisions of gala.g4 that static lookahead (up to three tokens) cannot
+// settle, by rule.
+val galaAdaptive = ArrayOf(
+    "declaration", "varDeclaration", "signature", "returnStatement", "ifStatement",
+    "forStatement", "simpleStatement", "orExpr", "andExpr", "equalityExpr",
+    "relationalExpr", "additiveExpr", "multiplicativeExpr", "unaryExpr", "postfixExpr",
+    "postfixExpr", "primaryExpr", "argument", "primary", "keyedElement", "pattern",
+)
+
+func TestGalaGrammar(t T) T {
+    val a = parserATN(galaGrammar)
+    val an = Analyze(a)
+    val report = Report(a, an)
+    val adaptive = an.Plans.Filter((p) => p.Class match {
+        case NeedsAdaptive() => true
+        case _ => false
+    }).Map((p) => a.RuleNames.Get(p.Decision.Rule))
+    val t1 = HasPrefix(t, report, "107 decisions: 71 LL(1), 13 LL(2), 2 LL(3), 21 adaptive\n")
+    Eq(t1, adaptive, galaAdaptive)
+}

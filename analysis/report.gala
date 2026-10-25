@@ -1,0 +1,74 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// Report renders the decision report for an analysis of a: a summary line,
+// the decisions that need more than one token of lookahead, and every
+// decision left (at least partly) to adaptive prediction with its conflicts.
+// a: the parser ATN that was analyzed.
+// an: the result of Analyze(a).
+func Report(a atn.ATN, an Analysis) string {
+    val plans = an.Plans
+    val depths = plans.Map((p) => p.Class match {
+        case LL1() => 1
+        case LLk(k) => k
+        case NeedsAdaptive() => 0
+    })
+    val deepest = depths.FoldLeft(MaxK, maxOf)
+    val ll1 = s"${depths.Count(_ == 1)} LL(1)"
+    val llk = ArrayTabulate(deepest - 1, (i) => i + 2).Map((k) => s"${depths.Count(_ == k)} LL($k)")
+    val summary = s"${plans.Size()} decisions: " +
+        ArrayOf(ll1).AppendAll(llk).Append(s"${depths.Count(_ == 0)} adaptive").MkString(", ")
+    val deep = plans.Filter((p) => p.Class match {
+        case LLk(_) => true
+        case _ => false
+    })
+    val deepSection = deep match {
+        case Array() => EmptyArray[string]()
+        case _ => ArrayOf("", "Decisions that need more than one token:").AppendAll(deep.Map((p) => {
+            val k = p.Class match {
+                case LLk(n) => n
+                case _ => 1
+            }
+            s"  LL($k) ${heading(a, p.Decision)}"
+        }))
+    }
+    val adaptive = plans.Filter((p) => p.Class match {
+        case NeedsAdaptive() => true
+        case _ => false
+    })
+    val adaptiveSection = adaptive match {
+        case Array() => EmptyArray[string]()
+        case _ => ArrayOf("", "Adaptive decisions:").AppendAll(adaptive.FlatMap((p) =>
+            ArrayOf(heading(a, p.Decision)).AppendAll(p.Conflicts.Map((c) => conflictLine(a.Vocab, c)))
+        ))
+    }
+    ArrayOf(summary).AppendAll(deepSection).AppendAll(adaptiveSection).MkString("\n") + "\n"
+}
+
+// heading names a decision: `decision 3 in rule expr (star): (',' expr)*`.
+func heading(a atn.ATN, d atn.Decision) string =
+    s"decision ${d.Id} in rule ${a.RuleNames.Get(d.Rule)} (${kindName(d.Kind)}): ${d.Text}"
+
+// conflictLine describes one conflict: `  alts 1,2 both start with: '(' ID`.
+// A conflict with no example is a decision ANTLR settles with predicates.
+func conflictLine(v atn.Vocabulary, c Conflict) string {
+    val alts = c.Alts.MkString(",")
+    val who = if (c.Alts.Size() == 2) "both" else "all"
+    c.Example match {
+        case Array() => s"  alts $alts: predicates are evaluated before the first token"
+        case _ => s"  alts $alts $who start with: ${c.Example.Map((t) => v.Display(t)).MkString(" ")}"
+    }
+}
+
+// kindName is the short name of a decision kind.
+func kindName(k atn.DecisionKind) string = k match {
+    case atn.AltBlock() => "block"
+    case atn.OptionalBlock() => "optional"
+    case atn.StarEntry() => "star"
+    case atn.PlusBack() => "plus"
+}

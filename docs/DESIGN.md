@@ -99,6 +99,18 @@ every caller's follow state (global FOLLOW). EOF is token -1 and is in FOLLOW of
 the start rule(s) (rules no other rule calls). Decisions are independent of each
 other and are analyzed concurrently.
 
+On input it parses, ANTLR's LL prediction picks the smallest alternative that can
+parse the rest of the input; it stops as soon as every group of configurations
+with the same state and full stack has the same smallest alternative. The
+analysis applies that rule statically, on groups that exist at runtime either
+all or none in every calling context: configurations still inside the decision's
+rule with equal state and stack, and configurations that left the rule after the
+same number of tokens (they all passed through the same runtime configuration,
+the rule's end with the caller's stack). So a true ambiguity such as
+`typeAlias : identifier | type` resolves statically to alternative 1 after the
+identifier, as ANTLR resolves it. A decision whose alternatives start with a
+predicate is always adaptive: ANTLR evaluates those predicates while predicting.
+
 The **conflict report** (`galop -report`) lists every decision that is not
 statically decided, with its rule, source text, the alternatives in conflict and an
 example lookahead. It is the grammar lint the roadmap describes.
