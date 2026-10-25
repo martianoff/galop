@@ -33,9 +33,9 @@ type PFXCtxPool struct {
 	length   []int32
 	rets     []int32
 	parents  []int32
-	index    map[string]int32
-	merges   map[uint64]int32
-	key      []byte
+	next     []int32
+	heads    PFXMap
+	merges   PFXMap
 }
 
 const (
@@ -51,24 +51,38 @@ func (cp *PFXCtxPool) reset(wildcard bool) {
 	cp.length = append(cp.length[:0], 1)
 	cp.rets = append(cp.rets[:0], PFXEmptyReturn)
 	cp.parents = append(cp.parents[:0], -1)
-	if cp.index == nil {
-		cp.index = map[string]int32{}
-		cp.merges = map[uint64]int32{}
-	} else {
-		clear(cp.index)
-		clear(cp.merges)
-	}
+	cp.next = append(cp.next[:0], -1)
+	cp.heads.reset()
+	cp.merges.reset()
 }
 
+// intern returns the id of the context (kind, rets, parents), adding it if new.
+// Contexts are found through a hash of their contents and a chain of the ids
+// that share it.
 func (cp *PFXCtxPool) intern(kind uint8, rets, parents []int32) int32 {
-	key := append(cp.key[:0], kind)
+	h := uint64(kind) + 0x9e3779b97f4a7c15
 	for i := range rets {
-		key = binary.LittleEndian.AppendUint32(key, uint32(rets[i]))
-		key = binary.LittleEndian.AppendUint32(key, uint32(parents[i]))
+		h = PFXMix(h ^ (uint64(uint32(rets[i]))<<32 | uint64(uint32(parents[i]))))
 	}
-	cp.key = key
-	if id, ok := cp.index[string(key)]; ok {
-		return id
+	head, found := cp.heads.get(h)
+	if found {
+		for id := head; id >= 0; id = cp.next[id] {
+			if cp.kind[id] != kind || int(cp.length[id]) != len(rets) {
+				continue
+			}
+			s, same := cp.start[id], true
+			for i := range rets {
+				if cp.rets[s+int32(i)] != rets[i] || cp.parents[s+int32(i)] != parents[i] {
+					same = false
+					break
+				}
+			}
+			if same {
+				return id
+			}
+		}
+	} else {
+		head = -1
 	}
 	id := int32(len(cp.kind))
 	cp.kind = append(cp.kind, kind)
@@ -76,7 +90,8 @@ func (cp *PFXCtxPool) intern(kind uint8, rets, parents []int32) int32 {
 	cp.length = append(cp.length, int32(len(rets)))
 	cp.rets = append(cp.rets, rets...)
 	cp.parents = append(cp.parents, parents...)
-	cp.index[string(key)] = id
+	cp.next = append(cp.next, head)
+	cp.heads.set(h, id)
 	return id
 }
 
@@ -85,7 +100,8 @@ func (cp *PFXCtxPool) singleton(parent, ret int32) int32 {
 	if ret == PFXEmptyReturn && parent < 0 {
 		return 0
 	}
-	return cp.intern(PFXCtxSingleton, []int32{ret}, []int32{parent})
+	one := [2]int32{ret, parent}
+	return cp.intern(PFXCtxSingleton, one[0:1], one[1:2])
 }
 
 func (cp *PFXCtxPool) isEmpty(c int32) bool {
@@ -105,7 +121,8 @@ func (cp *PFXCtxPool) toArray(c int32) int32 {
 		return cp.intern(PFXCtxArray, nil, nil)
 	case PFXCtxSingleton:
 		s := cp.start[c]
-		return cp.intern(PFXCtxArray, []int32{cp.rets[s]}, []int32{cp.parents[s]})
+		one := [2]int32{cp.rets[s], cp.parents[s]}
+		return cp.intern(PFXCtxArray, one[0:1], one[1:2])
 	}
 	return c
 }
@@ -113,11 +130,10 @@ func (cp *PFXCtxPool) toArray(c int32) int32 {
 func PFXMergeKey(a, b int32) uint64 { return uint64(uint32(a))<<32 | uint64(uint32(b)) }
 
 func (cp *PFXCtxPool) cached(a, b int32) (int32, bool) {
-	if r, ok := cp.merges[PFXMergeKey(a, b)]; ok {
+	if r, ok := cp.merges.get(PFXMergeKey(a, b)); ok {
 		return r, true
 	}
-	r, ok := cp.merges[PFXMergeKey(b, a)]
-	return r, ok
+	return cp.merges.get(PFXMergeKey(b, a))
 }
 
 // merge is ANTLR's merge(a, b, rootIsWildcard, mergeCache).
@@ -163,7 +179,7 @@ func (cp *PFXCtxPool) mergeSingletons(a, b int32) int32 {
 	} else {
 		r = cp.intern(PFXCtxArray, []int32{br, ar}, []int32{bp, ap})
 	}
-	cp.merges[PFXMergeKey(a, b)] = r
+	cp.merges.set(PFXMergeKey(a, b), r)
 	return r
 }
 
@@ -212,7 +228,7 @@ func (cp *PFXCtxPool) mergeArrays(a, b int32) int32 {
 	} else {
 		r = cp.intern(PFXCtxArray, rets, parents)
 	}
-	cp.merges[PFXMergeKey(a, b)] = r
+	cp.merges.set(PFXMergeKey(a, b), r)
 	return r
 }
 
@@ -271,6 +287,41 @@ func (m *PFXMap) put(k uint64, v int32) (int32, bool) {
 		}
 		if m.keys[i] == k {
 			return m.vals[i], false
+		}
+	}
+}
+
+// get returns the value stored for k.
+func (m *PFXMap) get(k uint64) (int32, bool) {
+	if m.n == 0 {
+		return 0, false
+	}
+	mask := uint64(len(m.keys) - 1)
+	for i := PFXMix(k) & mask; ; i = (i + 1) & mask {
+		if m.gens[i] != m.gen {
+			return 0, false
+		}
+		if m.keys[i] == k {
+			return m.vals[i], true
+		}
+	}
+}
+
+// set stores v for k, replacing any earlier value.
+func (m *PFXMap) set(k uint64, v int32) {
+	if 2*(m.n+1) > len(m.keys) {
+		m.grow()
+	}
+	mask := uint64(len(m.keys) - 1)
+	for i := PFXMix(k) & mask; ; i = (i + 1) & mask {
+		if m.gens[i] != m.gen {
+			m.gens[i], m.keys[i], m.vals[i] = m.gen, k, v
+			m.n++
+			return
+		}
+		if m.keys[i] == k {
+			m.vals[i] = v
+			return
 		}
 	}
 }
