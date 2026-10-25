@@ -4,6 +4,7 @@ gala_library(
     name = "analysis",
     srcs = [
         "analysis.gala",
+        "dfa.gala",
         "lookahead.gala",
         "plan.gala",
         "report.gala",
@@ -32,6 +33,7 @@ gala_test(
         "plan.gala",
         "report.gala",
         "sets.gala",
+        "dfa.gala",
     ],
     pkg = "analysis",
     deps = [
