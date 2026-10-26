@@ -13,27 +13,39 @@ deserialization.
 
 > **Status: early development.** galop generates a Go lexer and parser for the
 > GALA compiler's grammar that produce exactly ANTLR's tokens and trees on the
-> whole GALA source corpus (722 of 722 files ANTLR accepts), several times faster,
-> in two flavors: its own compact tree (the default) or ANTLR's tree types.
+> whole GALA source corpus (722 of 722 files ANTLR accepts) and on code it was
+> not tuned on, in two flavors: its own compact tree (the default, 12× to 140×
+> faster than ANTLR) or ANTLR's tree types (3× to 30×).
 > Other grammars work as far as their features are supported (see below); see the
 > [roadmap](docs/ROADMAP.md).
 
-On the GALA corpus (723 files, 1.8 MB; Go 1.25, Windows, one machine with 32
-hardware threads; ANTLR driven the way the GALA compiler drives it, SLL with an LL
-retry, lexing included), from `bazel run -c opt //differential/cmd/bench`:
+Time to lex and parse a whole corpus, against ANTLR driven the way the GALA
+compiler drives it (SLL, with an LL retry on a syntax error). "Warm" is a repeat
+pass in a long-running process; "fresh process" is the first pass after start-up,
+which is what a compiler run pays. From `bazel run -c opt //differential/cmd/bench`,
+Go 1.25 on Windows, one machine with 32 hardware threads:
 
-| | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` flavor |
+| | ANTLR 4.13.1 | galop, `native` (default) | galop, `antlr` flavor |
 |---|---:|---:|---:|
-| Warm, one goroutine | 488 ms | 178 ms (2.7×) | 65 ms (7.5×) |
-| Warm, 32 goroutines | 349 ms | 35 ms (10×) | 14 ms (25×) |
-| First pass in a fresh process | 1.58 s | 0.40 s (3.9×) | 0.28 s (5.7×) |
-| Allocations per warm pass | 6.8 M, 526 MB | 3.7 M, 293 MB | 19 k, 74 MB |
-| Lexer only, warm, 32 goroutines | 92 ms | 6.6 ms (14×) | 2.2 ms (43×) |
+| **GALA compiler** (723 files, 1.8 MB) | | | |
+| Warm, one goroutine | 797 ms | 64 ms (12×) | 242 ms (3.3×) |
+| Warm, 32 goroutines | 436 ms | 11 ms (41×) | 52 ms (8.5×) |
+| Fresh process, one goroutine | 1.47 s | 75 ms (20×) | 190 ms (7.7×) |
+| Fresh process, 32 goroutines | 766 ms | 44 ms (18×) | 72 ms (11×) |
+| Allocations per warm pass | 6.8 M, 526 MB | 19 k, 73 MB | 3.7 M, 298 MB |
+| **Code galop was not tuned on** (gala_team, gala_tui, gala-server: 247 files, 3.6 MB) | | | |
+| Warm, one goroutine | 5.18 s | 96 ms (54×) | 363 ms (14×) |
+| Warm, 32 goroutines | 2.89 s | 21 ms (141×) | 95 ms (30×) |
+| Fresh process, one goroutine | 6.58 s | 181 ms (36×) | 357 ms (18×) |
+| Fresh process, 32 goroutines | 2.82 s | 140 ms (20×) | 194 ms (15×) |
 
-The `antlr` flavor spends most of its time building ANTLR's token and tree
-objects; the `native` flavor's own tokens and tree cost a few milliseconds. A
-fresh process is dominated by building the runtime prediction cache, which both
-flavors share.
+The `native` flavor is the default; the `antlr` flavor is for programs already
+written against ANTLR's trees, and spends most of its time building ANTLR's
+token and tree objects. Most of ANTLR's time on the second corpus goes to two
+large files where its fast pass fails and it parses the whole file again in its
+slow mode; galop fixes such a pass in place (see [design](docs/DESIGN.md#runtime-prediction)).
+
+<!-- Error messages: how often galop's first syntax error matches ANTLR's (position and text), on invalid mutants of both corpora. To be filled in by the error-parity change. -->
 
 ## Why
 
@@ -55,8 +67,11 @@ flowchart LR
 
 In the GALA grammar, 86 of 107 choices land in the first group, so most of the
 parser is the kind of code you would write by hand. The rare hard cases still
-run ANTLR's algorithm, so the parser always picks exactly what ANTLR would. The
-lexer is built entirely ahead of time.
+run ANTLR's algorithm, so the parser always picks exactly what ANTLR would. That
+part runs faster than ANTLR's too: it steps over a bracketed group like `( … )` in one go
+rather than reading every token inside, and when a guess turns out wrong it
+fixes that one choice instead of parsing the whole file again. The lexer is
+built entirely ahead of time.
 
 What you keep:
 
