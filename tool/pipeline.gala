@@ -128,18 +128,17 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
     val rest = atn.Compile(g) match {
         case Left(ds) => done(problemsOnly(ds))
         case Right(c) => {
-            val lr = leftrec.FindLeftRecursion(g, c)
-            // -report and code generation read brackets alike.
-            val bracketsOff = repair.BracketsOff(c.Rules, lr, stage.NoBrackets)
-            leftRecursionProblem(lr, c, path) match {
+            // Worked out once, for the checks, -report and code generation.
+            val plan = repair.PlanFor(g, c)
+            leftRecursionProblem(plan.LeftRecursion, c, path) match {
                 case Some(d) => done(problemsOnly(ArrayOf(d)))
                 case None() => stage.Action match {
                     case Validate(roundTrip) => done(validated(path, g, roundTrip))
-                    case PrintReport() => done(report(path, c, bracketsOff))
+                    case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
                     // -depend only needs the file names, which come from the compiled grammar.
                     case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
                     case _ => {
-                        val plans = c.Parser.Map((p) => analysis.Analyze(p, bracketsOff))
+                        val plans = c.Parser.Map((p) => analysis.Analyze(p, plan, stage.NoBrackets))
                         FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
                     }
                 }
@@ -190,8 +189,8 @@ func validated(path string, g g4.Grammar, roundTrip bool) FileResult {
 }
 
 // report is -report: the decision report of the parser network, if any.
-func report(path string, c atn.Compiled, bracketsOff Option[string]) FileResult = c.Parser match {
-    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, bracketsOff)))
+func report(path string, c atn.Compiled, plan repair.Plan, noBrackets bool) FileResult = c.Parser match {
+    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, plan, noBrackets)))
     case None() => printed(s"$path: no parser rules, so no decisions\n")
 }
 

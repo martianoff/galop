@@ -15,6 +15,7 @@ gala_library(
     deps = [
         "//atn",
         "//brackets",
+        "//repair",
         "@gala//collection_immutable",
         "@gala//collection_mutable",
         "@gala//concurrent",
@@ -38,6 +39,7 @@ gala_test(
         "//atn",
         "//brackets",
         "//grammartest",
+        "//repair",
         "@gala//collection_immutable",
         "@gala//collection_mutable",
         "@gala//concurrent",

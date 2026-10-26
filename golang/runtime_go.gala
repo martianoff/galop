@@ -790,7 +790,10 @@ func (p *PARSER) adaptivePredict(d int) int {
 	if st == nil {
 		st = PFXDFAStart(d)
 	}
-	// The tokens end with EOF (see run), which i never moves past.
+	// The tokens end with EOF: the native flavor's run rejects a slice without
+	// it, and the antlr flavor's NewPARSER reads its stream up to EOF. EOF never
+	// advances i, and a group jump lands just past its closer, on EOF at the
+	// latest, so i stays in range.
 	for i := p.pos; ; {
 		t := p.types[i]
 		if t < -1 || int(t) > PFXMaxTokenType {

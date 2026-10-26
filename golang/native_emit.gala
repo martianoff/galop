@@ -9,7 +9,6 @@ import (
 
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/lexgen"
-    "github.com/martianoff/galop/repair"
 )
 
 // The `native` flavor's parser: galop's own tree, no ANTLR dependency.
@@ -91,7 +90,7 @@ func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
 }
 `, "METHOD", nativeName(e.names.RuleMethod(r.Name)), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
     "HANDLE", nodeType(r.Name), "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported(),
-    "REPAIR", s"${e.repair && repair.Repairable(e.rules, r)}")
+    "REPAIR", s"${e.repairPlan.Repairs(r.Index)}")
 
 // nodeType is the handle type of a rule or labeled alternative: `CaseClauseNode`.
 func nodeType(ruleOrLabel string) string = capitalize(ruleOrLabel) + "Node"

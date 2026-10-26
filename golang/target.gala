@@ -9,9 +9,7 @@ import (
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/g4"
-    "github.com/martianoff/galop/leftrec"
     "github.com/martianoff/galop/lexgen"
-    "github.com/martianoff/galop/repair"
 )
 
 // goTarget generates Go; Version is stamped into generated files.
@@ -119,7 +117,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             // ANTLR rewrites directly left-recursive rules into precedence loops
             // (the front end reports other left recursion as error 119); parsed
             // as written, they would call themselves forever.
-            val lr = leftrec.FindLeftRecursion(in.Grammar, compiled)
+            val lr = an.Repair.LeftRecursion
             if !lr.IsEmpty() {
                 val names = lr.Direct.AppendAll(lr.Cycles.FlatMap((c) => c)).Distinct()
                     .Map((i) => compiled.Rules.Get(i).Name).MkString(", ")
@@ -136,10 +134,10 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 rules = compiled.Rules,
                 plans = an.Plans,
                 adaptive = an.Plans.Exists((p) => analysis.NeedsRuntime(p.Lookahead)),
+                repairPlan = an.Repair,
                 brackets = an.Brackets,
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
-                repair = repair.GrammarRepairable(compiled.Rules, lr),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"

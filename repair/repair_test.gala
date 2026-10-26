@@ -5,7 +5,6 @@ import (
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/grammartest"
-    "github.com/martianoff/galop/leftrec"
 )
 
 func endsWithEOF(src string, rule string) bool {
@@ -26,8 +25,8 @@ func TestEndsWithEOF(t T) T = RunCases(t, (sub, src, want) => Eq(sub, endsWithEO
 )
 
 func repairable(src string) bool {
-    val (_, c) = grammartest.Compile(src)
-    c.Rules.Find((r) => r.Name == "s").Exists((r) => Repairable(c.Rules, r))
+    val (g, c) = grammartest.Compile(src)
+    c.Rules.Find((r) => r.Name == "s").Exists((r) => PlanFor(g, c).RepairableEntries.Contains(r.Index))
 }
 
 func TestRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, repairable(src), want),
@@ -39,7 +38,7 @@ func TestRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, repairable(
 
 func grammarRepairable(src string) bool {
     val (g, c) = grammartest.Compile(src)
-    GrammarRepairable(c.Rules, leftrec.FindLeftRecursion(g, c))
+    PlanFor(g, c).RepairableGrammar
 }
 
 func TestGrammarRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, grammarRepairable(src), want),
@@ -52,7 +51,7 @@ func TestGrammarRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, gram
 
 func bracketsOff(src string) string {
     val (g, c) = grammartest.Compile(src)
-    BracketsOff(c.Rules, leftrec.FindLeftRecursion(g, c), false).GetOrElse("on")
+    PlanFor(g, c).BracketsOff(false).GetOrElse("on")
 }
 
 func TestBracketsOff(t T) T = RunCases(t, (sub, src, want) => Eq(sub, bracketsOff(src), want),

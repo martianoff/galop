@@ -214,7 +214,7 @@ ends it sooner), and the grammar has no predicates, no left recursion and no
 actions run while parsing (an extra pass would run an action once more than
 ANTLR does). Other entries predict over tokens, as without brackets, and pair
 no brackets. A grammar that is never repaired, or none of whose entry rules
-is, gets no bracket tables at all: `repair.BracketsOff` decides that once, and
+is, gets no bracket families at all: its `repair.Plan` decides that once, and
 `-report` and code generation both follow it.
 
 ### SLL automata

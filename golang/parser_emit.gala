@@ -23,14 +23,14 @@ struct env(
     rules Array[atn.RuleIR],
     plans Array[analysis.DecisionPlan],
     adaptive bool,
+    // repairPlan is where a failed SLL parse may be repaired (repair_go.gala)
+    // rather than rerun in LL mode.
+    repairPlan repair.Plan,
     // brackets are the families adaptive prediction reads as one symbol.
     brackets brackets.Brackets = brackets.NoBrackets(),
     flavor Flavor = ANTLRFlavor(),
     // tokenLabels says whether some rule labels a token (`op=('+'|'-')`).
     tokenLabels bool = false,
-    // repair says whether a failed SLL parse may be repaired (repair_go.gala)
-    // rather than rerun in LL mode; see repair.GrammarRepairable and repair.Repairable.
-    repair bool = false,
 )
 
 // Flavor is the output style of the Go target (see GoFlavors).
@@ -272,7 +272,7 @@ func (p *PARSER) METHOD() (IFACE, error) {
 	return ctx.(IFACE), nil
 }
 `, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
-        "REPAIR", s"${e.repair && repair.Repairable(e.rules, r)}")
+        "REPAIR", s"${e.repairPlan.Repairs(r.Index)}")
 }
 
 // emitRule emits the antlr flavor's function that parses one rule.
@@ -447,7 +447,10 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
 // succeed on the whole input: when it may be repaired, its entry rule ends
 // with EOF and the grammar runs no actions while parsing. A pass that stops
 // before EOF, or actions run once more, would not be what ANTLR does. Only
-// then are the input's brackets paired (see PFXBracketMatch).
+// then are the input's brackets paired (see PFXBracketMatch). Without
+// bracket families (none inferred, or none allowed: see repair.Plan) a parse
+// never reads groups and nothing is emitted.
 func groupsOn(e env) string =
-    if (e.adaptive) s"\n\tp.group = repair && ${e.pfx}OpenerCount > 0\n\tif p.group {\n\t\tp.pairs = ${e.pfx}BracketMatch(p.types, p.pairs)\n\t}"
+    if (e.adaptive && e.brackets.Families.NonEmpty())
+        s"\n\tp.group = repair\n\tif p.group {\n\t\tp.pairs = ${e.pfx}BracketMatch(p.types, p.pairs)\n\t}"
     else ""

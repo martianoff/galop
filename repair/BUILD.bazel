@@ -7,6 +7,7 @@ gala_library(
     visibility = ["//visibility:public"],
     deps = [
         "//atn",
+        "//g4",
         "//leftrec",
         "@gala//collection_immutable",
     ],
@@ -20,6 +21,7 @@ gala_test(
     pkg = "repair",
     deps = [
         "//atn",
+        "//g4",
         "//grammartest",
         "//leftrec",
         "@gala//collection_immutable",

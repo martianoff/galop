@@ -82,7 +82,7 @@ func TestMutations(t *testing.T) {
 		name  string
 		parse func(src string, rerun bool) (tree, where string, err error)
 		// tokens parses with the parser generated with -Xno-brackets.
-		tokens func(src string) (tree string, err error)
+		tokens func(src string) (tree, where string, err error)
 	}{
 		{"native", func(src string, rerun bool) (string, string, error) {
 			parse := nativegala.Parse
@@ -90,9 +90,8 @@ func TestMutations(t *testing.T) {
 				parse = nativegala.ParseByRerun
 			}
 			return nativeResult(parse(src))
-		}, func(src string) (string, error) {
-			tree, _, err := nativeResult(nativetokens.Parse(src))
-			return tree, err
+		}, func(src string) (string, string, error) {
+			return nativeResult(nativetokens.Parse(src))
 		}},
 		{"antlr flavor", func(src string, rerun bool) (string, string, error) {
 			if rerun {
@@ -101,9 +100,8 @@ func TestMutations(t *testing.T) {
 			return antlrFlavor(src, func(s antlr.TokenStream) (antlr.ParserRuleContext, error) {
 				return antlrgala.NewgalaGalopParser(s).SourceFile()
 			})
-		}, func(src string) (string, error) {
-			tree, _, err := antlrFlavor(src, antlrgala.ParseGalopTokens)
-			return tree, err
+		}, func(src string) (string, string, error) {
+			return antlrFlavor(src, antlrgala.ParseGalopTokens)
 		}},
 	}
 	r := rand.New(rand.NewSource(*mutantSeed))
@@ -116,9 +114,9 @@ func TestMutations(t *testing.T) {
 		}
 		for _, f := range flavors {
 			got, where, err := f.parse(src, false)
-			// The error must match. Where the antlr flavor leaves its token stream
-			// need not: it depends on which passes ran before the error.
-			ref, refErr := f.tokens(src)
+			// The error must match here; where each parse stopped is checked
+			// against the LL rerun's below.
+			ref, refWhere, refErr := f.tokens(src)
 			switch {
 			case (err == nil) != (refErr == nil) || err != nil && err.Error() != refErr.Error():
 				differ++
@@ -136,10 +134,15 @@ func TestMutations(t *testing.T) {
 				t.Errorf("mutant %d: %s tree differs\n%s", i, f.name, firstDifference(want, got))
 			case !wantOK:
 				// Rejected: the error and where the parse stopped must be the
-				// rerun's, not just the verdict.
-				if _, rerunWhere, _ := f.parse(src, true); where != rerunWhere {
+				// rerun's, not just the verdict, with brackets and without.
+				_, rerunWhere, _ := f.parse(src, true)
+				if where != rerunWhere {
 					differ++
 					t.Errorf("mutant %d: %s error differs from the LL rerun's:\n repair: %s\n rerun:  %s", i, f.name, where, rerunWhere)
+				}
+				if refWhere != rerunWhere {
+					differ++
+					t.Errorf("mutant %d: %s -Xno-brackets error differs from the LL rerun's:\n repair: %s\n rerun:  %s", i, f.name, refWhere, rerunWhere)
 				}
 			}
 		}

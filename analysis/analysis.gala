@@ -6,17 +6,19 @@ import (
 
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/brackets"
+    "github.com/martianoff/galop/repair"
 )
 
 // Analyze computes FIRST, FOLLOW and nullability per rule and a decision
 // plan for every decision of the parser ATN a. Decisions are independent and
 // are analyzed concurrently; the plans come back in decision order.
 // a: a parser ATN from atn.Compile.
-// bracketsOff: why runtime prediction must not read bracketed groups as one
-// symbol, if it must not (repair.BracketsOff decides). It is required, so a
-// caller cannot forget it: the code generated from the analysis relies on it.
+// plan: where the grammar's parsers may repair (repair.PlanFor). Whether
+// runtime prediction reads bracketed groups follows from it, here, so the
+// code generated from the analysis cannot read groups the plan rules out.
+// noBrackets: -Xno-brackets, prediction over tokens only.
 // maxK: the deepest static lookahead to try before a decision is left to adaptive prediction.
-func Analyze(a atn.ATN, bracketsOff Option[string], maxK int = MaxK) Analysis {
+func Analyze(a atn.ATN, plan repair.Plan, noBrackets bool, maxK int = MaxK) Analysis {
     val sites = callSites(a)
     val starts = startRules(a, sites)
     val (first, nullable) = firstSets(a)
@@ -24,11 +26,11 @@ func Analyze(a atn.ATN, bracketsOff Option[string], maxK int = MaxK) Analysis {
     val g = newGrammarInfo(a, sites, starts)
     val plans = concurrent.Traverse(a.Decisions, (d) => concurrent.Future(g.planDecision(d, maxK))).Get()
     // Brackets matter only to runtime prediction.
-    val bracketing = bracketsOff match {
+    val bracketing = plan.BracketsOff(noBrackets) match {
         case Some(why) => brackets.NoBrackets(why)
         case None() =>
             if (plans.Exists((p) => NeedsRuntime(p.Lookahead))) brackets.Analyze(a)
             else brackets.NoBrackets("no decision needs runtime prediction")
     }
-    Analysis(plans, first, follow, nullable, bracketing)
+    Analysis(plans, first, follow, nullable, bracketing, plan)
 }

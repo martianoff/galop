@@ -12,7 +12,6 @@ import (
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/g4"
     "github.com/martianoff/galop/grammartest"
-    "github.com/martianoff/galop/leftrec"
     "github.com/martianoff/galop/repair"
 )
 
@@ -32,7 +31,7 @@ WS : [ \t\r\n]+ -> skip ;
 func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], Array[codegen.OutputFile]] {
     val (g, c) = grammartest.Compile(src)
     Target("test").Generate(
-        codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, repair.BracketsOff(c.Rules, leftrec.FindLeftRecursion(g, c), false)))),
+        codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, repair.PlanFor(g, c), false))),
         codegen.Options(Package = "expr", Defines = defines),
     )
 }
@@ -336,6 +335,21 @@ X : 'x' ; Y : 'y' ;
 `, antlrDefines))
     val t1 = IsTrue(t, strings.Contains(code, "p.adaptivePredict("))
     IsTrue(t1, strings.Contains(code, "const AGalopOpenerCount = 0"))
+}
+
+func TestNoBracketsWithoutARepairableEntry(t T) T {
+    // The brackets would be inferred, but no entry rule ends with EOF, so no
+    // parse may repair a wrong guess over groups: no families, no pairing.
+    val code = parserOf(generate(`grammar A;
+s : a | b ;
+a : '(' a ')' | X ;
+b : '(' b ')' | Y ;
+X : 'x' ; Y : 'y' ;
+`, antlrDefines))
+    val t1 = IsTrue(t, strings.Contains(code, "p.adaptivePredict("))
+    val t2 = IsTrue(t1, strings.Contains(code, "const AGalopOpenerCount = 0"))
+    val t3 = IsFalse(t2, strings.Contains(code, "BracketMatch(p.types"))
+    IsFalse(t3, strings.Contains(code, "p.group = repair"))
 }
 
 func TestNoBracketsNoAbstraction(t T) T {
