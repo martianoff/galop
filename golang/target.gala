@@ -9,6 +9,7 @@ import (
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/leftrec"
     "github.com/martianoff/galop/lexgen"
 )
 
@@ -117,7 +118,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             // ANTLR rewrites directly left-recursive rules into precedence loops
             // (the front end reports other left recursion as error 119); parsed
             // as written, they would call themselves forever.
-            val lr = atn.FindLeftRecursion(in.Grammar, compiled)
+            val lr = leftrec.FindLeftRecursion(in.Grammar, compiled)
             if !lr.IsEmpty() {
                 val names = lr.Direct.AppendAll(lr.Cycles.FlatMap((c) => c)).Distinct()
                     .Map((i) => compiled.Rules.Get(i).Name).MkString(", ")

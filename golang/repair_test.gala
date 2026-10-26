@@ -10,6 +10,7 @@ import (
     "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/leftrec"
 )
 
 // adaptiveGrammar needs runtime prediction (nesting deepens the contexts past
@@ -135,7 +136,7 @@ X : 'x' ; Y : 'y' ;
 func grammarRepairable(src string) bool = g4.Parse(src) match {
     case Right(g) => {
         val (c, _) = compiled(src)
-        GrammarRepairable(c.Rules, atn.FindLeftRecursion(g, c))
+        GrammarRepairable(c.Rules, leftrec.FindLeftRecursion(g, c))
     }
     case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
 }

@@ -1,0 +1,29 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "leftrec",
+    srcs = ["leftrec.gala"],
+    importpath = "github.com/martianoff/galop/leftrec",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//atn",
+        "//diag",
+        "//g4",
+        "@gala//collection_immutable",
+    ],
+)
+
+gala_test(
+    name = "leftrec_test",
+    srcs = ["leftrec_test.gala"],
+    importpath = "github.com/martianoff/galop/leftrec",
+    lib_srcs = ["leftrec.gala"],
+    pkg = "leftrec",
+    deps = [
+        "//atn",
+        "//diag",
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//go_builtins",
+    ],
+)

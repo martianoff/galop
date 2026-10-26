@@ -1,10 +1,11 @@
-package atn
+package leftrec
 
 import (
     . "martianoff/gala/collection_immutable"
     "martianoff/gala/go_builtins"
     . "martianoff/gala/test"
 
+    "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/g4"
 )
 
@@ -12,7 +13,10 @@ import (
 // reports as error 119, then the rules it rewrites.
 func leftRecursion(t T, src string) Tuple[Array[Array[string]], Array[string]] = g4.Parse(src) match {
     case Right(g) => {
-        val c = compiled(t, src)
+        val c = atn.Compile(g) match {
+            case Right(c) => c
+            case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
+        }
         val lr = FindLeftRecursion(g, c)
         val name = (i int) => c.Rules.Get(i).Name
         (lr.Cycles.Map((cycle) => cycle.Map(name)), lr.Direct.Map(name))

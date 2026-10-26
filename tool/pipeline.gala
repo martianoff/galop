@@ -11,6 +11,7 @@ import (
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/diag"
     "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/leftrec"
 )
 
 // Toolkit is what a run needs from outside the tool: the code generators,
@@ -148,11 +149,11 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
 // position. A rule with an alternative that starts with a call of itself is
 // not one: ANTLR rewrites it (galop's Go target does not yet).
 func leftRecursionProblem(g g4.Grammar, c atn.Compiled, path string) Option[diag.Diagnostic] =
-    atn.FindLeftRecursion(g, c).Cycles match {
+    leftrec.FindLeftRecursion(g, c).Cycles match {
         case Array() => None()
         case cycles => {
             val sets = cycles.Map((cycle) => "[" + cycle.Map((i) => c.Rules.Get(i).Name).MkString(", ") + "]")
-            Some(diag.LeftRecursionCycles.New(sets.MkString(" and ")).In(path))
+            Some(leftrec.LeftRecursionCycles.New(sets.MkString(" and ")).In(path))
         }
     }
 

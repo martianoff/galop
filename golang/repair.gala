@@ -4,6 +4,7 @@ import (
     . "martianoff/gala/collection_immutable"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/leftrec"
 )
 
 // The witness-based repair (repair_go.gala) replaces the whole-input LL
@@ -16,7 +17,7 @@ import (
 // the parse, which would run an action more often than ANTLR's two passes do).
 // rules: the parser rules, indexed by rule number.
 // lr: the grammar's left recursion.
-func GrammarRepairable(rules Array[atn.RuleIR], lr atn.LeftRecursion) bool =
+func GrammarRepairable(rules Array[atn.RuleIR], lr leftrec.LeftRecursion) bool =
     lr.IsEmpty() && !rules.Exists((r) => r.Alts.Exists((a) => hasStep(a.Steps, isPredicateOrAction)))
 
 func isPredicateOrAction(s atn.Step) bool = s match {
