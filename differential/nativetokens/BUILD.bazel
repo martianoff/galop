@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# The parser of //differential/nativegala generated with -Xno-brackets:
+# prediction reads tokens only. The mutation tests compare the two, which must
+# agree on every input, trees and first errors alike. The helpers are
+# nativegala's, renamed to this package.
+genrule(
+    name = "galop_native_tokens_go",
+    srcs = [
+        "//cmd/galop",
+        "//testdata/grammars:gala.g4",
+        "//differential/nativegala:newline.go",
+        "//differential/nativegala:tokens.go",
+    ],
+    outs = [
+        "gala_lexer.go",
+        "gala_parser.go",
+        "newline.go",
+        "tokens.go",
+    ],
+    cmd = " && ".join([
+        "$(location //cmd/galop) -Xno-brackets -package nativetokens -Xexact-output-dir -o $(RULEDIR) $(location //testdata/grammars:gala.g4)",
+        "sed 's/^package nativegala$$/package nativetokens/' $(location //differential/nativegala:newline.go) > $(RULEDIR)/newline.go",
+        "sed 's/^package nativegala$$/package nativetokens/' $(location //differential/nativegala:tokens.go) > $(RULEDIR)/tokens.go",
+    ]),
+)
+
+go_library(
+    name = "nativetokens",
+    srcs = [":galop_native_tokens_go"],
+    importpath = "github.com/martianoff/galop/differential/nativetokens",
+    visibility = ["//differential:__subpackages__"],
+)

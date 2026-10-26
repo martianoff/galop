@@ -270,6 +270,7 @@ func labelAccessor(e env, t string, lu labelUse, list bool, id int) string {
 // nativeParserCore is the parser state and the helpers the rule functions use.
 func nativeParserCore(e env) string {
     val predictor = predictorFields(e)
+    val absMatch = bracketMatchLine(e)
     val labs = if (e.tokenLabels) "\n\tlabs  []int32" else ""
     val retry = retryCode(e, "root")
     val resetStack = if (e.adaptive) "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0" else ""
@@ -277,7 +278,7 @@ func nativeParserCore(e env) string {
     // The helpers go in through one placeholder, and fill does not rescan
     // what it inserts, so their own placeholders are filled first.
     val labelHelpers = if (e.tokenLabels) fill(nativeLabelHelpers, "PARSER", e.parserType, "@X@", e.exported()) else ""
-    fill(nativeCoreTemplate, "PREDICTOR", predictor, "LABS", labs, "RETRY", retry, "RESETSTACK", resetStack,
+    fill(nativeCoreTemplate, "PREDICTOR", predictor, "ABSMATCH", absMatch, "GROUPON", groupsOn(e), "LABS", labs, "RETRY", retry, "RESETSTACK", resetStack,
         "RESETLABS", resetLabs, "LABELHELPERS", labelHelpers, "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported())
 }
 
@@ -319,7 +320,7 @@ func newPARSER(ts *@X@Tokens) *PARSER {
 	p := &PARSER{ts: ts, types: make([]int32, n)}
 	for i := range ts.Tokens {
 		p.types[i] = ts.Tokens[i].Type
-	}
+	}ABSMATCH
 	// Grammars like GALA's have about four nodes and five child references
 	// per token; sizing for that saves growing the arrays.
 	p.tree = &@X@Tree{@X@Tokens: ts, Nodes: make([]@X@NodeData, 0, 4*n+4), Kids: make([]int32, 0, 5*n+4)}
@@ -328,7 +329,7 @@ func newPARSER(ts *@X@Tokens) *PARSER {
 
 // run parses with rule; repair says whether a failed SLL parse may be
 // repaired rather than rerun in LL mode (see llParse).
-func (p *PARSER) run(rule func(*PARSER) int32, repair bool) (*@X@Tree, int32, error) {
+func (p *PARSER) run(rule func(*PARSER) int32, repair bool) (*@X@Tree, int32, error) {GROUPON
 	root, err := p.attempt(rule)RETRY
 	if err != nil {
 		return nil, -1, err

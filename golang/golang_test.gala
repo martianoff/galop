@@ -283,3 +283,56 @@ func TestNativeTokenNamedLikeTheRuntime(t T) T {
     val t1 = IsTrue(t, strings.Contains(files.Get("m_lexer.go").GetOrElse(""), "\tMTokens_ = 1 // 't'\n"))
     IsTrue(t1, strings.Contains(files.Get("m_parser.go").GetOrElse(""), "p.match(MTokens_)"))
 }
+
+func TestBracketsAreAbstracted(t T) T {
+    // Telling a from b needs the whole nest of parentheses: the runtime
+    // predicts it over the brackets read as one symbol.
+    val code = parserOf(generate(`grammar A;
+s : a | b ;
+a : '(' a ')' | X ;
+b : '(' b ')' | Y ;
+X : 'x' ; Y : 'y' ;
+`, antlrDefines))
+    val expected = ArrayOf(
+        "const AGalopOpenerCount = 1",
+        "p.pairs = AGalopBracketMatch(p.types, p.pairs)",
+    )
+    val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
+    // No automaton is emitted for the decision: it would stop at a bound.
+    IsFalse(t1, strings.Contains(code, "goto s"))
+}
+
+func TestNativeFlavorMatchesBrackets(t T) T {
+    val code = parserOf(generate(`grammar A;
+s : a | b ;
+a : '(' a ')' | X ;
+b : '(' b ')' | Y ;
+X : 'x' ; Y : 'y' ;
+`, EmptyArray[g4.OptionEntry]()))
+    IsTrue(t, strings.Contains(code, "p.pairs = AGalopBracketMatch(p.types, p.pairs)"))
+}
+
+func TestTokenTypesAboveTheVocabularyAreRejected(t T) T {
+    // A token stream from another lexer can carry types past this grammar's;
+    // prediction and bracket pairing must not index their tables with them.
+    val code = parserOf(generate(`grammar A;
+s : a | b ;
+a : '(' a ')' | X ;
+b : '(' b ')' | Y ;
+X : 'x' ; Y : 'y' ;
+`, antlrDefines))
+    val t1 = IsTrue(t, strings.Contains(code, "if t < -1 || int(t) > AGalopMaxTokenType {\n\t\t\tp.noViableAlt(d)"))
+    IsTrue(t1, strings.Contains(code, "if t < -1 || int(t) > AGalopMaxTokenType {\n\t\t\tcontinue"))
+}
+
+func TestNoBracketsNoAbstraction(t T) T {
+    // Adaptive, but no token pair behaves like brackets.
+    val code = parserOf(generate(`grammar A;
+s : a | b ;
+a : X a | X ;
+b : X b | Y ;
+X : 'x' ; Y : 'y' ;
+`, antlrDefines))
+    val t1 = IsTrue(t, strings.Contains(code, "p.adaptivePredict("))
+    IsTrue(t1, strings.Contains(code, "const AGalopOpenerCount = 0"))
+}

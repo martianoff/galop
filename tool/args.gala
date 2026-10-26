@@ -39,6 +39,8 @@ struct Config(
     // Defines are the -D options, in command-line order.
     Defines Array[g4.OptionEntry] = EmptyArray[g4.OptionEntry](),
     ExactOutputDir bool = false,
+    // NoBrackets turns off bracket abstraction in runtime prediction.
+    NoBrackets bool = false,
     MessageFormat diag.Format = diag.ANTLRFormat(),
     Werror bool = false,
     ATN bool = false,
@@ -63,7 +65,7 @@ val UnsupportedOptions = ArrayOf("tokenVocab", "caseInsensitive")
 // flagOptions are the options that take no value.
 val flagOptions = ArrayOf(
     "-atn", "-listener", "-no-listener", "-visitor", "-no-visitor", "-depend", "-Werror",
-    "-Xexact-output-dir", "-check", "-roundtrip", "-format", "-report", "-version", "-help",
+    "-Xexact-output-dir", "-Xno-brackets", "-check", "-roundtrip", "-format", "-report", "-version", "-help",
 )
 
 // valueOptions are the options followed by a value.
@@ -137,6 +139,7 @@ func withFlag(r Reading, flag string) Reading = flag match {
     case "-no-visitor" => r.configured(r.Config.Copy(Visitor = false))
     case "-Werror" => r.configured(r.Config.Copy(Werror = true))
     case "-Xexact-output-dir" => r.configured(r.Config.Copy(ExactOutputDir = true))
+    case "-Xno-brackets" => r.configured(r.Config.Copy(NoBrackets = true))
     case "-roundtrip" => r.Copy(RoundTrip = true)
     case _ => r.Copy(Actions = r.Actions.Append(flag))
 }

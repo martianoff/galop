@@ -1,6 +1,9 @@
 package analysis
 
 import (
+    "strings"
+    "unicode"
+
     . "martianoff/gala/collection_immutable"
 
     "github.com/martianoff/galop/atn"
@@ -9,6 +12,8 @@ import (
 // Report renders the decision report for an analysis of a: a summary line,
 // the decisions that need more than one token of lookahead, and every
 // decision left (at least partly) to adaptive prediction with its conflicts.
+// It ends with the bracket families runtime prediction reads as one token
+// and the candidate pairs it does not, with the reason.
 // a: the parser ATN that was analyzed.
 // an: the result of Analyze(a).
 func Report(a atn.ATN, an Analysis) string {
@@ -38,7 +43,8 @@ func Report(a atn.ATN, an Analysis) string {
             ArrayOf(heading(a, p.Decision)).AppendAll(p.Conflicts.Map((c) => conflictLine(a.Vocab, c))).AppendAll(automatonLine(p.Lookahead))
         ))
     }
-    ArrayOf(summary).AppendAll(deepSection).AppendAll(adaptiveSection).MkString("\n") + "\n"
+    ArrayOf(summary).AppendAll(deepSection).AppendAll(adaptiveSection).AppendAll(bracketSection(a, an.Brackets))
+        .MkString("\n") + "\n"
 }
 
 // heading names a decision: `decision 3 in rule expr (star): (',' expr)*`.
@@ -65,16 +71,34 @@ func kindName(k atn.DecisionKind) string = k match {
 }
 
 // automatonLine summarizes a decision's SLL automaton, if it has one:
-// `  SLL automaton: 12 states, 2 of them final, full LL on some paths`.
+// `  SLL automaton: 12 states, 2 of them final`.
 func automatonLine(l Lookahead) Array[string] = l match {
-    case Automaton(states) => {
-        val finals = states.Collect((s) => s.Final)
-        val fullLL = finals.Exists((f) => f match {
-            case FinalFullLL(_) => true
-            case _ => false
-        })
-        val tail = if (fullLL) ", full LL on some paths" else ""
-        ArrayOf(s"  SLL automaton: ${states.Size()} states, ${finals.Size()} of them final$tail")
-    }
+    case Automaton(states) =>
+        ArrayOf(s"  SLL automaton: ${states.Size()} states, ${states.Count(_.Final.IsDefined())} of them final")
     case _ => EmptyArray[string]()
 }
+
+// bracketSection lists the bracket families and the candidate pairs left
+// out: `  '(' … ')'` and `  '<' … '>': '>' appears without its opener in rule e`.
+func bracketSection(a atn.ATN, b Brackets) Array[string] {
+    if b.Skipped.IsDefined() {
+        return ArrayOf("", s"Bracket abstraction: skipped (${b.Skipped.GetOrElse("")})")
+    }
+    val used = b.Families match {
+        case Array() => ArrayOf("", "Bracket abstraction: none")
+        case _ => ArrayOf("", "Bracket abstraction (runtime prediction reads a group as one token):")
+            .AppendAll(b.Families.Map((f) => "  " + bracketShow(a, f)))
+    }
+    // Pairs of punctuation are listed with the reason; pairs with a keyword or
+    // a named token, of which grammars have many, are only counted.
+    val (punct, words) = b.Rejected.Partition((r) => punctuation(a, r.Opener) && punctuation(a, r.Closer))
+    val listed = punct.Map((r) => s"  ${bracketShow(a, BracketFamily(atn.SetOf(r.Opener), r.Closer))}: ${r.Reason}")
+    val counted = if (words.IsEmpty()) EmptyArray[string]() else ArrayOf(s"  and ${words.Size()} pairs with a keyword or named token")
+    val unused = if (b.Rejected.IsEmpty()) EmptyArray[string]() else ArrayOf("Not abstracted:").AppendAll(listed).AppendAll(counted)
+    used.AppendAll(unused)
+}
+
+// punctuation reports whether token t is a literal without letters or digits.
+func punctuation(a atn.ATN, t int) bool =
+    a.Vocab.Literals.GetOption(t).FlatMap((o) => o).Exists((lit) =>
+        lit != "" && !strings.ContainsFunc(lit, (r) => unicode.IsLetter(r) || unicode.IsDigit(r)))

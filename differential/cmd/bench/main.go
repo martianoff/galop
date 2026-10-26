@@ -5,7 +5,8 @@
 // re-typing included), lex-galop the same stream from galop's antlr flavor's
 // lexer, and lex-native the native flavor's token list; parse is lex plus the
 // GALA compiler's SLL-then-LL parse with ANTLR, parse-galop the same with
-// galop's antlr flavor, and parse-native with the native flavor. Each is timed:
+// galop's antlr flavor, parse-native with the native flavor, and parse-tokens
+// with the native flavor generated with -Xno-brackets. Each is timed:
 //
 //   - warm: in this process, after one untimed pass has built ANTLR's DFA
 //     caches, timed with testing.Benchmark; per file for the largest files,
@@ -35,6 +36,7 @@ import (
 	"github.com/martianoff/galop/differential/corpus"
 	"github.com/martianoff/galop/differential/gala"
 	"github.com/martianoff/galop/differential/nativegala"
+	"github.com/martianoff/galop/differential/nativetokens"
 )
 
 // phases are the measured operations, by name.
@@ -45,9 +47,10 @@ var phases = map[string]func(src string){
 	"lex-native":   func(src string) { nativegala.Tokens(src) },
 	"parse-galop":  func(src string) { gala.Parsers()["galop"](gala.GalopTokens(src)) },
 	"parse-native": func(src string) { nativegala.Parse(src) },
+	"parse-tokens": func(src string) { nativetokens.Parse(src) },
 }
 
-var phaseOrder = []string{"lex", "lex-galop", "lex-native", "parse", "parse-galop", "parse-native"}
+var phaseOrder = []string{"lex", "lex-galop", "lex-native", "parse", "parse-galop", "parse-native", "parse-tokens"}
 
 // sample is one measurement.
 type sample struct {

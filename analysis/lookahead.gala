@@ -446,15 +446,17 @@ func render(l Lookahead) string = l match {
     case Switch(depth, cases) => s"LA$depth{" + cases.Map((c) => c.Tokens.String() + ":" + render(c.Then)).MkString(" ") + "}"
 }
 
-// planDecision analyzes one decision. The static lookahead tree comes first;
-// when part of it would be left to adaptive prediction, the whole decision
-// gets its SLL automaton instead (class and conflicts still describe the
-// tree). A decision whose alternatives start with a predicate stays Adaptive:
-// ANTLR evaluates those predicates while it predicts.
+// planDecision analyzes one decision. The static lookahead tree comes first.
+// When part of it would be left to adaptive prediction, the whole decision
+// gets its SLL automaton instead if that automaton settles every input on its
+// own; otherwise the tree stays, and its Adaptive leaves ask the runtime to
+// predict the decision (class and conflicts describe the tree). A decision
+// whose alternatives start with a predicate stays Adaptive: ANTLR evaluates
+// those predicates while it predicts.
 func (g grammarInfo) planDecision(dec atn.Decision, maxK int) DecisionPlan {
     val (tree, static) = g.lookaheadTree(dec, maxK)
     val lookahead =
-        if (static && hasAdaptive(tree)) g.buildAutomaton(dec).GetOrElse(allAdaptive(dec))
+        if (static && NeedsRuntime(tree)) g.buildAutomaton(dec).GetOrElse(g.deferUnexpected(tree))
         else tree
     DecisionPlan(dec, classify(tree), lookahead, conflictsOf(tree, EmptyArray[int]()))
 }
@@ -475,17 +477,19 @@ func allAdaptive(dec atn.Decision) Lookahead = Adaptive(ArrayTabulate(dec.AltCou
 
 // classify summarizes a lookahead tree.
 func classify(l Lookahead) DecisionClass =
-    if (hasAdaptive(l)) NeedsAdaptive()
+    if (NeedsRuntime(l)) NeedsAdaptive()
     else depthOf(l) match {
         case 0 | 1 => LL1()
         case k => LLk(k)
     }
 
-func hasAdaptive(l Lookahead) bool = l match {
-    case Predict(_) => false
+// NeedsRuntime reports whether generated code needs runtime prediction for a
+// lookahead: whether it has an Adaptive part. An automaton settles every input.
+// l: a decision's lookahead.
+func NeedsRuntime(l Lookahead) bool = l match {
     case Adaptive(_) => true
-    case Automaton(_) => true
-    case Switch(_, cases) => cases.Exists((c) => hasAdaptive(c.Then))
+    case Switch(_, cases) => cases.Exists((c) => NeedsRuntime(c.Then))
+    case _ => false
 }
 
 // depthOf is the deepest token a lookahead tree looks at.
@@ -512,4 +516,20 @@ func exampleToken(s atn.IntervalSet) int =
 func unique[T comparable](xs Array[T]) Array[T] {
     val seen = m.EmptyHashSet[T]()
     xs.Filter((x) => seen.Add(x))
+}
+
+// deferUnexpected makes a static tree that leaves some lookahead to runtime
+// prediction send any token past the first that no case expects to runtime
+// prediction too, instead of reporting a syntax error there: SLL prediction may
+// stop at a conflict before that token, and the syntax error is then found
+// where ANTLR finds it.
+func (g grammarInfo) deferUnexpected(l Lookahead) Lookahead = l match {
+    case Switch(depth, cases) => {
+        val inner = cases.Map((c) => LookaheadCase(c.Tokens, g.deferUnexpected(c.Then)))
+        val rest = atn.SetOf(atn.TokenEOF).Union(atn.RangeSet(1, g.a.Vocab.MaxType()))
+            .Subtract(cases.FoldLeft(atn.EmptySet(), (acc, c) => acc.Union(c.Tokens)))
+        if (depth > 1 && rest.NonEmpty()) Switch(depth, inner.Append(LookaheadCase(rest, Adaptive(EmptyArray[int]()))))
+        else Switch(depth, inner)
+    }
+    case _ => l
 }

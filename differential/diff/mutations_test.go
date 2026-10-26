@@ -12,6 +12,7 @@ import (
 	"github.com/martianoff/galop/differential/antlrgala"
 	"github.com/martianoff/galop/differential/gala"
 	"github.com/martianoff/galop/differential/nativegala"
+	"github.com/martianoff/galop/differential/nativetokens"
 )
 
 var (
@@ -25,6 +26,10 @@ var (
 var insertions = []string{
 	"(", ")", "=>", "int", "x", ".", ",", "=", "{", "}", "[", "]", ":", "...", "func ", "return\n",
 	"(a, b) => ", "case (a, b) => a\n", "if x {", "x {", "\n(", "\n-", "f(a)", "Foo{a: 1}",
+	// Bracket-heavy text, balanced and not, for prediction over bracketed groups.
+	"()", "[]", "{}", "((", "))", "f(", "[(", "{)", "(a, (b, c)) => a", "xs[0]", "f[T](x)", "{ x }",
+	"((a) => (b) => a)", "Foo{a: (1, 2)}", "\n[", "{ case (a, b) => (a) }", "m[K, V]{}", "(f(a)[0])",
+	"(x int, y T[A]) => x",
 }
 
 // statements are valid statements TestMutations puts on a line of its own
@@ -44,11 +49,15 @@ var statements = []string{
 }
 
 // TestMutations compares galop's parsers with ANTLR on mutated corpus files:
-// a token dropped or doubled, text inserted, or a statement added. Most
+// a token dropped or doubled, text inserted, a statement added, or a bracket
+// pair wrapped around a span, changed to another kind or removed. Most
 // mutants are rejected; the rest are where SLL prediction and LL prediction
 // part ways, which is what the repair of a failed SLL parse has to get right.
 // Both flavors must agree with ANTLR on whether the input parses and, if it
-// does, on the tree. -mutants and -mutant_seed size the run.
+// does, on the tree. The native parser must also agree with the same parser
+// generated with -Xno-brackets on everything, the first error included:
+// reading bracketed groups as one symbol changes neither trees nor errors.
+// -mutants and -mutant_seed size the run.
 func TestMutations(t *testing.T) {
 	var srcs []string
 	for _, f := range files(t) {
@@ -99,6 +108,16 @@ func TestMutations(t *testing.T) {
 		if wantOK {
 			accepted++
 		}
+		tree, err := nativegala.Parse(src)
+		ref, refErr := nativetokens.Parse(src)
+		switch {
+		case (err == nil) != (refErr == nil) || err != nil && err.Error() != refErr.Error():
+			differ++
+			t.Errorf("mutant %d: with brackets error=%v, without error=%v\n%s", i, err, refErr, src)
+		case err == nil && tree.ToStringTree() != ref.ToStringTree():
+			differ++
+			t.Errorf("mutant %d: trees differ with and without brackets\n%s", i, firstDifference(ref.ToStringTree(), tree.ToStringTree()))
+		}
 		for _, f := range flavors {
 			got, where, err := f.parse(src, false)
 			switch {
@@ -133,6 +152,9 @@ func mutate(r *rand.Rand, src string) string {
 	if len(toks) < 2 {
 		return src
 	}
+	if r.Intn(4) == 0 {
+		return mutateBrackets(r, src, toks)
+	}
 	tok := toks[r.Intn(len(toks)-1)]
 	off, end := int(tok.Start), int(tok.End)
 	switch r.Intn(3) {
@@ -163,4 +185,42 @@ func addStatement(r *rand.Rand, src string) (string, bool) {
 	indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
 	stmt := indent + strings.ReplaceAll(statements[r.Intn(len(statements))], "\n", "\n"+indent)
 	return strings.Join(append(lines[:i:i], append([]string{stmt}, lines[i:]...)...), "\n"), true
+}
+
+// mutateBrackets wraps a balanced span in a new bracket pair, or changes a
+// matched pair to another kind (it stays balanced) or removes it.
+func mutateBrackets(r *rand.Rand, src string, toks []nativegala.GalaToken) string {
+	text := func(i int) string { return src[toks[i].Start:toks[i].End] }
+	kinds := []string{"()", "[]", "{}"}
+	kind := kinds[r.Intn(len(kinds))]
+	var open []int
+	var pairs [][2]int
+	for i := range toks {
+		switch text(i) {
+		case "(", "[", "{":
+			open = append(open, i)
+		case ")", "]", "}":
+			if len(open) > 0 {
+				pairs = append(pairs, [2]int{open[len(open)-1], i})
+				open = open[:len(open)-1]
+			}
+		}
+	}
+	if len(pairs) == 0 || r.Intn(2) == 0 {
+		// Wrap the span from a token to its pair (or to itself).
+		i := r.Intn(len(toks) - 1)
+		j := i
+		for _, p := range pairs {
+			if p[0] == i {
+				j = p[1]
+			}
+		}
+		return src[:toks[i].Start] + kind[:1] + src[toks[i].Start:toks[j].End] + kind[1:] + src[toks[j].End:]
+	}
+	p := pairs[r.Intn(len(pairs))]
+	if r.Intn(4) == 0 {
+		kind = "  "
+	}
+	a, b := toks[p[0]], toks[p[1]]
+	return src[:a.Start] + kind[:1] + src[a.End:b.Start] + kind[1:] + src[b.End:]
 }

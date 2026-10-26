@@ -72,7 +72,7 @@ func tables(e env) string {
         goSlice(s"${x}ClosKind", "uint8", closAll.Map((c) => s"${c.Kind}")),
         goSlice(s"${x}ClosState", "int32", closAll.Map((c) => s"${c.State}")),
         goSlice(s"${x}ClosArg", "int32", closAll.Map((c) => s"${c.Arg}")),
-    ).AppendAll(sets match {
+    ).AppendAll(bracketTables(e, all.Size(), starts)).AppendAll(sets match {
         // gofmt writes an empty composite literal on one line.
         case Array() => ArrayOf(s"var ${x}Sets = [][]int32{}")
         case _ => ArrayOf(s"var ${x}Sets = [][]int32{")
@@ -122,4 +122,32 @@ func visitClosure(a atn.ATN, s int, acc Tuple[Array[closureItem], HashSet[int]])
             })
         }
     }
+}
+
+// bracketTables emits the bracket families for prediction over bracketed
+// groups: per token (type + 1) its opener index or -1 and whether it closes,
+// per opener its closer, and per transition (in TransStart order) the states
+// after the closer of the bracket it opens (empty without brackets, when no
+// group is ever read).
+// transitions: the number of transitions in the flat transition table.
+// starts: each state's first transition in that table.
+func bracketTables(e env, transitions int, starts Array[int]) Array[string] {
+    val x = e.pfx
+    val families = e.brackets.Families
+    val openers = families.FlatMap((f) => f.Openers.Values().Map((o) => (o, f.Closer)))
+    val index = HashMapFromSlice(openers.ZipWithIndex().Map((p) => (p.V1.V1, p.V2)).ToGoSlice())
+    val closers = families.Map(_.Closer)
+    val sites = HashMapFromSlice(e.brackets.Sites.Map((s) => (starts.Get(s.State) + s.Index, s.After)).ToGoSlice())
+    val after = if (families.IsEmpty()) EmptyArray[Array[int]]()
+        else ArrayTabulate(transitions, (i) => sites.Get(i).GetOrElse(EmptyArray[int]()))
+    ArrayOf(
+        s"// ${x}OpenerCount is the number of opening brackets.",
+        s"const ${x}OpenerCount = ${openers.Size()}",
+        "",
+        goSlice(s"${x}OpenerSym", "int32", ArrayTabulate(e.vocab.MaxType() + 2, (i) => s"${index.Get(i - 1).GetOrElse(-1)}")),
+        goSlice(s"${x}IsCloser", "bool", ArrayTabulate(e.vocab.MaxType() + 2, (i) => s"${closers.Contains(i - 1)}")),
+        goSlice(s"${x}OpenerCloser", "int32", openers.Map((o) => s"${o.V2}")),
+        goSlice(s"${x}AfterStart", "int32", codegen.Offsets(after.Map(_.Size())).Map((n) => s"$n")),
+        goSlice(s"${x}AfterState", "int32", after.FlatMap((a) => a).Map((n) => s"$n")),
+    )
 }

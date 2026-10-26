@@ -27,3 +27,9 @@ go_library(
     importpath = "github.com/martianoff/galop/differential/nativegala",
     visibility = ["//differential:__subpackages__"],
 )
+
+# nativetokens builds its package from the same helpers.
+exports_files([
+    "newline.go",
+    "tokens.go",
+])

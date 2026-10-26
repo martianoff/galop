@@ -421,3 +421,8 @@ func TestMutualLeftRecursion(t T) T {
     Eq(t, run(m, ArrayOf(fakeGo), "-check M.g4"),
         Outcome("", "error(119): M.g4::: The following sets of rules are mutually left-recursive [a, b]\n", 1))
 }
+
+func TestNoBracketsFlag(t T) T {
+    val t1 = IsTrue(t, ParseArgs(ArrayOf("-Xno-brackets", "T.g4")).Config.NoBrackets)
+    IsFalse(t1, ParseArgs(ArrayOf("T.g4")).Config.NoBrackets)
+}

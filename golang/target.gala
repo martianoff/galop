@@ -134,7 +134,8 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 parser = parser,
                 rules = compiled.Rules,
                 plans = an.Plans,
-                adaptive = an.Plans.Exists((p) => hasAdaptive(p.Lookahead)),
+                adaptive = an.Plans.Exists((p) => analysis.NeedsRuntime(p.Lookahead)),
+                brackets = an.Brackets,
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
                 repair = GrammarRepairable(compiled.Rules, lr),
@@ -149,16 +150,6 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
         }
         case _ => Right(EmptyArray[codegen.OutputFile]())
     }
-}
-
-func hasAdaptive(la analysis.Lookahead) bool = la match {
-    case analysis.Adaptive(_) => true
-    case analysis.Automaton(states) => states.Exists((s) => s.Final match {
-        case Some(analysis.FinalFullLL(_)) => true
-        case _ => false
-    })
-    case analysis.Switch(_, cases) => cases.Exists((c) => hasAdaptive(c.Then))
-    case _ => false
 }
 
 func isPredicate(s atn.Step) bool = s match {

@@ -45,6 +45,8 @@ var cases = []struct {
 	{"s6", []string{"c x y z x y z", "c x z x y z", "c x y z x z", "c x y z x y y z"}, 2},
 	{"s7", []string{"x", "x x"}, 0},
 	{"s8", []string{"c x y z", "x y y z", "c x z"}, 1},
+	// Over groups the parse would stop after x; the tokens say otherwise.
+	{"s9", []string{"x ( ( ( ( b ) ) ) )", "x ( b )", "x", "x ( ( q ) )"}, 0},
 }
 
 func TestRepairMatchesANTLR(t *testing.T) {

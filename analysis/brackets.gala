@@ -1,0 +1,360 @@
+package analysis
+
+import (
+    "math/bits"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// Bracket abstraction lets runtime prediction treat a bracketed group of
+// tokens, `( ... )`, as one symbol: a configuration about to consume an
+// opening bracket jumps straight to the state after the matching closing
+// bracket. That is sound (every real path has an abstract one, so an
+// alternative ruled out over the abstract stream is ruled out over the real
+// one) exactly when every derivation pairs brackets the way the token stream
+// does, which holds when each rule's own tokens are balanced on every path:
+// an opener and its closer then sit in one rule alternative, and what lies
+// between is balanced too. The analysis infers which token pairs behave like
+// that and where each opener's closer leaves the ATN.
+
+// BracketFamily is a set of opening tokens that one closing token closes.
+struct BracketFamily(Openers atn.IntervalSet, Closer int)
+
+// OpenerSite is a consuming transition that can open a bracket: transition
+// Index of State. After lists the states right after the matching closer.
+struct OpenerSite(State int, Index int, After Array[int])
+
+// BracketRejection is a candidate bracket pair the analysis did not use, and why.
+struct BracketRejection(Opener int, Closer int, Reason string)
+
+// Brackets is the bracket analysis of a parser ATN. Skipped says why it did
+// not run, if it did not.
+struct Brackets(
+    Families Array[BracketFamily],
+    Sites Array[OpenerSite],
+    Rejected Array[BracketRejection],
+    Skipped Option[string] = None(),
+)
+
+// NoBrackets is a bracket analysis that did not run, and why.
+// why: the reason, as the report shows it.
+func NoBrackets(why string = "not needed") Brackets =
+    Brackets(EmptyArray[BracketFamily](), EmptyArray[OpenerSite](), EmptyArray[BracketRejection](), Some(why))
+
+// maxBracketDepth bounds the brackets one rule may hold open at once.
+val maxBracketDepth = 16
+
+// maxFamilyOpeners bounds the openers whose subsets largestBalanced tries.
+val maxFamilyOpeners = 8
+
+// AnalyzeBrackets infers the bracket families of a and their opener sites.
+// A candidate pair (o, c) is an opener o that every path from every
+// transition accepting o follows, within its rule, with c. The candidate
+// openers of one closer form a family, cut down to the largest set that keeps
+// every rule balanced; an opener left in several families stays only in the
+// one with the outermost closer, and families that cannot be used together
+// are dropped. Every pair left out is reported with the reason.
+// a: a parser ATN.
+func AnalyzeBrackets(a atn.ATN) Brackets {
+    val g = newBracketGrammar(a)
+    val pairs = g.candidatePairs()
+    val closers = pairs.Map(_.V2).Distinct()
+    val byCloser = pairs.FoldLeft(EmptyHashMap[int, Array[int]](), (m, p) =>
+        m.Put(p.V2, m.Get(p.V2).GetOrElse(EmptyArray[int]()).Append(p.V1)))
+    val candidates = (c int) => byCloser.Get(c).GetOrElse(EmptyArray[int]())
+    val first = closers.Map((c) => g.largestBalanced(c, candidates(c)))
+    val (owner, shared) = g.ownCloser(first.Collect((r) => r.V1))
+    // A family that lost an opener to another closer is checked again.
+    val second = closers.ZipWithIndex().Map((p) => {
+        val owned = candidates(p.V1).Filter((o) => owner.Get(o).Exists(_ == p.V1))
+        if (owned.Size() == candidates(p.V1).Size()) first.Get(p.V2) else g.largestBalanced(p.V1, owned)
+    })
+    val (kept, dropped) = g.keepBalanced(second.Collect((r) => r.V1))
+    val droppedRejections = dropped.FlatMap((d) =>
+        d.V1.Openers.Values().Map((o) => BracketRejection(o, d.V1.Closer, d.V2)))
+    // One reason per pair: the first one found.
+    val all = first.FlatMap(_.V2).AppendAll(shared).AppendAll(second.FlatMap(_.V2)).AppendAll(droppedRejections)
+    val key = (r BracketRejection) => s"${r.Opener}/${r.Closer}"
+    val rejected = all.FoldLeft((EmptyArray[BracketRejection](), EmptyHashSet[string]()), (acc, r) =>
+        if (acc.V2.Contains(key(r))) acc else (acc.V1.Append(r), acc.V2.Add(key(r)))).V1
+    Brackets(kept, g.openerSites(kept), rejected)
+}
+
+// bracketGrammar is what the inference keeps reusing about a: the consuming
+// transitions (state, index, transition), what every path after a token
+// consumes within its rule (mustAfter), and each rule's own tokens.
+struct bracketGrammar(
+    a atn.ATN,
+    consuming Array[Tuple3[int, int, atn.Transition]],
+    after HashMap[int, atn.IntervalSet],
+    ruleTokens Array[atn.IntervalSet],
+)
+
+func newBracketGrammar(a atn.ATN) bracketGrammar {
+    val consuming = a.States.FlatMap((s) =>
+        s.Out.ZipWithIndex().Collect({ case (t, i) if !t.IsEpsilon() => (s.Id, i, t) }))
+    val must = mustFollow(a)
+    val after = consuming.FoldLeft(EmptyHashMap[int, atn.IntervalSet](), (acc, s) =>
+        s.V3.Symbols().Values().FoldLeft(acc, (m, t) => {
+            val here = must.Get(s.V3.Target())
+            m.Put(t, m.Get(t).Map((x) => x.Intersect(here)).GetOrElse(here))
+        }))
+    val ruleTokens = consuming.FoldLeft(ArrayFill(a.RuleNames.Size(), atn.EmptySet()), (acc, s) => {
+        val r = a.State(s.V1).Rule
+        acc.Updated(r, acc.Get(r).Union(s.V3.Symbols()))
+    })
+    bracketGrammar(a, consuming, after, ruleTokens)
+}
+
+// mustAfter is what every path after every transition accepting token t
+// consumes within its rule.
+func (g bracketGrammar) mustAfter(t int) atn.IntervalSet = g.after.Get(t).GetOrElse(atn.EmptySet())
+
+// forced is the token a transition consumes when it accepts only one.
+func forced(t atn.Transition) atn.IntervalSet {
+    val s = t.Symbols()
+    if (s.Size() == 1) s else atn.EmptySet()
+}
+
+// mustFollow is, per state, the tokens that every path from it to its rule's
+// end consumes itself (tokens of called rules do not count). A greatest
+// fixpoint: paths that never reach the end constrain nothing.
+func mustFollow(a atn.ATN) Array[atn.IntervalSet] {
+    val all = atn.RangeSet(atn.TokenEOF, a.Vocab.MaxType())
+    mustRefine(a, a.States.Map((s) => if (s.IsRuleStop()) atn.EmptySet() else all))
+}
+
+// mustRefine narrows must until no state changes.
+func mustRefine(a atn.ATN, must Array[atn.IntervalSet]) Array[atn.IntervalSet] {
+    val step = a.States.Map((s) =>
+        if (s.IsRuleStop() || s.Out.IsEmpty()) atn.EmptySet()
+        else s.Out.Map((t) => forced(t).Union(must.Get(t.WithinRule()))).Reduce((x, y) => x.Intersect(y)))
+    if (step.ZipWithIndex().ForAll((p) => p.V1.Equal(must.Get(p.V2)))) step else mustRefine(a, step)
+}
+
+// candidatePairs lists (opener, closer) pairs: c follows every transition
+// that accepts o, on every path within the rule.
+func (g bracketGrammar) candidatePairs() Array[Tuple[int, int]] =
+    g.after.Keys().Sorted().Filter(_ != atn.TokenEOF).FlatMap((o) =>
+        g.mustAfter(o).Values().Collect({ case c if c != o && c != atn.TokenEOF => (o, c) }))
+
+// ownCloser decides which closer each opener belongs to when several
+// families took it: the outermost one, which every other is always followed
+// by. It returns the owner of every opener that has one, and the pairs given
+// up.
+func (g bracketGrammar) ownCloser(families Array[BracketFamily]) Tuple[HashMap[int, int], Array[BracketRejection]] {
+    val show = (t int) => g.a.Vocab.Display(t)
+    val owners = families.FlatMap(_.Openers.Values()).Distinct().Map((o) => {
+        val closers = families.Collect({ case f if f.Openers.Contains(o) => f.Closer })
+        val outer = closers.Find((c) => closers.ForAll((c2) => c2 == c || g.mustAfter(c2).Contains(c)))
+        val why = (c int) => outer match {
+            case Some(win) => s"${show(o)} is closed by ${show(win)}, which comes after ${show(c)}"
+            case None() => s"${show(o)} is closed by ${closers.Map(show).MkString(" and ")}, none of them outermost"
+        }
+        (outer.Map((c) => (o, c)), closers.Collect({ case c if !outer.Exists(_ == c) => BracketRejection(o, c, why(c)) }))
+    })
+    (HashMapFromSlice(owners.Collect((p) => p.V1).ToGoSlice()), owners.FlatMap(_.V2))
+}
+
+// largestBalanced finds the largest set of openers of closer that keeps
+// every rule balanced on its own, and reports the openers left out with what
+// goes wrong when each joins the rest.
+func (g bracketGrammar) largestBalanced(
+    closer int,
+    openers Array[int],
+) Tuple[Option[BracketFamily], Array[BracketRejection]] {
+    val n = openers.Size()
+    val in = (mask int, i int) => (mask >> i) % 2 == 1
+    val family = (mask int) => BracketFamily(openers.ZipWithIndex()
+        .FoldLeft(atn.EmptySet(), (acc, p) => if (in(mask, p.V2)) acc.Union(atn.SetOf(p.V1)) else acc), closer)
+    // Try the subsets from the largest down; groups of openers are small. A
+    // closer without any of its openers rules out every subset at once.
+    val all = (1 << n) - 1
+    val whole = g.balanceFailure(ArrayOf(family(all)))
+    val smaller =
+        if (whole.Exists(_.Unmatched) || n > maxFamilyOpeners) EmptyArray[int]()
+        else ArrayTabulate(all - 1, (i) => i + 1).SortWith((x, y) => bits.OnesCount(uint(x)) > bits.OnesCount(uint(y)))
+    val best = if (whole.IsEmpty()) Some(all) else smaller.Find((mask) => g.balanceFailure(ArrayOf(family(mask))).IsEmpty())
+    val kept = best.GetOrElse(0)
+    val why = (i int) => g.balanceFailure(ArrayOf(family(kept | (1 << i)))).Map(_.Reason).GetOrElse("")
+    val left = openers.ZipWithIndex().Collect({ case (o, i) if !in(kept, i) => BracketRejection(o, closer, why(i)) })
+    (best.Map(family), left)
+}
+
+// keepBalanced drops families until the rest keep every rule balanced
+// together, and returns the kept families and the dropped ones with reasons.
+func (g bracketGrammar) keepBalanced(
+    families Array[BracketFamily],
+) Tuple[Array[BracketFamily], Array[Tuple[BracketFamily, string]]] =
+    g.balanceFailure(families) match {
+        case None() => (families, EmptyArray[Tuple[BracketFamily, string]]())
+        case Some(fail) => {
+            // Of two families that cannot go together, the one opened at fewer
+            // places goes; at a tie both go.
+            val uses = (i int) => g.consuming.Count((s) => s.V3.Symbols().Intersect(families.Get(i).Openers).NonEmpty())
+            val most = fail.Families.Map(uses).FoldLeft(0, atn.MaxInt)
+            val keep = (i int) => fail.Families.Size() > 1 && uses(i) == most && fail.Families.Count((j) => uses(j) == most) == 1
+            val bad = fail.Families.Filter((i) => !keep(i))
+            val (kept, dropped) = g.keepBalanced(families.ZipWithIndex().Collect({ case (f, i) if !bad.Contains(i) => f }))
+            (kept, dropped.PrependAll(bad.Map((i) => (families.Get(i), fail.Reason))))
+        }
+    }
+
+// balanceFailure checks that every rule's own tokens stay balanced for
+// families together, and returns the first failure. Rules without any of
+// the families' tokens are balanced already.
+func (g bracketGrammar) balanceFailure(families Array[BracketFamily]) Option[bracketFailure] {
+    val tokens = bracketTokens(families)
+    g.a.RuleStart.ZipWithIndex().FoldLeft(None[bracketFailure](), (acc, p) =>
+        if (acc.IsDefined() || g.ruleTokens.Get(p.V2).Intersect(tokens).IsEmpty()) acc
+        else bracketWalk(g.a, families, walkItem(p.V1, EmptyList[int]())).Fold((f) => Some(f), (_) => None()))
+}
+
+// openerSites finds every transition that opens a bracket of families and
+// the states after its matching closer. The families keep every rule
+// balanced, so the walk from an opener cannot fail.
+func (g bracketGrammar) openerSites(families Array[BracketFamily]) Array[OpenerSite] {
+    val tokens = bracketTokens(families)
+    g.consuming.Collect((s) => roleOf(families, tokens, s.V3.Symbols()).Opens.HeadOption().Map((f) => {
+        val after = bracketWalk(g.a, families, walkItem(s.V3.Target(), ListOf(f)))
+        OpenerSite(s.V1, s.V2, after.Fold((_) => EmptyArray[int](), (states) => states))
+    }))
+}
+
+// bracketTokens are all the openers and closers of families.
+func bracketTokens(families Array[BracketFamily]) atn.IntervalSet =
+    families.FoldLeft(atn.EmptySet(), (acc, f) => acc.Union(f.Openers).Union(atn.SetOf(f.Closer)))
+
+// bracketRole is what a consuming transition does to the open brackets:
+// open (or close) a bracket of a family, and whether it can also consume a
+// token that is no bracket at all.
+struct bracketRole(Opens Array[int], Closes Array[int], Plain bool)
+
+// roleOf is the role of a transition accepting symbols; brackets are all the
+// families' tokens.
+func roleOf(families Array[BracketFamily], brackets atn.IntervalSet, symbols atn.IntervalSet) bracketRole {
+    val indexed = families.ZipWithIndex()
+    bracketRole(
+        indexed.Collect({ case (f, i) if f.Openers.Intersect(symbols).NonEmpty() => i }),
+        indexed.Collect({ case (f, i) if symbols.Contains(f.Closer) => i }),
+        symbols.Subtract(brackets).NonEmpty(),
+    )
+}
+
+// bracketShow names a family: `'(' NL_LPAREN … ')'`.
+func bracketShow(a atn.ATN, f BracketFamily) string =
+    f.Openers.Values().Map((t) => a.Vocab.Display(t)).MkString(" ") + " … " + a.Vocab.Display(f.Closer)
+
+// walkItem is a point of a rule-local walk: a state and the families of the
+// brackets open there, innermost first.
+struct walkItem(State int, Open List[int])
+
+func (w walkItem) key() string = s"${w.State}/${w.Open.MkString(",")}"
+
+// walkStep is what visiting a walk point gives: the points it moves on to,
+// the states after a closer that closes the bracket the walk started in, or
+// a failure (the family at fault and why).
+struct walkStep(Next Array[walkItem], Closed Array[int], Failure Option[bracketFailure])
+
+func moveTo(items Array[walkItem]) walkStep = walkStep(items, EmptyArray[int](), None())
+
+func failWith(families Array[int], why string, unmatched bool = false) walkStep =
+    walkStep(EmptyArray[walkItem](), EmptyArray[int](), Some(bracketFailure(families, why, unmatched)))
+
+// bracketFailure is why families do not keep a rule balanced: the families at
+// fault (two when kinds cross or share a token set) and the reason. Unmatched
+// says a closer appears without any opener of its family, which no smaller set
+// of openers can fix.
+struct bracketFailure(Families Array[int], Reason string, Unmatched bool)
+
+// bracketWalker walks the rule-local paths of one rule, tracking the open
+// brackets of families (whose tokens are brackets); inBracket says the walk
+// starts inside a bracket, whose closing ends the walk.
+struct bracketWalker(
+    a atn.ATN,
+    families Array[BracketFamily],
+    brackets atn.IntervalSet,
+    rule string,
+    inBracket bool,
+)
+
+func (b bracketWalker) show(f int) string = bracketShow(b.a, b.families.Get(f))
+
+// step applies transition t to walk point w.
+func (b bracketWalker) step(w walkItem, t atn.Transition) walkStep {
+    if t.IsEpsilon() {
+        return moveTo(ArrayOf(walkItem(t.WithinRule(), w.Open)))
+    }
+    val role = roleOf(b.families, b.brackets, t.Symbols())
+    val rule = b.rule
+    if role.Opens.Size() + role.Closes.Size() > 1 {
+        return failWith(role.Opens.AppendAll(role.Closes).Distinct(), s"one token set in rule $rule holds brackets of more than one kind")
+    }
+    val plain = if (role.Plain) ArrayOf(walkItem(t.Target(), w.Open)) else EmptyArray[walkItem]()
+    (role.Opens.HeadOption(), role.Closes.HeadOption()) match {
+        case (Some(f), _) =>
+            if (w.Open.Size() >= maxBracketDepth) failWith(ArrayOf(f), s"${b.show(f)} nests without bound in rule $rule")
+            else moveTo(plain.Append(walkItem(t.Target(), w.Open.Prepend(f))))
+        case (_, Some(f)) => w.Open.HeadOption() match {
+            case Some(top) if top == f =>
+                if (w.Open.Tail().IsEmpty() && b.inBracket) walkStep(plain, ArrayOf(t.Target()), None())
+                else moveTo(plain.Append(walkItem(t.Target(), w.Open.Tail())))
+            case Some(top) => failWith(ArrayOf(f, top), s"${b.show(f)} closes inside ${b.show(top)} in rule $rule")
+            case None() =>
+                failWith(ArrayOf(f), s"${b.a.Vocab.Display(b.families.Get(f).Closer)} appears without its opener in rule $rule", true)
+        }
+        case _ => moveTo(plain)
+    }
+}
+
+// visit applies every transition of walk point w, stopping at a failure.
+func (b bracketWalker) visit(w walkItem) walkStep {
+    val st = b.a.State(w.State)
+    val endsOpen = if (st.IsRuleStop()) w.Open.HeadOption() else None[int]()
+    endsOpen match {
+        case Some(f) => failWith(ArrayOf(f), s"rule ${b.rule} can end inside ${b.show(f)}")
+        case None() => st.Out.FoldLeft(moveTo(EmptyArray[walkItem]()), (acc, t) =>
+            if (acc.Failure.IsDefined()) acc
+            else {
+                val s = b.step(w, t)
+                walkStep(acc.Next.AppendAll(s.Next), acc.Closed.AppendAll(s.Closed), s.Failure)
+            })
+    }
+}
+
+// walk works through the points of work depth first, skipping points seen
+// before. It returns the states after the closings, or the first failure.
+func (b bracketWalker) walk(
+    work List[walkItem],
+    seen HashSet[string],
+    closed HashSet[int],
+) Either[bracketFailure, HashSet[int]] = work match {
+    case Cons(w, rest) => {
+        val key = w.key()
+        if (seen.Contains(key)) b.walk(rest, seen, closed)
+        else {
+            val s = b.visit(w)
+            s.Failure match {
+                case Some(f) => Left(f)
+                case None() => b.walk(
+                    s.Next.FoldLeft(rest, (l, n) => l.Prepend(n)),
+                    seen.Add(key),
+                    s.Closed.FoldLeft(closed, (c, x) => c.Add(x)),
+                )
+            }
+        }
+    }
+    case _ => Right(closed)
+}
+
+// bracketWalk walks the rule-local paths from start, tracking the open
+// brackets of families. It returns the states after a closer that closes
+// the bracket start is in (when it is in one), or the first failure.
+func bracketWalk(a atn.ATN, families Array[BracketFamily], start walkItem) Either[bracketFailure, Array[int]] {
+    val rule = a.RuleNames.Get(a.State(start.State).Rule)
+    val b = bracketWalker(a, families, bracketTokens(families), rule, start.Open.NonEmpty())
+    b.walk(ListOf(start), EmptyHashSet[string](), EmptyHashSet[int]())
+        .Map((closed) => ArrayFromSlice(closed.ToGoSlice()).Sorted())
+}

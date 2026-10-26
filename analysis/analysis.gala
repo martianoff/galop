@@ -12,12 +12,18 @@ import (
 // are analyzed concurrently; the plans come back in decision order.
 // a: a parser ATN from atn.Compile.
 // maxK: the deepest static lookahead to try before a decision is left to adaptive prediction.
-func Analyze(a atn.ATN, maxK int = MaxK) Analysis {
+// brackets: whether runtime prediction may read bracketed groups as one symbol.
+func Analyze(a atn.ATN, maxK int = MaxK, brackets bool = true) Analysis {
     val sites = callSites(a)
     val starts = startRules(a, sites)
     val (first, nullable) = firstSets(a)
     val follow = followSets(a, sites, starts, first, nullable)
     val g = newGrammarInfo(a, sites, starts)
     val plans = concurrent.Traverse(a.Decisions, (d) => concurrent.Future(g.planDecision(d, maxK))).Get()
-    Analysis(plans, first, follow, nullable)
+    // Brackets matter only to runtime prediction.
+    val bracketing =
+        if (!brackets) NoBrackets("disabled by -Xno-brackets")
+        else if (plans.Exists((p) => NeedsRuntime(p.Lookahead))) AnalyzeBrackets(a)
+        else NoBrackets("no decision needs runtime prediction")
+    Analysis(plans, first, follow, nullable, bracketing)
 }

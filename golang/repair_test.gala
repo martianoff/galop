@@ -68,7 +68,8 @@ func TestRepairInANTLRFlavor(t T) T {
         "func (p *AGalopParser) llParse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext, repair bool, sllErr error) (antlr.ParserRuleContext, error)",
         "return nil, dead.err",
         "se, ok := e.(*AGalopSyntaxError)",
-        // Every SLL conflict goes through onConflict, and LL prediction through the cache.
+        // Every SLL conflict goes through onConflict (precomputed automata settle
+        // every input and have none), and LL prediction through the cache.
         "return p.onConflict(d, int(next.conflict))",
         "var AGalopFull = func() *AGalopFullCache {",
         "return p.predictLLUncached(d)",

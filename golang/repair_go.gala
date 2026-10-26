@@ -231,7 +231,7 @@ func (pr *PFXPredictor) startLL(d int, stack []int32, cur *PFXConfigSet) {
 // applies ANTLR's stopping rule: the alternative it picks, -1 when no
 // alternative is viable, or 0 to read another token.
 func (pr *PFXPredictor) stepLL(cur *PFXConfigSet, t int32, intermediate, next *PFXConfigSet) int32 {
-	if alt := pr.reach(cur, t, intermediate, next); alt != 0 {
+	if alt := pr.reach(cur, t, false, intermediate, next); alt != 0 {
 		return alt
 	}
 	if len(next.list) == 0 {
@@ -329,7 +329,7 @@ func (g *PFXFullCache) start(d int, stack []int32, key []byte) *PFXDFAState {
 		return nil
 	}
 	g.pr.startLL(d, stack, &g.pr.sets[0])
-	st = PFXInternState(g.states, &g.pr, &g.key, -1, &g.pr.sets[0])
+	st = PFXInternState(g.states, &g.pr, &g.key, -1, &g.pr.sets[0], PFXMaxTokenType+2)
 	g.starts[string(key)] = st
 	return st
 }
@@ -361,7 +361,7 @@ func (g *PFXFullCache) next(from *PFXDFAState, t int32) *PFXDFAState {
 	case alt > 0:
 		st = &PFXDFAState{alt: alt}
 	default:
-		st = PFXInternState(g.states, pr, &g.key, -1, next)
+		st = PFXInternState(g.states, pr, &g.key, -1, next, PFXMaxTokenType+2)
 	}
 	from.edges[t+1].Store(st)
 	return st

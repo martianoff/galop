@@ -12,6 +12,7 @@ DIFF_TEST_DEPS = [
     "//differential/corpus",
     "//differential/gala",
     "//differential/nativegala",
+    "//differential/nativetokens",
     "@com_github_antlr4_go_antlr_v4//:antlr",
 ]
 

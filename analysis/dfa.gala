@@ -18,26 +18,24 @@ import (
 // context follows global FOLLOW, and the empty context absorbs whatever it is
 // merged with.
 //
-// A state other than the start is final, as in ANTLR's execATN in SLL mode:
+// A state other than the start is final, as in ANTLR's execATN in SLL mode,
+// when one alternative is left: it predicts it. EOF keeps only the
+// configurations at the end of a start rule. Nothing reached is a syntax error.
 //
-//   - one alternative left: predict it;
-//   - otherwise, when PredictionMode.hasSLLConflictTerminatingPrediction holds
-//     (every configuration is at the end of a start rule, or some group with
-//     the same state and merged context has several alternatives while no
-//     state has a single one): a conflict, FinalFullLL(Some(m)) with m the
-//     smallest conflicting alternative, which pure SLL mode predicts, while LL
-//     mode retries the decision with full context, as ANTLR does;
-//   - EOF keeps only the configurations at the end of a start rule.
-//
-// Nothing reached is a syntax error. Recursion makes the SLL DFA infinite
-// (each '(' deepens the stack), so an edge into a state whose stacks are
-// deeper than dfaStackLimit, or past dfaStateLimit states, ends in
-// FinalFullLL(None): the runtime goes on predicting (SLL, then LL as needed).
+// The automaton is kept only if it settles every input by itself, so the
+// decision needs no runtime prediction. Construction gives up, and the
+// decision is left to runtime prediction, at the first SLL conflict
+// (PredictionMode.hasSLLConflictTerminatingPrediction: every configuration at
+// the end of a start rule, or a group with the same state and merged context
+// holding several alternatives while no state has a single one), and where the
+// DFA would grow without end: recursion makes it infinite (each '(' deepens the
+// stack), so an edge into a state whose stacks are deeper than dfaStackLimit,
+// or past dfaStateLimit states, gives up too.
 
-// dfaStateLimit bounds the states of one automaton. Measured on gala.g4 with
-// the generated Go parser: a limit of 1000 gave a 6.2 MB parser (8.6 s go
-// build), 200 gave 1.5 MB and 50 gave 548 KB, with the same corpus results
-// and the same cold parse time (25 ms for array.gala), so 50 it is.
+// dfaStateLimit bounds the states of one automaton. An automaton that needs
+// more gives up and the decision is predicted at runtime; when automata could
+// still hand over to the runtime, 1000 states gave gala.g4 a 6.2 MB parser
+// and 50 the same corpus results.
 val dfaStateLimit = 50
 
 // dfaStackLimit bounds the call stack of the configurations in a state.
@@ -60,13 +58,16 @@ struct automatonBuilder(
     d decider,
     index Ptr[m.HashMap[string, int]],
     edges Ptr[m.Array[Array[DFAEdge]]],
-    finals Ptr[m.Array[Option[DFAFinal]]],
+    finals Ptr[m.Array[Option[int]]],
     pending Ptr[m.Array[Array[move]]],
     finalIndex Ptr[m.HashMap[int, int]],
+    // stops records why construction gave up, if it did.
+    stops Ptr[m.Array[string]],
 )
 
-// buildAutomaton builds the SLL automaton of dec, or None when the start state
-// cannot be computed (a runaway call stack).
+// buildAutomaton builds the SLL automaton of dec if it settles every input,
+// or None (see above; also when the start state cannot be computed, a runaway
+// call stack).
 func (g grammarInfo) buildAutomaton(dec atn.Decision) Option[Lookahead] {
     val d = newDecider(g, 1, false)
     val seed = decisionSeed(g, dec, d)
@@ -78,19 +79,23 @@ func (g grammarInfo) buildAutomaton(dec atn.Decision) Option[Lookahead] {
         d,
         m.EmptyHashMap[string, int](),
         m.EmptyArray[Array[DFAEdge]](),
-        m.EmptyArray[Option[DFAFinal]](),
+        m.EmptyArray[Option[int]](),
         m.EmptyArray[Array[move]](),
         m.EmptyHashMap[int, int](),
+        m.EmptyArray[string](),
     )
     b.state(b.frontier(seed.Moves.AppendAll(r.Moves)))
     var next = 0
-    // A worklist: each state's edges may add new states.
+    // A worklist: each state's edges may add new states; it stops when
+    // construction gives up.
     for next < b.pending.Size() {
         b.expandState(next)
+        if b.stops.NonEmpty() {
+            break
+        }
         next = next + 1
     }
-    val states = ArrayTabulate(b.edges.Size(), (i) => DFAState(b.edges.Get(i), b.finals.Get(i)))
-    Some(Automaton(states))
+    When(b.stops.IsEmpty(), Automaton(ArrayTabulate(b.edges.Size(), (i) => DFAState(b.edges.Get(i), b.finals.Get(i)))))
 }
 
 // frontier merges the configurations the moves start from the way ANTLR's
@@ -135,39 +140,45 @@ func (b automatonBuilder) state(f dfaFrontier) int {
     val id = b.edges.Size()
     b.index.Put(f.Key, id)
     b.edges.Append(EmptyArray[DFAEdge]())
-    b.finals.Append(None[DFAFinal]())
+    b.finals.Append(None[int]())
     b.pending.Append(f.Moves)
     id
 }
 
-// final returns the shared final state for fin.
-func (b automatonBuilder) final(fin DFAFinal) int {
-    val k = fin match {
-        case FinalPredict(alt) => alt
-        case FinalFullLL(Some(alt)) => -alt
-        case FinalFullLL(None()) => 0
-    }
-    if b.finalIndex.Contains(k) {
-        return b.finalIndex.Get(k).Get()
+// final returns the shared final state that predicts alt.
+func (b automatonBuilder) final(alt int) int {
+    if b.finalIndex.Contains(alt) {
+        return b.finalIndex.Get(alt).Get()
     }
     val id = b.edges.Size()
-    b.finalIndex.Put(k, id)
+    b.finalIndex.Put(alt, id)
     b.edges.Append(EmptyArray[DFAEdge]())
-    b.finals.Append(Some(fin))
+    b.finals.Append(Some(alt))
     b.pending.Append(EmptyArray[move]())
     id
 }
 
+// giveUp stops construction: the automaton cannot settle every input.
+func (b automatonBuilder) giveUp(why string) Option[int] {
+    b.stops.Append(why)
+    None()
+}
+
+// sllVerdict is ANTLR's SLL verdict on a merged set of configurations.
+sealed type sllVerdict {
+    case sllPredicts(Alt int)
+    case sllConflicts()
+    case sllGoesOn()
+}
+
 // sllFinal is ANTLR's SLL verdict on a merged set of configurations (one move
-// per state and alternative, see frontier), if it stops there.
-func sllFinal(moves Array[move]) Option[DFAFinal] {
+// per state and alternative, see frontier): one alternative left, a conflict
+// (all at the end of a start rule, or an SLL conflict), or neither.
+func sllFinal(moves Array[move]) sllVerdict {
     val alts = altsOf(moves)
-    if alts.Size() == 1 {
-        return Some(FinalPredict(alts.Head()))
-    }
-    // All at the end of a start rule, or an SLL conflict: the smallest alternative.
-    val stop = moves.ForAll((mv) => sourceOf(mv).State == endOfInput) || sllConflict(moves)
-    if (stop) Some(FinalFullLL(Some(alts.Head()))) else None()
+    if (alts.Size() == 1) sllPredicts(alts.Head())
+    else if (moves.ForAll((mv) => sourceOf(mv).State == endOfInput) || sllConflict(moves)) sllConflicts()
+    else sllGoesOn()
 }
 
 // sllConflict is ANTLR's conflict heuristic: some group of configurations with
@@ -199,7 +210,9 @@ func (b automatonBuilder) expandState(id int) {
     if b.finals.Get(id).IsDefined() || moves.IsEmpty() {
         return
     }
-    val targets = tokenClasses(moves).Collect((cls) => b.target(cls).Map((t) => DFAEdge(cls.Tokens, t)))
+    // Once construction has given up, the rest of the edges do not matter.
+    val targets = tokenClasses(moves).Collect((cls) =>
+        if (b.stops.NonEmpty()) None[DFAEdge]() else b.target(cls).Map((t) => DFAEdge(cls.Tokens, t)))
     val merged = unique(targets.Map(_.Target)).Map((t) => {
         val tokens = targets.Filter(_.Target == t).FoldLeft(atn.EmptySet(), (acc, e) => acc.Union(e.Tokens))
         DFAEdge(tokens, t)
@@ -211,28 +224,29 @@ func (b automatonBuilder) expandState(id int) {
 func (b automatonBuilder) target(cls tokenClass) Option[int] {
     val next = cls.Moves.Map(_.Next)
     if next.Exists((c) => b.d.stacks.depths.Get(c.Stack) > dfaStackLimit) {
-        return Some(b.final(FinalFullLL(None())))
+        return b.giveUp("stack bound")
     }
     val r = b.d.closure(next, 0)
     if r.Overflow {
-        return Some(b.final(FinalFullLL(None())))
+        return b.giveUp("runaway call stack")
     }
     if cls.Tokens.Contains(atn.TokenEOF) {
         // After EOF only the configurations at the end of a start rule remain.
         val ended = altsOf(r.Moves.Filter((mv) => sourceOf(mv).State == endOfInput))
         return ended match {
             case Array() => None()
-            case Array(alt) => Some(b.final(FinalPredict(alt)))
-            case _ => Some(b.final(FinalFullLL(Some(ended.Head()))))
+            case Array(alt) => Some(b.final(alt))
+            case _ => b.giveUp("conflict at EOF")
         }
     }
     val f = b.frontier(r.Moves)
     // A final verdict goes to the shared final state; the start state is
     // never final, as ANTLR decides only after the first token.
     sllFinal(f.Moves) match {
-        case Some(fin) => Some(b.final(fin))
-        case None() =>
-            if (!b.index.Contains(f.Key) && b.edges.Size() >= dfaStateLimit) Some(b.final(FinalFullLL(None())))
+        case sllPredicts(alt) => Some(b.final(alt))
+        case sllConflicts() => b.giveUp("SLL conflict")
+        case sllGoesOn() =>
+            if (!b.index.Contains(f.Key) && b.edges.Size() >= dfaStateLimit) b.giveUp("state budget")
             else Some(b.state(f))
     }
 }
