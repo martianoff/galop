@@ -499,7 +499,14 @@ func (e *PFXEmu) sllFailure(d int) (offending int, alt int) {
 // errorsSource.
 val nativeErrorHelpers = `
 // tokenDisplay is token i's text as ANTLR's error messages show it.
-func (p *PARSER) tokenDisplay(i int) string { return p.ts.Tokens[i].Text(p.ts.Src) }
+func (p *PARSER) tokenDisplay(i int) string {
+	t := p.ts.Tokens[i]
+	if s := t.Text(p.ts.Src); s != "" {
+		return s
+	}
+	// An empty token shows its type, as ANTLR's GetTokenErrorDisplay does.
+	return "<" + strconv.Itoa(int(t.Type)) + ">"
+}
 
 // inputText is the text of tokens start to stop, with the off-channel tokens
 // between them, as ANTLR's token stream gives it.

@@ -33,13 +33,14 @@ type alias = list[*point]
 let type = (type);
 fn h() { each (a) b do { pair 1 + ; } skip until x; }`,
 	`type t { a b; }
-fn g(x: t) { loop ; end ; g(x)(1); }`,
+fn g(x: t) { loop ; end ; g(x); }`,
 }
 
 // insertions are text the test puts between tokens.
 var insertions = []string{
 	"let", "fn", "type", "=", ";", "(", ")", "{", "}", "[", "]", ",", ":", "*", "-", "!", "#",
-	"return", "if", "else", "loop", "end", "x", "1", `"s"`, "true", "==", "// c\n",
+	"return", "if", "else", "loop", "end", "pair", "each", "do", "skip", "until",
+	"x", "1", `"s"`, "true", "==", "// c\n",
 }
 
 func TestSyntaxErrorsMatchANTLR(t *testing.T) {
@@ -105,11 +106,16 @@ func (e *firstError) SyntaxError(_ antlr.Recognizer, _ any, line, column int, ms
 	}
 }
 
-// antlrFirstError is the first syntax error ANTLR reports for src, parsed with
-// SLL prediction and then, after an error, with LL prediction from the start,
-// as the GALA compiler does. Lexical errors count; it is empty when there is
-// no error.
+// antlrFirstError is the first syntax error ANTLR reports for src as prog.
 func antlrFirstError(src string) string {
+	return antlrFirstErrorAs(src, func(p *ea.ErrorsParser) { p.Prog() })
+}
+
+// antlrFirstErrorAs is the first syntax error ANTLR reports for src parsed by
+// entry, with SLL prediction and then, after an error, with LL prediction
+// from the start, as the GALA compiler does. Lexical errors count; it is empty
+// when there is no error.
+func antlrFirstErrorAs(src string, entry func(*ea.ErrorsParser)) string {
 	var msg string
 	for _, mode := range []int{antlr.PredictionModeSLL, antlr.PredictionModeLL} {
 		lexer := ea.NewErrorsLexer(antlr.NewInputStream(src))
@@ -121,7 +127,7 @@ func antlrFirstError(src string) string {
 		errs := &firstError{}
 		p.AddErrorListener(errs)
 		p.GetInterpreter().SetPredictionMode(mode)
-		p.Prog()
+		entry(p)
 		if lexErrs.msg != "" {
 			return lexErrs.msg
 		}
@@ -130,4 +136,39 @@ func antlrFirstError(src string) string {
 		}
 	}
 	return strings.TrimSpace(msg)
+}
+
+// TestEntryRuleWithoutEOF checks errors in snippet, an entry rule no rule
+// calls and that does not end with EOF: past its end ANTLR expects EOF.
+// (Input ANTLR accepts up to some token and then stops, like `eval x + y`, is
+// left out: galop's parse of an entry rule without EOF rejects the rest.)
+func TestEntryRuleWithoutEOF(t *testing.T) {
+	for _, src := range []string{"eval x x", "eval x", "eval", "eval +", "eval x + 1", "eval x ; 1", "x", "eval x - \"s\""} {
+		want := antlrFirstErrorAs(src, func(p *ea.ErrorsParser) { p.Snippet() })
+		_, nerr := en.ParseSnippet(en.ErrorsLex(src))
+		stream := antlr.NewCommonTokenStream(ea.NewErrorsGalopLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel)
+		_, aerr := ea.NewErrorsGalopParser(stream).Snippet()
+		for _, got := range []struct {
+			flavor string
+			err    error
+		}{{"native", nerr}, {"antlr", aerr}} {
+			if text(got.err) != want {
+				t.Errorf("%q, %s flavor:\n galop %s\n ANTLR %s", src, got.flavor, text(got.err), want)
+			}
+		}
+	}
+}
+
+// TestTokenTypeOutsideTheVocabulary feeds the native parser token types no
+// rule matches, which a program may set before parsing: the error replay
+// reports a syntax error at that token instead of failing.
+func TestTokenTypeOutsideTheVocabulary(t *testing.T) {
+	for _, typ := range []int32{99, -5, 0} {
+		ts := en.ErrorsLex("let x = 1;")
+		ts.Tokens[2].Type = typ
+		_, err := en.ParseProg(ts)
+		if err == nil || !strings.HasPrefix(err.Error(), "line 1:6 ") {
+			t.Errorf("token type %d: got %v, want a syntax error at 1:6", typ, err)
+		}
+	}
 }

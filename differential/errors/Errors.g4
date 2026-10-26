@@ -7,6 +7,9 @@
 grammar Errors;
 
 prog : decl* EOF ;
+// snippet is a second entry rule, with no EOF and called by no rule: ANTLR's
+// lookahead at its end is EOF.
+snippet : 'eval' name ('+' | '-') literal? ;
 decl : 'let' name ('=' expr)? ';'           # Let
      | 'fn' name '(' params? ')' block       # Fn
      | 'type' name ('{' field+ '}' | '=' type) # TypeDecl

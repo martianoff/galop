@@ -329,8 +329,10 @@ func emitStep(e env, s atn.Step, ind string, sc scope) Array[string] = s match {
     case atn.MatchToken(t, label) => tokenStep(e, ind, "match", e.tokenRef(t), label, sc)
     case atn.MatchSet(set, label, _) => tokenStep(e, ind, "matchIf", setTest(e, set, "p.types[p.pos]"), label, sc)
     case atn.CallRule(rule, follow, label) => {
-        val push = ArrayOf(s"$ind\tp.stack = append(p.stack, $follow)")
-        val pop = ArrayOf(s"$ind\tp.stack = p.stack[:len(p.stack)-1]")
+        // Only runtime prediction reads the stack during a parse; the error
+        // replay keeps its own.
+        val push = if (e.adaptive) ArrayOf(s"$ind\tp.stack = append(p.stack, $follow)") else EmptyArray[string]()
+        val pop = if (e.adaptive) ArrayOf(s"$ind\tp.stack = p.stack[:len(p.stack)-1]") else EmptyArray[string]()
         val (call, attach) = e.flavor match {
             case ANTLRFlavor() => (s"p.${e.ruleFunc(rule)}(localctx, ${follow - 1})", "localctx.AddChild(child)")
             case NativeFlavor(_) => (s"p.${e.ruleFunc(rule)}()", "p.kids = append(p.kids, child)")

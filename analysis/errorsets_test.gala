@@ -39,3 +39,11 @@ func TestNextTokens(t T) T {
     val t1 = Eq(t, next.Tokens, atn.SetOf(1).Union(atn.SetOf(2)))
     IsTrue(t1, next.ReachesEnd)
 }
+
+// ANTLR's tool follows the end of a rule no rule calls with EOF; a rule that
+// only calls itself is not such a rule.
+func TestDecisionLookaheadAtTheEndOfAStartRule(t T) T {
+    val t1 = Eq(t, lookaheadOf("grammar L;\ns : A (P | M) B? ;\nA : 'a' ; B : 'b' ; P : '+' ; M : '-' ;\n", "s"),
+        ArrayOf(ArrayOf("B"), ArrayOf("EOF")))
+    Eq(t1, lookaheadOf("grammar L;\ns : A s? ;\nA : 'a' ;\n", "s"), ArrayOf(ArrayOf("A"), EmptyArray[string]()))
+}

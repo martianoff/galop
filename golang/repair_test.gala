@@ -52,7 +52,9 @@ func TestRepairInNativeFlavor(t T) T {
         "t, root, err := newAGalopParser(ts).run((*AGalopParser).ruleS, 0, true)",
         "t, root, err := newAGalopParser(ts).run((*AGalopParser).ruleR, 2, false)",
         // The exported entry point takes no repair flag and does not repair.
-        "func AGalopParse(ts *ATokens, rule func(*AGalopParser) int32, start int32) (*ATree, int32, error) {\n\treturn newAGalopParser(ts).run(rule, start, false)",
+        "func AGalopParse(ts *ATokens, rule int) (*ATree, int32, error) {",
+        "return newAGalopParser(ts).run(AGalopRuleFuncs[rule], AGalopRuleStartState[rule], false)",
+        "var AGalopRuleFuncs = []func(*AGalopParser) int32{\n\t(*AGalopParser).ruleS,",
         "root, err = p.llParse(rule, repair, err)",
         "func (p *AGalopParser) llParse(rule func(*AGalopParser) int32, repair bool, sllErr error) (int32, error)",
         "return -1, dead.err",

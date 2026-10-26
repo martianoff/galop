@@ -391,7 +391,8 @@ func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Pi
     Piece(Frag(from, follow), ArrayOf(CallRule(target, follow, label)))
 }
 
-// matchSet compiles a one-symbol match; a one-member set becomes an atom.
+// matchSet compiles a one-symbol match; a one-member set becomes an atom,
+// except a parser's `~` set or wildcard (see below).
 // listed says whether the set lists its members as alternatives, `(A | B)`,
 // rather than `~A` or `.`.
 func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef], listed bool) Piece {
@@ -401,7 +402,9 @@ func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef]
     val from = b.state(rule, BasicState())
     val to = b.state(rule, BasicState())
     val single = set.Size() == 1
-    if (single) b.edge(from, Atom(to, set.Min().Get())) else b.edge(from, SetMatch(to, set))
+    // In a parser, a `~` set or a wildcard stays a set even with one member: ANTLR's
+    // generated code matches it as a set, which the error replay follows.
+    if (single && (listed || b.lexer)) b.edge(from, Atom(to, set.Min().Get())) else b.edge(from, SetMatch(to, set))
     val step = if (single) MatchToken(set.Min().Get(), label) else MatchSet(set, label, listed)
     Piece(Frag(from, to), ArrayOf(step))
 }
