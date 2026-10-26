@@ -14,7 +14,7 @@ val repairSource = `
 // onConflict settles an SLL conflict whose lowest conflicting alternative is
 // sllAlt. The SLL pass takes sllAlt; this stays small enough to inline.
 func (p *PARSER) onConflict(d int, sllAlt int) int {
-	if p.ll || p.repair.on {
+	if p.ll || p.rp.on {
 		return p.onConflictSlow(d, sllAlt)
 	}
 	return sllAlt
@@ -27,7 +27,7 @@ func (p *PARSER) onConflictSlow(d int, sllAlt int) int {
 	if p.ll {
 		return p.predictLL(d)
 	}
-	r := &p.repair
+	r := &p.rp
 	i := r.seq
 	r.seq++
 	if i < len(r.recs) {
@@ -81,7 +81,7 @@ const PFXRepairPasses = 256
 // alternative is viable, or where this pass failed.
 func (p *PARSER) llParse(rule @RULE@, repair bool) (@ROOT@, error) {
 	if repair {
-		r := &p.repair
+		r := &p.rp
 		r.on = true
 		defer func() { r.on = false }()
 		r.recs, r.stacks = r.recs[:0], r.stacks[:0]
@@ -112,7 +112,7 @@ func (p *PARSER) llParse(rule @RULE@, repair bool) (@ROOT@, error) {
 // the alternative taken. Otherwise it returns the earliest conflict where no
 // alternative is viable, if any.
 func (p *PARSER) switchLatest() (switched bool, dead *PFXConflict) {
-	r := &p.repair
+	r := &p.rp
 	for i := r.seq - 1; i >= 0; i-- {
 		c := &r.recs[i]
 		if c.known == 0 {
@@ -143,7 +143,7 @@ func (p *PARSER) checkConflict(c *PFXConflict) {
 			c.known, c.err = -1, se
 		}
 	}()
-	p.pos, p.stack = int(c.pos), p.repair.stacks[c.stackFrom:c.stackTo:c.stackTo]
+	p.pos, p.stack = int(c.pos), p.rp.stacks[c.stackFrom:c.stackTo:c.stackTo]
 	c.known = int32(p.predictLL(int(c.d)))
 }
 `
@@ -326,11 +326,11 @@ func PFXFullNext(from *PFXDFAState, t int32) *PFXDFAState {
 // current token, with the parser's call stack as the outer context, through
 // the cache when it can.
 func (p *PARSER) predictLL(d int) int {
-	key := binary.LittleEndian.AppendUint32(p.fullKey[:0], uint32(d))
+	key := binary.LittleEndian.AppendUint32(p.llKey[:0], uint32(d))
 	for _, ret := range p.stack {
 		key = binary.LittleEndian.AppendUint32(key, uint32(ret))
 	}
-	p.fullKey = key
+	p.llKey = key
 	st := PFXFullStart(d, p.stack, key)
 	for i := 1; st != nil; i++ {
 		t := p.la(i)

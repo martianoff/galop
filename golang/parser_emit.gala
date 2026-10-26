@@ -105,7 +105,7 @@ func tokenAssertions(e env) string {
 
 // predictorFields are the parser's fields for runtime prediction.
 func predictorFields(e env) string =
-    if (e.adaptive) s"\n\tstack   []int32\n\tll      bool\n\tpred    ${e.pfx}Predictor\n\trepair  ${e.pfx}Repair\n\tfullKey []byte" else ""
+    if (e.adaptive) s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte" else ""
 
 // retryCode handles a failed SLL parse, whose result is in variable root.
 // With runtime prediction the parse runs in SLL mode first, as GALA does with

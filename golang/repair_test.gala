@@ -87,7 +87,7 @@ func TestRepairInANTLRFlavor(t T) T {
         "return p.onConflict(d, int(next.conflict))",
         "var AGalopFull struct",
         "return p.predictLLUncached(d)",
-        "\trepair  AGalopRepair",
+        "\trp    AGalopRepair",
     )
     val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
     IsFalse(t1, strings.Contains(code, "@"))
