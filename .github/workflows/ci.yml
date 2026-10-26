@@ -12,7 +12,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Runs on main fill the caches every other run reads, so let each one finish.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # galop is built with a pinned GALA release. Bump GALA_VERSION together with
 # `gala` in gala.mod and the `gala` bazel_dep in MODULE.bazel.
