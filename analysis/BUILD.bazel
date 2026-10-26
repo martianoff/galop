@@ -4,7 +4,6 @@ gala_library(
     name = "analysis",
     srcs = [
         "analysis.gala",
-        "brackets.gala",
         "dfa.gala",
         "lookahead.gala",
         "plan.gala",
@@ -15,6 +14,7 @@ gala_library(
     visibility = ["//visibility:public"],
     deps = [
         "//atn",
+        "//brackets",
         "@gala//collection_immutable",
         "@gala//collection_mutable",
         "@gala//concurrent",
@@ -25,7 +25,6 @@ gala_test(
     name = "analysis_test",
     srcs = [
         "analysis_test.gala",
-        "brackets_test.gala",
         "gala_grammar_test.gala",
     ],
     importpath = "github.com/martianoff/galop/analysis",
@@ -36,11 +35,11 @@ gala_test(
         "report.gala",
         "sets.gala",
         "dfa.gala",
-        "brackets.gala",
     ],
     pkg = "analysis",
     deps = [
         "//atn",
+        "//brackets",
         "//g4",
         "@gala//collection_immutable",
         "@gala//collection_mutable",

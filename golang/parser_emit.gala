@@ -8,6 +8,7 @@ import (
 
     "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
     "github.com/martianoff/galop/lexgen"
 )
 
@@ -22,7 +23,7 @@ struct env(
     plans Array[analysis.DecisionPlan],
     adaptive bool,
     // brackets are the families adaptive prediction reads as one symbol.
-    brackets analysis.Brackets = analysis.NoBrackets(),
+    brackets brackets.Brackets = brackets.NoBrackets(),
     flavor Flavor = ANTLRFlavor(),
     // tokenLabels says whether some rule labels a token (`op=('+'|'-')`).
     tokenLabels bool = false,

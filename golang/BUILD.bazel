@@ -17,6 +17,7 @@ gala_library(
     deps = [
         "//analysis",
         "//atn",
+        "//brackets",
         "//codegen",
         "//g4",
         "//leftrec",
@@ -48,6 +49,7 @@ gala_test(
     deps = [
         "//analysis",
         "//atn",
+        "//brackets",
         "//codegen",
         "//g4",
         "//leftrec",

@@ -1,12 +1,10 @@
 package analysis
 
 import (
-    "strings"
-    "unicode"
-
     . "martianoff/gala/collection_immutable"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
 )
 
 // Report renders the decision report for an analysis of a: a summary line,
@@ -43,7 +41,7 @@ func Report(a atn.ATN, an Analysis) string {
             ArrayOf(heading(a, p.Decision)).AppendAll(p.Conflicts.Map((c) => conflictLine(a.Vocab, c))).AppendAll(automatonLine(p.Lookahead))
         ))
     }
-    ArrayOf(summary).AppendAll(deepSection).AppendAll(adaptiveSection).AppendAll(bracketSection(a, an.Brackets))
+    ArrayOf(summary).AppendAll(deepSection).AppendAll(adaptiveSection).AppendAll(brackets.Section(a, an.Brackets))
         .MkString("\n") + "\n"
 }
 
@@ -77,28 +75,3 @@ func automatonLine(l Lookahead) Array[string] = l match {
         ArrayOf(s"  SLL automaton: ${states.Size()} states, ${states.Count(_.Final.IsDefined())} of them final")
     case _ => EmptyArray[string]()
 }
-
-// bracketSection lists the bracket families and the candidate pairs left
-// out: `  '(' … ')'` and `  '<' … '>': '>' appears without its opener in rule e`.
-func bracketSection(a atn.ATN, b Brackets) Array[string] {
-    if b.Skipped.IsDefined() {
-        return ArrayOf("", s"Bracket abstraction: skipped (${b.Skipped.GetOrElse("")})")
-    }
-    val used = b.Families match {
-        case Array() => ArrayOf("", "Bracket abstraction: none")
-        case _ => ArrayOf("", "Bracket abstraction (runtime prediction reads a group as one token):")
-            .AppendAll(b.Families.Map((f) => "  " + bracketShow(a, f)))
-    }
-    // Pairs of punctuation are listed with the reason; pairs with a keyword or
-    // a named token, of which grammars have many, are only counted.
-    val (punct, words) = b.Rejected.Partition((r) => punctuation(a, r.Opener) && punctuation(a, r.Closer))
-    val listed = punct.Map((r) => s"  ${bracketShow(a, BracketFamily(atn.SetOf(r.Opener), r.Closer))}: ${r.Reason}")
-    val counted = if (words.IsEmpty()) EmptyArray[string]() else ArrayOf(s"  and ${words.Size()} pairs with a keyword or named token")
-    val unused = if (b.Rejected.IsEmpty()) EmptyArray[string]() else ArrayOf("Not abstracted:").AppendAll(listed).AppendAll(counted)
-    used.AppendAll(unused)
-}
-
-// punctuation reports whether token t is a literal without letters or digits.
-func punctuation(a atn.ATN, t int) bool =
-    a.Vocab.Literals.GetOption(t).FlatMap((o) => o).Exists((lit) =>
-        lit != "" && !strings.ContainsFunc(lit, (r) => unicode.IsLetter(r) || unicode.IsDigit(r)))

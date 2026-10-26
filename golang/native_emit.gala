@@ -328,8 +328,12 @@ func newPARSER(ts *@X@Tokens) *PARSER {
 }
 
 // run parses with rule; repair says whether a failed SLL parse may be
-// repaired rather than rerun in LL mode (see llParse).
-func (p *PARSER) run(rule func(*PARSER) int32, repair bool) (*@X@Tree, int32, error) {GROUPON
+// repaired rather than rerun in LL mode (see llParse). The tokens must end
+// with EOF, as the lexer's do: the parse never reads past it.
+func (p *PARSER) run(rule func(*PARSER) int32, repair bool) (*@X@Tree, int32, error) {
+	if n := len(p.types); n == 0 || p.types[n-1] != @X@EOF {
+		return nil, -1, &@X@SyntaxError{Msg: "the tokens do not end with EOF"}
+	}GROUPON
 	root, err := p.attempt(rule)RETRY
 	if err != nil {
 		return nil, -1, err

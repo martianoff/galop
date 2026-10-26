@@ -4,6 +4,7 @@ import (
     . "martianoff/gala/collection_immutable"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
 )
 
 // The analysis decides, at generation time, how generated code picks an
@@ -78,7 +79,7 @@ struct Analysis(
     Follow Array[atn.IntervalSet],
     Nullable Array[bool],
     // Brackets are the bracket families runtime prediction may treat as one symbol.
-    Brackets Brackets,
+    Brackets brackets.Brackets,
 )
 
 // MaxK is the deepest static lookahead the analysis tries by default.

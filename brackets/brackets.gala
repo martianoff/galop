@@ -1,7 +1,9 @@
-package analysis
+package brackets
 
 import (
     "math/bits"
+    "strings"
+    "unicode"
 
     . "martianoff/gala/collection_immutable"
 
@@ -49,7 +51,7 @@ val maxBracketDepth = 16
 // maxFamilyOpeners bounds the openers whose subsets largestBalanced tries.
 val maxFamilyOpeners = 8
 
-// AnalyzeBrackets infers the bracket families of a and their opener sites.
+// Analyze infers the bracket families of a and their opener sites.
 // A candidate pair (o, c) is an opener o that every path from every
 // transition accepting o follows, within its rule, with c. The candidate
 // openers of one closer form a family, cut down to the largest set that keeps
@@ -57,7 +59,7 @@ val maxFamilyOpeners = 8
 // one with the outermost closer, and families that cannot be used together
 // are dropped. Every pair left out is reported with the reason.
 // a: a parser ATN.
-func AnalyzeBrackets(a atn.ATN) Brackets {
+func Analyze(a atn.ATN) Brackets {
     val g = newBracketGrammar(a)
     val pairs = g.candidatePairs()
     val closers = pairs.Map(_.V2).Distinct()
@@ -366,3 +368,29 @@ func bracketWalk(a atn.ATN, families Array[BracketFamily], start walkItem) Eithe
     b.walk(ListOf(start), EmptyHashSet[string](), EmptyHashSet[int]())
         .Map((closed) => ArrayFromSlice(closed.ToGoSlice()).Sorted())
 }
+
+// Section is the -report section on brackets: the bracket families and the
+// candidate pairs left out: `  '(' … ')'` and `  '<' … '>': '>' appears without its opener in rule e`.
+func Section(a atn.ATN, b Brackets) Array[string] {
+    if b.Skipped.IsDefined() {
+        return ArrayOf("", s"Bracket abstraction: skipped (${b.Skipped.GetOrElse("")})")
+    }
+    val used = b.Families match {
+        case Array() => ArrayOf("", "Bracket abstraction: none")
+        case _ => ArrayOf("", "Bracket abstraction (runtime prediction reads a group as one token):")
+            .AppendAll(b.Families.Map((f) => "  " + bracketShow(a, f)))
+    }
+    // Pairs of punctuation are listed with the reason; pairs with a keyword or
+    // a named token, of which grammars have many, are only counted.
+    val (punct, words) = b.Rejected.Partition((r) => punctuation(a, r.Opener) && punctuation(a, r.Closer))
+    val listed = punct.Map((r) => s"  ${bracketShow(a, BracketFamily(atn.SetOf(r.Opener), r.Closer))}: ${r.Reason}")
+    val counted = if (words.IsEmpty()) EmptyArray[string]() else ArrayOf(s"  and ${words.Size()} pairs with a keyword or named token")
+    val unused = if (b.Rejected.IsEmpty()) EmptyArray[string]() else ArrayOf("Not abstracted:").AppendAll(listed).AppendAll(counted)
+    used.AppendAll(unused)
+}
+
+// punctuation reports whether token t is a literal without letters or digits.
+func punctuation(a atn.ATN, t int) bool =
+    a.Vocab.Literals.GetOption(t).FlatMap((o) => o).Exists((lit) =>
+        lit != "" && !strings.ContainsFunc(lit, (r) => unicode.IsLetter(r) || unicode.IsDigit(r)))
+

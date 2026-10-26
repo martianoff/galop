@@ -5,6 +5,7 @@ import (
     "martianoff/gala/concurrent"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
 )
 
 // Analyze computes FIRST, FOLLOW and nullability per rule and a decision
@@ -13,7 +14,7 @@ import (
 // a: a parser ATN from atn.Compile.
 // maxK: the deepest static lookahead to try before a decision is left to adaptive prediction.
 // brackets: whether runtime prediction may read bracketed groups as one symbol.
-func Analyze(a atn.ATN, maxK int = MaxK, brackets bool = true) Analysis {
+func Analyze(a atn.ATN, maxK int = MaxK, withBrackets bool = true) Analysis {
     val sites = callSites(a)
     val starts = startRules(a, sites)
     val (first, nullable) = firstSets(a)
@@ -22,8 +23,8 @@ func Analyze(a atn.ATN, maxK int = MaxK, brackets bool = true) Analysis {
     val plans = concurrent.Traverse(a.Decisions, (d) => concurrent.Future(g.planDecision(d, maxK))).Get()
     // Brackets matter only to runtime prediction.
     val bracketing =
-        if (!brackets) NoBrackets("disabled by -Xno-brackets")
-        else if (plans.Exists((p) => NeedsRuntime(p.Lookahead))) AnalyzeBrackets(a)
-        else NoBrackets("no decision needs runtime prediction")
+        if (!withBrackets) brackets.NoBrackets("disabled by -Xno-brackets")
+        else if (plans.Exists((p) => NeedsRuntime(p.Lookahead))) brackets.Analyze(a)
+        else brackets.NoBrackets("no decision needs runtime prediction")
     Analysis(plans, first, follow, nullable, bracketing)
 }

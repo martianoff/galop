@@ -22,6 +22,7 @@ flowchart LR
 | `g4` | `.g4` reader: lexer, parser, model, formatter, semantic checks |
 | `atn` | Token numbering (ANTLR-compatible), the ATN, the parser rule IR |
 | `analysis` | FIRST/FOLLOW, static LL(k) per decision, adaptive decisions, conflict report |
+| `brackets` | Bracket pairs runtime prediction may read as one symbol (see [Bracket abstraction](#bracket-abstraction)) |
 | `lexgen` | Lexer ATN → DFA with ANTLR's lexer semantics |
 | `codegen` | The `Target` interface; `cmd/galop` lists the targets a binary ships |
 | `golang` | The Go target |
@@ -146,8 +147,8 @@ paired once per parse, by a stack over the token types (`PFXBracketMatch`);
 an opener without a well-nested closer, which only input outside the language
 has, is read as a plain token.
 
-The analysis (`analysis/brackets.gala`) infers the brackets from the grammar,
-with nothing configured:
+The `brackets` package infers the brackets from the grammar, with nothing
+configured:
 
 1. A candidate pair (o, c) is a token o that every path from every transition
    accepting o is followed by c, within the rule (tokens of called rules do not

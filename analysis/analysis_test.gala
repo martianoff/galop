@@ -6,6 +6,7 @@ import (
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
     "github.com/martianoff/galop/g4"
 )
 
@@ -348,4 +349,27 @@ e : '(' e ')' | X ;
     val r = show(a, planFor(a, an, "r", "r : e Y | e Z").Lookahead)
     val t2 = Contains(t1, r, "T__0 X:?1,2")
     Contains(t2, r, "X:{Y:1 Z:2 :?}")
+}
+
+// The bracket families of gala.g4, and somewhere to go after every closer.
+func TestGalaGrammarBrackets(t T) T {
+    val a = parserATN(galaGrammar)
+    val b = brackets.Analyze(a)
+    val families = b.Families.Map((f) => f.Openers.Values().Map((tok) => a.Vocab.Display(tok)).MkString(" ") + " " + a.Vocab.Display(f.Closer))
+        .Sorted().MkString("; ")
+    val t1 = Eq(t, families, "'(' NL_LPAREN ')'; '[' ']'; '{' '}'")
+    IsTrue(t1, b.Sites.NonEmpty() && b.Sites.ForAll(_.After.NonEmpty()))
+}
+
+func TestOpenerSitesJumpPastTheCloser(t T) T {
+    val a = parserATN(`grammar P;
+e : f '(' ID? ')' ID ;
+f : ID ;
+ID : [a-z]+ ;`)
+    val b = brackets.Analyze(a)
+    val (first, nullable) = firstSets(a)
+    val t1 = Eq(t, b.Sites.Size(), 1)
+    // From the state after ')', the only way on is ID.
+    val next = b.Sites.Head().After.Map((s) => tokens(a, lookFrom(a, s, first, nullable).Tokens))
+    Eq(t1, next, ArrayOf("ID"))
 }

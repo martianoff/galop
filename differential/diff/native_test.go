@@ -298,3 +298,18 @@ func BenchmarkParseNativeParallel(b *testing.B) {
 		parallel(fs, func(f corpus.File) { nativegala.Parse(f.Src) })
 	}
 }
+
+// TestNativeTokensWithoutEOF parses token slices a caller cut short of EOF:
+// each gives an error, never a panic, even inside a bracketed group.
+func TestNativeTokensWithoutEOF(t *testing.T) {
+	for _, src := range []string{"", "package main\n", "package main\nval x = f((a, b), [c]\n"} {
+		ts := nativegala.Tokens(src)
+		for cut := 0; cut < len(ts.Tokens); cut++ {
+			short := *ts
+			short.Tokens = ts.Tokens[:cut]
+			if _, err := nativegala.ParseSourceFile(&short); err == nil {
+				t.Errorf("%q cut to %d tokens: no error", src, cut)
+			}
+		}
+	}
+}

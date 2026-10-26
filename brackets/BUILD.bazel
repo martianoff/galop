@@ -1,0 +1,26 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "brackets",
+    srcs = ["brackets.gala"],
+    importpath = "github.com/martianoff/galop/brackets",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//atn",
+        "@gala//collection_immutable",
+    ],
+)
+
+gala_test(
+    name = "brackets_test",
+    srcs = ["brackets_test.gala"],
+    importpath = "github.com/martianoff/galop/brackets",
+    lib_srcs = ["brackets.gala"],
+    pkg = "brackets",
+    deps = [
+        "//atn",
+        "//g4",
+        "@gala//collection_immutable",
+        "@gala//go_builtins",
+    ],
+)
