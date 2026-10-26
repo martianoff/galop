@@ -181,9 +181,9 @@ and a wildcard root, as in ANTLR's `ATNConfigSet`; a state is final when one
 alternative is left. Construction gives up at the first SLL conflict
 (`hasSLLConflictTerminatingPrediction`), at contexts deeper than 64 frames and
 past 50 states, and the decision is predicted at runtime instead, over
-bracketed groups (next section). For `gala.g4` that is every adaptive decision, and the
-generated parser shrinks from 577 KB to 506 KB. The static lookahead tree stays
-in front: its unsettled leaves, and any token past the first that it does not
+bracketed groups (next section). For `gala.g4` that is every adaptive
+decision, and the generated parser shrinks from 577 KB to 506 KB. The static
+lookahead tree stays in front: its unsettled leaves, and any token past the first that it does not
 expect, go to runtime prediction, which finds a syntax error where ANTLR's SLL
 prediction finds it.
 
