@@ -135,6 +135,61 @@ the rule's end with the caller's stack). So a true ambiguity such as
 identifier, as ANTLR resolves it. A decision whose alternatives start with a
 predicate is always adaptive: ANTLR evaluates those predicates while predicting.
 
+The **conflict report** (`galop -report`) lists every decision that is not
+statically decided, with its rule, source text, the alternatives in conflict and an
+example lookahead. It is the grammar lint the roadmap describes.
+
+### Runtime prediction
+
+Static lookahead settles most decisions (86 of `gala.g4`'s 107). The rest are
+predicted while the parser runs, by ANTLR's own algorithm over tables compiled
+into the generated file, so every answer is ANTLR's. Four additions keep those
+answers and cut what they cost:
+
+```mermaid
+flowchart TD
+  d["A decision"] --> k{"Settled by the next<br/>three tokens?"}
+  k -- yes --> sw["switch on the tokens"]
+  k -- no --> a{"Its SLL automaton settles<br/>every input?"}
+  a -- yes --> au["precomputed automaton"]
+  a -- no --> p["SLL prediction at runtime,<br/>bracketed groups read as one symbol"]
+  p --> ok{"The first pass<br/>parses the input?"}
+  ok -- yes --> tree["ANTLR's tree"]
+  ok -- no --> r["Repair: replay, checking conflicts<br/>with cached full-context prediction"]
+  r --> res["ANTLR's tree, or ANTLR's error"]
+```
+
+| | What it does | Off when |
+|---|---|---|
+| [SLL automata](#sll-automata) | decide a decision without runtime prediction | always tried, and kept only when the automaton settles every input (none in `gala.g4`) |
+| [Bracket abstraction](#bracket-abstraction) | reads each bracketed group as one symbol, so prediction stops scanning operands | `-Xno-brackets`; the grammar has actions, predicates or left recursion, or no entry rule may be repaired (the grammar's `repair.Plan`: no bracket families are generated); an entry rule that may not be repaired; after a failed first pass |
+| [Repair](#repairing-a-failed-sll-parse) | settles a failed first pass with a few full-context predictions instead of ANTLR's whole-input LL rerun | the grammar has actions, predicates or left recursion, or the entry rule does not end with EOF or can be called again from inside itself: then the parser reruns in LL mode, as ANTLR does; also after 8 passes, or once its replays would cover more tokens than the input holds |
+| [Full-context cache](#full-context-cache) | caches full-context prediction per decision and call stack | never; it stops growing past 32,768 states or 2^20 contexts |
+
+The sections below take them in that order: what is decided ahead of time,
+how runtime prediction reads the input, what happens when its first pass fails,
+and why the result is ANTLR's.
+
+### SLL automata
+
+When static lookahead leaves part of a decision to adaptive prediction, the
+analysis tries to build the decision's SLL DFA ahead of time by subset
+construction (`Automaton` in `analysis/plan.gala`), and keeps it only if it
+settles every input on its own; the decision then needs no runtime prediction
+at all. States are sets of SLL configurations with graph-structured contexts
+and a wildcard root, as in ANTLR's `ATNConfigSet`; a state is final when one
+alternative is left. Construction gives up at the first SLL conflict
+(`hasSLLConflictTerminatingPrediction`), at contexts deeper than 64 frames and
+past 50 states, and the decision is predicted at runtime instead, over
+bracketed groups (next section). For `gala.g4` that is every adaptive
+decision, and the generated parser shrinks from 577 KB to 506 KB. The static
+lookahead tree stays in front: its unsettled leaves, and any token past the first that it does not
+expect, go to runtime prediction, which finds a syntax error where ANTLR's SLL
+prediction finds it.
+
+Decisions whose alternatives start with a predicate stay `Adaptive` (always
+full LL), because ANTLR evaluates those predicates while predicting.
+
 ### Bracket abstraction
 
 Most of the prediction work in a grammar like GALA's is scanning: deciding
@@ -187,55 +242,6 @@ On the GALA corpus the abstract DFA has about 1,000 states where the SLL DFA
 had 13,500 (30,000 on the held-out code of gala_team, gala_tui and
 gala-server, against about 1,100), so a fresh process builds a tenth of the
 cache.
-
-### Why the first pass is exact
-
-On input it parses, ANTLR's LL prediction picks the smallest alternative that
-can parse the rest of the input: LL stops only when one alternative is left or
-when every group of configurations with the same state and stack has the same
-smallest alternative, and in both cases every smaller alternative is dead.
-Hence: **a first pass that always takes the smallest alternative not yet ruled
-out, and parses the whole input, has built the LL tree.** It succeeded, so every
-choice could parse the input, and every smaller choice had been ruled out.
-
-Any sound over-approximation may rule alternatives out, which is what lets the
-predictor stop early. At an abstract conflict (`onConflict`) the first pass
-takes the smallest alternative left; if that was wrong the parse fails. The
-first pass then runs again over tokens alone, and the repair of a failed parse
-(or the LL pass) follows exactly as it would without brackets, so it settles
-the parse with full-context prediction and a parse that fails reports the
-error prediction over tokens finds (see [Performance](#performance) for how
-often that happens). A unique abstract answer is exact in every pass.
-
-The argument needs a first pass that can only succeed on the whole input, so a
-parse reads bracketed groups only where it may be repaired: its entry rule ends
-with EOF (a rule that can stop early could take a smaller alternative that
-ends it sooner), and the grammar has no predicates, no left recursion and no
-actions run while parsing (an extra pass would run an action once more than
-ANTLR does). Other entries predict over tokens, as without brackets, and pair
-no brackets. A grammar that is never repaired, or none of whose entry rules
-is, gets no bracket families at all: its `repair.Plan` decides that once, and
-`-report` and code generation both follow it.
-
-### SLL automata
-
-When static lookahead leaves part of a decision to adaptive prediction, the
-analysis tries to build the decision's SLL DFA ahead of time by subset
-construction (`Automaton` in `analysis/plan.gala`), and keeps it only if it
-settles every input on its own; the decision then needs no runtime prediction
-at all. States are sets of SLL configurations with graph-structured contexts
-and a wildcard root, as in ANTLR's `ATNConfigSet`; a state is final when one
-alternative is left. Construction gives up at the first SLL conflict
-(`hasSLLConflictTerminatingPrediction`), at contexts deeper than 64 frames and
-past 50 states, and the decision is predicted at runtime over the abstract
-stream instead. For `gala.g4` that is every adaptive decision, and the
-generated parser shrinks from 577 KB to 506 KB. The static lookahead tree stays
-in front: its unsettled leaves, and any token past the first that it does not
-expect, go to runtime prediction, which finds a syntax error where ANTLR's SLL
-prediction finds it.
-
-Decisions whose alternatives start with a predicate stay `Adaptive` (always
-full LL), because ANTLR evaluates those predicates while predicting.
 
 ### Repairing a failed SLL parse
 
@@ -291,10 +297,11 @@ parses drop configurations that end early). An entry rule that some rule it
 calls can call again also reruns: there a full-context merge can drop the
 empty context LL prediction ends with.
 
-**Full-context cache.** For a decision and a call stack, full-context
-prediction depends only on the tokens ahead, so the predictor caches it like
-the SLL DFA, as a DFA per (decision, stack) with its contexts in one pool that
-is never reset. Finding a cached start state takes a read lock and walking
+### Full-context cache
+
+For a decision and a call stack, full-context prediction depends only on the
+tokens ahead, so the predictor caches it like the SLL DFA, as a DFA per
+(decision, stack) with its contexts in one pool that is never reset. Finding a cached start state takes a read lock and walking
 cached edges no lock; new states are built under the write lock. Past 32,768
 states or 2^20 contexts the cache stops growing (a flag read without a lock)
 and prediction it cannot answer runs uncached: starting over instead thrashes
@@ -302,9 +309,34 @@ once the predictions in use outgrow the cache, and building cached states
 costs more than predicting uncached. It speeds up the conflicts the repair
 checks, and the whole-input rerun where that still runs.
 
-The **conflict report** (`galop -report`) lists every decision that is not
-statically decided, with its rule, source text, the alternatives in conflict and an
-example lookahead. It is the grammar lint the roadmap describes.
+### Why the first pass is exact
+
+Reading groups rests on the property the repair uses: on input it parses,
+ANTLR's LL prediction picks the smallest alternative that can parse the rest of
+the input (LL stops only when one alternative is left or when every group of
+configurations with the same state and stack has the same smallest
+alternative, and in both cases every smaller alternative is dead). Hence: **a first pass that always takes the smallest alternative not yet ruled
+out, and parses the whole input, has built the LL tree.** It succeeded, so every
+choice could parse the input, and every smaller choice had been ruled out.
+
+Any sound over-approximation may rule alternatives out, which is what lets the
+predictor stop early. At an abstract conflict (`onConflict`) the first pass
+takes the smallest alternative left; if that was wrong the parse fails. The
+first pass then runs again over tokens alone, and the repair of a failed parse
+(or the LL pass) follows exactly as it would without brackets, so it settles
+the parse with full-context prediction and a parse that fails reports the
+error prediction over tokens finds (see [Performance](#performance) for how
+often that happens). A unique abstract answer is exact in every pass.
+
+The argument needs a first pass that can only succeed on the whole input, so a
+parse reads bracketed groups only where it may be repaired: its entry rule ends
+with EOF (a rule that can stop early could take a smaller alternative that
+ends it sooner), and the grammar has no predicates, no left recursion and no
+actions run while parsing (an extra pass would run an action once more than
+ANTLR does). Other entries predict over tokens, as without brackets, and pair
+no brackets. A grammar that is never repaired, or none of whose entry rules
+is, gets no bracket families at all: its `repair.Plan` decides that once, and
+`-report` and code generation both follow it.
 
 ## Lexer (`lexgen`)
 
@@ -558,10 +590,10 @@ GALA corpus (723 files, 1.8 MB):
 
 | | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` | `native`, `-Xno-brackets` |
 |---|---:|---:|---:|---:|
-| Warm, 1 goroutine | 812 ms | 245 ms | 63 ms | 66 ms |
-| Warm, 32 goroutines | 450 ms | 49 ms | 9.9 ms | 10.0 ms |
-| Fresh process, 1 goroutine | 1.49 s | 192 ms | 79 ms | 234 ms |
-| Fresh process, 32 goroutines | 781 ms | 72 ms | 44 ms | 231 ms |
+| Warm, 1 goroutine | 797 ms | 242 ms | 64 ms | 67 ms |
+| Warm, 32 goroutines | 436 ms | 52 ms | 10.6 ms | 10.3 ms |
+| Fresh process, 1 goroutine | 1.47 s | 190 ms | 75 ms | 224 ms |
+| Fresh process, 32 goroutines | 766 ms | 72 ms | 44 ms | 215 ms |
 | Allocations per warm pass | 6.84 M, 526 MB | 3.75 M, 298 MB | 19 k, 73 MB | 18 k, 71 MB |
 
 Held-out code (gala_team, gala_tui and gala-server; 247 files, 3.6 MB, not
@@ -569,10 +601,10 @@ used to tune galop):
 
 | | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` | `native`, `-Xno-brackets` |
 |---|---:|---:|---:|---:|
-| Warm, 1 goroutine | 5.22 s | 367 ms | 98 ms | 105 ms |
-| Warm, 32 goroutines | 2.93 s | 93 ms | 20 ms | 22 ms |
-| Fresh process, 1 goroutine | 6.77 s | 362 ms | 186 ms | 486 ms |
-| Fresh process, 32 goroutines | 2.86 s | 197 ms | 146 ms | 512 ms |
+| Warm, 1 goroutine | 5.18 s | 363 ms | 96 ms | 103 ms |
+| Warm, 32 goroutines | 2.89 s | 95 ms | 20.5 ms | 20.6 ms |
+| Fresh process, 1 goroutine | 6.58 s | 357 ms | 181 ms | 479 ms |
+| Fresh process, 32 goroutines | 2.82 s | 194 ms | 140 ms | 496 ms |
 
 Where the `antlr` flavor's warm time goes (profiled on one goroutine): about
 half builds ANTLR's context objects, their child slices and terminal nodes, and
