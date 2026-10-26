@@ -101,14 +101,14 @@ func Lenient(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
 }
 
 // Parsers returns every parser the harness tools can select, by name: ANTLR
-// under each strategy, plus the companions registered in antlrgala.
+// under each strategy, plus the parsers registered in antlrgala.SameTypes.
 func Parsers() map[string]Parser {
 	ps := map[string]Parser{
 		"antlr-sll":     ANTLRParser(SLL),
 		"antlr-ll":      ANTLRParser(LL),
 		"antlr-lenient": Lenient,
 	}
-	for name, p := range antlrgala.Companions {
+	for name, p := range antlrgala.SameTypes {
 		ps[name] = p
 	}
 	return ps

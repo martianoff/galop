@@ -61,13 +61,13 @@ func TestParseArgs(t T) T = RunCases[string, string](t,
     Case[string, string](Name = "files only", Input = "A.g4 B.g4 A.g4", Expected = s"generate files=A.g4,B.g4 $defaults"),
     Case[string, string](
         Name = "every ANTLR option",
-        Input = "-o out/ -lib lib -package p -no-listener -visitor -Dlanguage=Go -Dflavor=companion -Xexact-output-dir -message-format gnu -Werror -atn T.g4",
-        Expected = "generate files=T.g4 o=out lib=lib pkg=p listener=false visitor=true D=language=Go,flavor=companion exact=true format=gnu werror=true atn=true",
+        Input = "-o out/ -lib lib -package p -no-listener -visitor -Dlanguage=Go -Dflavor=antlr -Xexact-output-dir -message-format gnu -Werror -atn T.g4",
+        Expected = "generate files=T.g4 o=out lib=lib pkg=p listener=false visitor=true D=language=Go,flavor=antlr exact=true format=gnu werror=true atn=true",
     ),
     Case[string, string](
         Name = "the Go target's own options",
-        Input = "-Dflavor=companion -DlexerDepth=4 T.g4",
-        Expected = "generate files=T.g4 o=- lib=- pkg=- listener=true visitor=false D=flavor=companion,lexerDepth=4 exact=false format=antlr werror=false atn=false",
+        Input = "-Dflavor=antlr -DlexerDepth=4 T.g4",
+        Expected = "generate files=T.g4 o=- lib=- pkg=- listener=true visitor=false D=flavor=antlr,lexerDepth=4 exact=false format=antlr werror=false atn=false",
     ),
     Case[string, string](
         Name = "a lone separator stays the root",
@@ -181,6 +181,7 @@ val fakeGo = codegen.Target(
         return Right[Array[string], Array[codegen.OutputFile]](ArrayOf(codegen.OutputFile(name + "_galop_lexer.go", content)))
     },
     FileNames = (g, c, opts) => ArrayOf(strings.ToLower(g.Name) + "_galop_lexer.go"),
+    Flavors = () => EmptyArray[string](),
 )
 
 // failing is a target that rejects every grammar, though it can name its files.
@@ -188,6 +189,7 @@ val failing = codegen.Target(
     Language = () => "Go",
     Generate = (in, opts) => Left[Array[string], Array[codegen.OutputFile]](ArrayOf(s"cannot handle ${in.Grammar.Name}")),
     FileNames = (g, c, opts) => ArrayOf(strings.ToLower(g.Name) + "_galop_lexer.go"),
+    Flavors = () => EmptyArray[string](),
 )
 
 // lexerGrammar quotes its option value, which targets see unquoted.
@@ -265,6 +267,41 @@ func TestUnknownLanguage(t T) T {
 func TestNoTargets(t T) T {
     val m = newMemory(("Lex.g4", lexerGrammar))
     Eq(t, run(m, EmptyArray[codegen.Target](), "Lex.g4").Stderr, "error(31):  galop cannot generate Go code as of version 9.9.9\n")
+}
+
+// flavored is fakeGo with the Go target's flavors, so the tool checks the
+// `flavor` option against them.
+val flavored = codegen.Target(
+    Language = () => "Go",
+    Generate = fakeGo.Generate,
+    FileNames = fakeGo.FileNames,
+    Flavors = () => ArrayOf("native", "antlr"),
+)
+
+func TestKnownFlavor(t T) T {
+    val m = newMemory(("Lex.g4", "lexer grammar Lex;\nID : [a-z]+ ;\n"))
+    val out = run(m, ArrayOf(flavored), "-Dflavor=antlr Lex.g4")
+    val t1 = Eq(t, out, Outcome("", "", 0))
+    Eq(t1, m.writes, ArrayOf("lex_galop_lexer.go"))
+}
+
+func TestUnknownFlavorOnCommandLine(t T) T {
+    val m = newMemory(("Lex.g4", "lexer grammar Lex;\nID : [a-z]+ ;\n"))
+    val out = run(m, ArrayOf(flavored), "-Dflavor=companion Lex.g4")
+    val t1 = Eq(t, out, Outcome("", "error(508):  unknown Go flavor companion (supported: native, antlr)\n", 1))
+    Eq(t1, m.writes, EmptyArray[string]())
+}
+
+func TestUnknownFlavorInGrammar(t T) T {
+    val m = newMemory(("Lex.g4", lexerGrammar))
+    val out = run(m, ArrayOf(flavored), "Lex.g4")
+    Eq(t, out, Outcome("", "error(508): Lex.g4:2:10: unknown Go flavor fromGrammar (supported: native, antlr)\n", 1))
+}
+
+func TestUnknownFlavorWithDepend(t T) T {
+    val m = newMemory(("Lex.g4", "lexer grammar Lex;\nID : [a-z]+ ;\n"))
+    val out = run(m, ArrayOf(flavored), "-depend -Dflavor=nope Lex.g4")
+    Eq(t, out, Outcome("", "error(508):  unknown Go flavor nope (supported: native, antlr)\n", 1))
 }
 
 func TestTargetErrors(t T) T {

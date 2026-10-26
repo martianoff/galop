@@ -16,11 +16,12 @@ at build time, never checked in. `go.mod` here exists for Bazel's `go_deps`.
 
 | Path | What |
 |------|------|
-| `antlrgala/` | ANTLR's generated parser (`-package antlrgala`), plus `Companions`, the hook for parsers that build the same tree types |
+| `antlrgala/` | ANTLR's generated parser (`-package antlrgala`), galop's `antlr` flavor next to it, and `SameTypes`, the hook for parsers that build the same tree types |
+| `nativegala/` | galop's `native` flavor for `gala.g4` (`-package nativegala`, no ANTLR dependency) and GALA's line-break rule ported to its token list |
 | `gala/` | `Tokens`, `ParseANTLR`, the `Parser` type and the parser registry |
 | `corpus/` | Loading input: the Bazel corpus manifest, a directory, or files |
-| `diff/` | Parallel tree comparison; the corpus tests and `testing.B` benchmarks |
-| `lexdiff/` | galop's generated lexer against ANTLR's, token by token over the corpus; lexer benchmarks |
+| `diff/` | Parallel tree comparison; the corpus tests (both flavors) and `testing.B` benchmarks |
+| `lexdiff/` | galop's generated lexers (both flavors) against ANTLR's, token by token over the corpus; lexer benchmarks |
 | `cmd/treedump` | Print each file's tree (ANTLR's `ToStringTree`) |
 | `cmd/difftest` | Compare two parsers over a corpus; exit 1 on any mismatch |
 | `cmd/bench` | Lexer and parser timings, warm and in a fresh process |
@@ -62,7 +63,17 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
 - galop's generated lexer (`antlrgala.NewgalaGalopLexer`, built from `gala.g4` by
   the galop CLI) gives ANTLR's tokens, errors and stream positions on every corpus
   file, on mutated copies (truncated, with stray characters) and on nested
-  interpolations past its static DFA depth.
+  interpolations past its static DFA depth. The native flavor's lexer
+  (`nativegala.GalaLex`) gives the same tokens, every channel, and errors on the
+  same inputs.
+- galop's antlr flavor builds ANTLR's tree on every file ANTLR accepts and
+  rejects the one it rejects (`TestGalopMatchesANTLR`).
+- The native flavor, with GALA's line-break rule on its token list, matches ANTLR
+  on every file (`TestNativeMatchesANTLR`): every token, on and off the default
+  channel; node for node the rule, the labeled alternative, the first and last
+  token and the children; and the typed accessors of a few rules. On prefixes of
+  the corpus files it agrees with ANTLR on whether the input parses and on the
+  tree when it does (`TestNativeMutations`).
 - `antlr-lenient` and `antlr-ll` build the same tree for all 723 files, error-recovered
   trees included, so either one is the reference.
 - Where SLL alone builds a tree without a syntax error, it is LL's tree. SLL rejects 15
@@ -80,7 +91,7 @@ type Parser func(stream antlr.TokenStream) (antlr.ParserRuleContext, error)
 
 It gets the token stream from `gala.Tokens` and returns the `sourceFile` tree, plus an
 error when there are syntax errors. Trees are compared by ANTLR's `ToStringTree`, so a
-parser may build its own tree types, but galop's companion flavor builds ANTLR's
+parser may build its own tree types, but galop's antlr flavor builds ANTLR's
 generated context types. It lives in the `antlrgala` package next to ANTLR's output.
 To add one:
 
@@ -88,7 +99,7 @@ To add one:
 2. Register it from that file:
 
    ```go
-   func init() { Companions["galop"] = ParseGalop }
+   func init() { SameTypes["galop"] = ParseGalop }
    ```
 
 Then `bazel run //differential/cmd/difftest -- -a galop -b antlr-lenient` compares it with

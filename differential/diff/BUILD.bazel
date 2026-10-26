@@ -21,13 +21,16 @@ go_test(
     srcs = [
         "corpus_test.go",
         "diff_test.go",
+        "native_test.go",
     ],
     args = ["-manifest=$(rlocationpath //differential:corpus)"],
     data = ["//differential:corpus"],
     embed = [":diff"],
     deps = [
+        "//differential/antlrgala",
         "//differential/corpus",
         "//differential/gala",
+        "//differential/nativegala",
         "@com_github_antlr4_go_antlr_v4//:antlr",
     ],
 )

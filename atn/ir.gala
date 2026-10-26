@@ -15,8 +15,10 @@ struct LabelRef(Name string, Append bool)
 sealed type Step {
     // MatchToken matches one token type (TokenEOF for EOF).
     case MatchToken(Token int, Label Option[LabelRef])
-    // MatchSet matches any token type in Set: `('+' | '-')`, `~X`, `.`.
-    case MatchSet(Set IntervalSet, Label Option[LabelRef])
+    // MatchSet matches any token type in Set: `('+' | '-')`, `~X`, `.`. Listed
+    // says the set lists its members as alternatives (the first form), as
+    // ANTLR's getters for them need to know.
+    case MatchSet(Set IntervalSet, Label Option[LabelRef], Listed bool)
     // CallRule invokes rule Rule; Follow is the ATN state matching resumes at,
     // which a parser pushes as its return state for context-aware prediction.
     case CallRule(Rule int, Follow int, Label Option[LabelRef])

@@ -49,6 +49,9 @@ type Target interface {
     // FileNames lists the files Generate would write for grammar g compiled to
     // c, without analyzing or generating anything: `-depend`, as in ANTLR.
     FileNames(g g4.Grammar, c atn.Compiled, opts Options) Array[string]
+    // Flavors are the values the target accepts for the `flavor` option, the
+    // default first; empty when it has no flavors.
+    Flavors() Array[string]
 }
 
 // Offsets lays groups of the given sizes end to end in one flat table: the

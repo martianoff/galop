@@ -37,15 +37,18 @@ func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], A
     case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
 }
 
+// antlrDefines selects the antlr flavor; tests without it get the default, native.
+val antlrDefines = ArrayOf(g4.OptionEntry("flavor", "antlr"))
+
 // parserOf is the content of the generated parser file.
 func parserOf(result Either[Array[string], Array[codegen.OutputFile]]) string = result match {
-    case Right(files) => files.Find((f) => strings.HasSuffix(f.Name, "_galop_parser.go")).Map(_.Content).GetOrElse("")
+    case Right(files) => files.Find((f) => strings.HasSuffix(f.Name, "_parser.go")).Map(_.Content).GetOrElse("")
     case Left(errs) => go_builtins.Panic(s"generate: ${errs.MkString("; ")}")
 }
 
-func parserFile(t T) string = parserOf(generate(exprGrammar, EmptyArray[g4.OptionEntry]()))
+func parserFile(t T) string = parserOf(generate(exprGrammar, antlrDefines))
 
-func TestCompanionFileNameAndPackage(t T) T = generate(exprGrammar, EmptyArray[g4.OptionEntry]()) match {
+func TestANTLRFlavorFileNamesAndPackage(t T) T = generate(exprGrammar, antlrDefines) match {
     case Right(files) => {
         val t1 = Eq(t, files.Map(_.Name), ArrayOf("expr_galop_parser.go", "expr_galop_lexer.go"))
         IsTrue(t1, strings.Contains(files.Head().Content, "\npackage expr\n"))
@@ -53,7 +56,7 @@ func TestCompanionFileNameAndPackage(t T) T = generate(exprGrammar, EmptyArray[g
     case Left(errs) => t.Error(errs.MkString("; "))
 }
 
-func TestCompanionUsesANTLRNames(t T) T {
+func TestANTLRFlavorUsesANTLRNames(t T) T {
     val code = parserFile(t)
     val expected = ArrayOf(
         // ANTLR's context constructors, labeled alternatives and token constants.
@@ -86,7 +89,7 @@ s : a | b ;
 a : X* Y ;
 b : X* Z ;
 X : 'x' ; Y : 'y' ; Z : 'z' ;
-`, EmptyArray[g4.OptionEntry]()))
+`, antlrDefines))
     val t1 = IsFalse(t, strings.Contains(code, "adaptivePredict"))
     IsTrue(t1, strings.Contains(code, "goto s0"))
 }
@@ -99,7 +102,7 @@ s : a | b ;
 a : '(' a ')' | X ;
 b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;
-`, EmptyArray[g4.OptionEntry]()))
+`, antlrDefines))
     val t1 = IsTrue(t, strings.Contains(code, "p.adaptivePredict("))
     val t2 = IsTrue(t1, strings.Contains(code, "var AGalopTransStart = []int32{"))
     IsTrue(t2, strings.Contains(code, "p.stack = append(p.stack, "))
@@ -107,7 +110,7 @@ X : 'x' ; Y : 'y' ;
 
 func TestUnknownFlavor(t T) T =
     generate(exprGrammar, ArrayOf(g4.OptionEntry("flavor", "nope"))) match {
-        case Left(errs) => Eq(t, errs, ArrayOf("Go target: unknown flavor 'nope' (supported: companion)"))
+        case Left(errs) => Eq(t, errs, ArrayOf("Go target: unknown flavor 'nope' (supported: native, antlr)"))
         case Right(_) => t.Error("expected an error")
     }
 
@@ -128,7 +131,7 @@ func TestSingleLabeledAlternative(t T) T {
     val code = parserOf(generate(`grammar S;
 r : a=ID # Only ;
 ID : [a-z]+ ;
-`, EmptyArray[g4.OptionEntry]()))
+`, antlrDefines))
     val t1 = IsTrue(t, strings.Contains(code, "localctx = NewOnlyContext(nil, localctx)"))
     IsTrue(t1, strings.Contains(code, "localctx.(*OnlyContext).a = tok"))
 }
@@ -136,8 +139,8 @@ ID : [a-z]+ ;
 func TestParserAndLexerGrammarNames(t T) T {
     // ANTLR appends `Parser` to the recognizer name of a combined grammar
     // only; galop's own types drop the grammar's `Parser`/`Lexer` suffix.
-    val parser = generate("parser grammar ExprParser;\nr : ID ;\n", EmptyArray[g4.OptionEntry]())
-    val lexer = generate("lexer grammar ExprLexer;\nID : [a-z]+ ;\n", EmptyArray[g4.OptionEntry]())
+    val parser = generate("parser grammar ExprParser;\nr : ID ;\n", antlrDefines)
+    val lexer = generate("lexer grammar ExprLexer;\nID : [a-z]+ ;\n", antlrDefines)
     (parser, lexer) match {
         case (Right(pfiles), Right(lfiles)) => {
             val code = pfiles.Head().Content
@@ -155,11 +158,128 @@ func TestParserAndLexerGrammarNames(t T) T {
 func TestFileNamesMatchGenerate(t T) T = g4.Parse(exprGrammar) match {
     case Right(g) => atn.Compile(g) match {
         case Right(c) => {
-            val names = Target("test").FileNames(g, c, codegen.Options())
-            val generated = generate(exprGrammar, EmptyArray[g4.OptionEntry]())
-            Eq(t, Right[Array[string], Array[string]](names), generated.Map((files) => files.Map(_.Name)))
+            val check = (acc T, defines Array[g4.OptionEntry]) => Eq(acc,
+                Right[Array[string], Array[string]](Target("test").FileNames(g, c, codegen.Options(Defines = defines))),
+                generate(exprGrammar, defines).Map((files) => files.Map(_.Name)),
+            )
+            check(check(t, EmptyArray[g4.OptionEntry]()), antlrDefines)
         }
         case Left(errs) => t.Error(errs.MkString("; "))
     }
     case Left(d) => t.Error(d.String())
+}
+
+// nativeFiles generates src in the default flavor, native, keyed by file name.
+func nativeFiles(src string) HashMap[string, string] = generate(src, EmptyArray[g4.OptionEntry]()) match {
+    case Right(files) => files.FoldLeft(EmptyHashMap[string, string](), (m, f) => m.Put(f.Name, f.Content))
+    case Left(errs) => go_builtins.Panic(s"generate: ${errs.MkString("; ")}")
+}
+
+func TestNativeIsTheDefault(t T) T {
+    val files = nativeFiles(exprGrammar)
+    val t1 = Eq(t, files.Keys().Sorted(), ArrayOf("expr_lexer.go", "expr_parser.go"))
+    val parser = files.Get("expr_parser.go").GetOrElse("")
+    val lexer = files.Get("expr_lexer.go").GetOrElse("")
+    val t2 = IsFalse(t1, strings.Contains(parser, "antlr4-go"))
+    val t3 = IsFalse(t2, strings.Contains(lexer, "antlr4-go"))
+    val t4 = IsTrue(t3, strings.Contains(parser, "\npackage expr\n"))
+    IsTrue(t4, strings.Contains(lexer, "func ExprLex(src string) *ExprTokens"))
+}
+
+func TestNativeTokenTypesAndRules(t T) T {
+    val files = nativeFiles(exprGrammar)
+    val lexer = files.Get("expr_lexer.go").GetOrElse("")
+    val parser = files.Get("expr_parser.go").GetOrElse("")
+    val expected = ArrayOf(
+        // Token types, numbered as ANTLR numbers them; literals are commented.
+        // The const blocks are laid out as gofmt lays them out.
+        Tuple(lexer, "\tExprEOF  = -1\n"),
+        Tuple(lexer, "\tExprT__0 = 1 // ';'\n"),
+        Tuple(lexer, "\tExprID   = 7\n"),
+        Tuple(lexer, "\tExprHiddenChannel  = 1\n"),
+        // Rule indexes and the parse entry points.
+        Tuple(parser, "\tExprRULE_prog = 0\n"),
+        Tuple(parser, "func ParseProg(ts *ExprTokens) (ProgNode, error)"),
+        Tuple(parser, "p.match(ExprID)"),
+    )
+    expected.FoldLeft(t, (acc, e) => IsTrue(acc, strings.Contains(e.V1, e.V2)))
+}
+
+func TestNativeAccessors(t T) T {
+    val parser = nativeFiles(exprGrammar).Get("expr_parser.go").GetOrElse("")
+    val expected = ArrayOf(
+        // One stat or more: ANTLR's list getters.
+        "func (n ProgNode) AllStat() []StatNode",
+        "func (n ProgNode) Stat(i int) StatNode",
+        "func (n ProgNode) EOF() ExprTerminal",
+        // Labeled alternatives get their own handles and getters.
+        "func (n StatNode) AsAssign() (AssignNode, bool)",
+        "func (n AssignNode) ID() ExprTerminal",
+        "func (n AssignNode) Expr() ExprNode",
+        // term* repeats: list getters; the set label op is a token label.
+        "func (n ExprNode) AllTerm() []TermNode",
+        "func (n ExprNode) GetOp() ExprTerminal",
+        "p.labelToken(1, p.matchIf(",
+    )
+    val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(parser, s)))
+    // A literal-only token ('(') has no getter, as in ANTLR.
+    IsFalse(t1, strings.Contains(parser, ") T__"))
+}
+
+func TestNativeRuleLabels(t T) T {
+    val parser = nativeFiles(`grammar L;
+r : 'if' cond=e ('else' alts+=e)* ;
+e : X ;
+X : 'x' ;
+WS : ' ' -> skip ;
+`).Get("l_parser.go").GetOrElse("")
+    val t1 = IsTrue(t, strings.Contains(parser, "func (n RNode) GetCond() ENode"))
+    val t2 = IsTrue(t1, strings.Contains(parser, "func (n RNode) GetAlts() []ENode"))
+    IsTrue(t2, strings.Contains(parser, "p.tree.Nodes[child].Label = 2"))
+}
+
+func TestNativeParserGrammarCarriesTokens(t T) T {
+    // Without lexer rules there is no lexer file, so the parser declares the
+    // token runtime itself.
+    val files = nativeFiles("parser grammar ExprParser;\nr : ID ;\n")
+    val t1 = Eq(t, files.Keys().Sorted(), ArrayOf("expr_parser.go"))
+    IsTrue(t1, strings.Contains(files.Get("expr_parser.go").GetOrElse(""), "type ExprTokens struct"))
+}
+
+func TestNativeAccessorNamesAvoidHandleMethods(t T) T {
+    // A rule named `token` would hide the handles' own Token method.
+    val parser = nativeFiles("grammar N;\nr : token ;\ntoken : X ;\nX : 'x' ;\n").Get("n_parser.go").GetOrElse("")
+    IsTrue(t, strings.Contains(parser, "func (n RNode) Token_() TokenNode"))
+}
+
+func TestNativeTokenLabelHelpersAreFilled(t T) T {
+    // The label helpers go in through a placeholder; theirs must be filled too.
+    val parser = nativeFiles(exprGrammar).Get("expr_parser.go").GetOrElse("")
+    val t1 = IsTrue(t, strings.Contains(parser, "func (p *ExprGalopParser) labelToken(label int32, tok int32)"))
+    val t2 = IsFalse(t1, strings.Contains(parser, "@X@"))
+    IsFalse(t2, strings.Contains(parser, "*PARSER)"))
+}
+
+func TestNativeWildcardHasNoGetters(t T) T {
+    // As in ANTLR, `.` and `~X` add no token getters; a listed set does.
+    val parser = nativeFiles(`grammar W;
+r : ID .*? ';' EOF ;
+s : ~ID (INT | ID) ;
+ID : [a-z]+ ;
+INT : [0-9]+ ;
+SEMI : ';' ;
+WS : [ ]+ -> skip ;
+`).Get("w_parser.go").GetOrElse("")
+    val t1 = IsTrue(t, strings.Contains(parser, "func (n RNode) ID() WTerminal"))
+    val t2 = IsFalse(t1, strings.Contains(parser, "func (n RNode) AllID()"))
+    val t3 = IsFalse(t2, strings.Contains(parser, "func (n RNode) INT()"))
+    val t4 = IsTrue(t3, strings.Contains(parser, "func (n SNode) INT() WTerminal"))
+    IsFalse(t4, strings.Contains(parser, "func (n SNode) WS()"))
+}
+
+func TestNativeTokenNamedLikeTheRuntime(t T) T {
+    // A token called Tokens would clash with the runtime's MTokens type.
+    val files = nativeFiles("grammar M;\nr : Tokens ;\nTokens : 't' ;\n")
+    val t1 = IsTrue(t, strings.Contains(files.Get("m_lexer.go").GetOrElse(""), "\tMTokens_ = 1 // 't'\n"))
+    IsTrue(t1, strings.Contains(files.Get("m_parser.go").GetOrElse(""), "p.match(MTokens_)"))
 }

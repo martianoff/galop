@@ -4,6 +4,7 @@ gala_library(
     name = "golang",
     srcs = [
         "names.gala",
+        "native_emit.gala",
         "parser_emit.gala",
         "runtime_go.gala",
         "tables.gala",
@@ -29,6 +30,7 @@ gala_test(
     importpath = "github.com/martianoff/galop/golang",
     lib_srcs = [
         "names.gala",
+        "native_emit.gala",
         "parser_emit.gala",
         "runtime_go.gala",
         "tables.gala",

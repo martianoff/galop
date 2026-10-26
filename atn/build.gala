@@ -239,17 +239,17 @@ func (b Ptr[builder]) compileElement(rule int, e g4.Element, label Option[LabelR
     case g4.RuleRef(name) => b.ruleCall(rule, name, label)
     case g4.TokenRef(name) if b.lexer => b.ruleCall(rule, name, label)
     case g4.TokenRef(name) => b.vocab.TypeOf(name) match {
-        case Some(t) => b.matchSet(rule, SetOf(t), label)
+        case Some(t) => b.matchSet(rule, SetOf(t), label, true)
         // BuildVocabulary defines every referenced token, so this is a bug.
         case None() => b.empty(rule, diag.InternalError.New(s"token $name has no token type"))
     }
     case g4.Literal(v) if b.lexer => b.chars(rule, v)
     case g4.Literal(v) => b.vocab.LiteralType(v) match {
-        case Some(t) => b.matchSet(rule, SetOf(t), label)
+        case Some(t) => b.matchSet(rule, SetOf(t), label, true)
         case None() => b.empty(rule, diag.ImplicitStringDefinition.New(s"'$v'"))
     }
     case g4.Block(alts) => b.setOf(e) match {
-        case Some(set) => b.matchSet(rule, set, label)
+        case Some(set) => b.matchSet(rule, set, label, true)
         case None() if label.IsDefined() => b.empty(rule, diag.LabelBlockNotASet.New(label.Get().Name))
         case None() => b.block(rule, alts)
     }
@@ -257,12 +257,12 @@ func (b Ptr[builder]) compileElement(rule int, e g4.Element, label Option[LabelR
     case g4.Action(body) => b.passThrough(rule, Action(-1, rule, body), RunAction(body))
     case g4.Predicate(body) => b.passThrough(rule, Predicate(-1, rule, body), CheckPredicate(body))
     case g4.CharSet(body) if b.lexer => DecodeCharSet(body) match {
-        case Right(set) => b.matchSet(rule, set, label)
+        case Right(set) => b.matchSet(rule, set, label, false)
         case Left(d) => b.empty(rule, d)
     }
     case g4.Range(from, to) if !b.lexer => b.empty(rule, diag.TokenRangeInParser.New(s"'$from'", s"'$to'"))
     case _ => b.setOf(e) match {
-        case Some(set) => b.matchSet(rule, set, label)
+        case Some(set) => b.matchSet(rule, set, label, false)
         case None() => b.empty(rule, diag.NotAllowedHere.New(g4.FormatElement(e), if (b.lexer) "lexer" else "parser"))
     }
 }
@@ -392,7 +392,9 @@ func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Pi
 }
 
 // matchSet compiles a one-symbol match; a one-member set becomes an atom.
-func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef]) Piece {
+// listed says whether the set lists its members as alternatives, `(A | B)`,
+// rather than `~A` or `.`.
+func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef], listed bool) Piece {
     if set.IsEmpty() {
         return b.empty(rule, b.emptySetProblem())
     }
@@ -400,7 +402,7 @@ func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef]
     val to = b.state(rule, BasicState())
     val single = set.Size() == 1
     if (single) b.edge(from, Atom(to, set.Min().Get())) else b.edge(from, SetMatch(to, set))
-    val step = if (single) MatchToken(set.Min().Get(), label) else MatchSet(set, label)
+    val step = if (single) MatchToken(set.Min().Get(), label) else MatchSet(set, label, listed)
     Piece(Frag(from, to), ArrayOf(step))
 }
 

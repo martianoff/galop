@@ -4,14 +4,14 @@ package antlrgala
 
 import "github.com/antlr4-go/antlr/v4"
 
-// Companions holds the parsers that live in this package next to ANTLR's
+// SameTypes holds the parsers that live in this package next to ANTLR's
 // generated code and build its context types, keyed by the name the harness
-// tools select them by. A galop-generated parser joins the harness by adding
-// its file to this package (and to the go_library's srcs) with an init that
+// tools select them by. galop's antlr flavor joins the harness by adding its
+// file to this package (and to the go_library's srcs) with an init that
 // registers it:
 //
-//	func init() { Companions["galop"] = ParseGalop }
+//	func init() { SameTypes["galop"] = ParseGalop }
 //
 // A parser reads the whole stream and returns the sourceFile tree, plus an
 // error when the input has syntax errors.
-var Companions = map[string]func(stream antlr.TokenStream) (antlr.ParserRuleContext, error){}
+var SameTypes = map[string]func(stream antlr.TokenStream) (antlr.ParserRuleContext, error){}

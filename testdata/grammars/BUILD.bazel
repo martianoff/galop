@@ -1,12 +1,23 @@
 exports_files(["gala.g4"])
 
+filegroup(
+    name = "grammars",
+    srcs = glob(["*.g4"]),
+)
+
 # The corpus check: every grammar here parses, passes the semantic checks, and
 # round-trips through the formatter. `bazel test //...` builds this target, so
 # a grammar that fails the check fails the build.
+#
+# galop is a source here rather than a tool, as in the differential's
+# genrules: the tests build it for the target configuration anyway, and as a
+# tool it would be compiled again, every package under it, for the exec one.
 genrule(
     name = "corpus_check",
-    srcs = glob(["*.g4"]),
+    srcs = [
+        ":grammars",
+        "//cmd/galop",
+    ],
     outs = ["corpus_check.txt"],
-    cmd = "$(location //cmd/galop) -check -roundtrip $(SRCS) > $@",
-    tools = ["//cmd/galop"],
+    cmd = "$(location //cmd/galop) -check -roundtrip $(locations :grammars) > $@",
 )
