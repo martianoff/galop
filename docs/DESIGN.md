@@ -62,12 +62,14 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
        decision's SLL DFA as it can ahead of time (`Automaton`); states beyond that
        are computed at runtime and cached for the life of the process, as ANTLR
        caches them. Walking cached edges takes no lock.
-     - **LL on retry.** A parse runs in SLL mode; if it hits a syntax error it is
-       retried from the start in LL mode, where an SLL conflict runs full-context
-       prediction with the parser's real call stack (generated parsers push one
-       `int32` return state per rule call) until ANTLR's stopping rule picks an
-       alternative. This is how the GALA compiler drives ANTLR, and SLL success gives
-       the LL tree on the whole corpus.
+     - **LL after a failed SLL parse.** A parse runs in SLL mode; if it hits a
+       syntax error, the result is the parse ANTLR's LL mode gives, where an SLL
+       conflict runs full-context prediction with the parser's real call stack
+       (generated parsers push one `int32` return state per rule call) until
+       ANTLR's stopping rule picks an alternative. This is how the GALA compiler
+       drives ANTLR. galop gets that parse by
+       [repairing the failed SLL parse](#repairing-a-failed-sll-parse) rather than
+       rerunning all of it in LL mode, and caches full-context predictions.
      - **Contexts** are graph-structured stacks, hash-consed and merged with ANTLR's
        rules (`merge`, `mergeSingletons`, `mergeArrays`, wildcard root in SLL), so
        configuration sets, conflict subsets and DFA states are exactly ANTLR's.
@@ -180,12 +182,77 @@ over-approximation argument:
    SLL-unique prediction equals the LL prediction.
 3. At an SLL conflict, LL mode runs full-context prediction, which is LL by
    definition. Pure SLL mode's `MinAlt` can differ from LL; that is why GALA
-   parses in SLL mode first and reparses in LL mode only on a syntax error,
-   and the corpus confirms the result: all 723 GALA corpus files give the
-   same trees as with LL.
+   parses in SLL mode first and turns to LL only on a syntax error, and the
+   corpus confirms the result: all 723 GALA corpus files give the same trees
+   as with LL.
 
 Decisions whose alternatives start with a predicate stay `Adaptive` (always
 full LL), because ANTLR evaluates those predicates while predicting.
+
+### Repairing a failed SLL parse
+
+When the SLL pass fails, ANTLR parses the whole input again in LL mode, which
+runs full-context prediction at every SLL conflict, tens of thousands in a
+large file, while the SLL answers that were wrong are a handful. galop's
+generated parsers find the same LL parse without most of that work.
+
+**Why it is exact.** At an SLL conflict, ANTLR's LL prediction is the lowest
+alternative that can still complete the parse. Configurations with the same
+state and stack have the same future, so when LL resolves a conflict every
+alternative in a group can finish if any can; and an alternative lower than the
+SLL answer was dead already in SLL, whose configurations cover LL's. So a parse
+that reaches EOF proves its choice at every conflict where it took the SLL
+answer: that alternative completes, the lowest that does. Only where it takes
+another alternative does it need full-context prediction, which then decides.
+
+**How.** If the SLL pass met no conflict before its error, every decision it
+made is LL's and LL mode fails at the same token, so that is the result.
+Otherwise a repair pass replays the parse from the start and records each SLL
+conflict: decision, token, the alternative taken and the call stack. After a
+syntax error it checks the pass's conflicts with full-context prediction:
+first the 8 before the error, backwards, then the rest forwards from the start,
+as LL mode meets them. It switches the first one it finds whose LL answer
+differs and replays. When none differs, LL fails too: at the earliest conflict
+where no alternative is viable, or where the pass failed, with the error and
+the position LL mode reports there. The conflict to switch is almost always
+within a few of the error (on the GALA and held-out corpora and 10,000 mutants
+of them, at most 5 back), so a valid file needs a handful of predictions,
+while a file with a real syntax error and nothing to switch costs at most 8
+predictions and one replay more than the rerun.
+
+**Cost bound.** Each switch adds a pass, and a file the repair cannot finish
+would pay for its passes and then the rerun. So the repair gives up and runs
+the whole-input LL rerun once the passes after the first would replay more
+tokens than the input holds, or after 8 passes. A file the repair gives up on
+costs about two SLL passes more than the rerun (the first pass and the replays
+after it), and the rerun itself runs full-context prediction at every conflict,
+which costs more than an SLL pass. On the two
+corpora and 20,000 mutants of them, a file with a real syntax error needed
+at most 4 passes; 5 of the GALA corpus's 14 files that need the LL stage fall
+back. On the held-out corpus (see `differential/`) the two
+files that needed the LL stage took 2 full-context predictions instead of
+about 15,000.
+
+A repair replays the parse, which would run embedded actions more often than
+ANTLR's two passes do, and its argument needs a successful parse to end at
+EOF and prediction without semantic predicates. So the generator enables it
+only for grammars without actions, predicates or left recursion (the Go target
+rejects the last two today anyway), and an entry rule repairs only if every
+way through it ends by matching EOF (others rerun in LL mode, as ANTLR's prefix
+parses drop configurations that end early). An entry rule that some rule it
+calls can call again also reruns: there a full-context merge can drop the
+empty context LL prediction ends with.
+
+**Full-context cache.** For a decision and a call stack, full-context
+prediction depends only on the tokens ahead, so the predictor caches it like
+the SLL DFA, as a DFA per (decision, stack) with its contexts in one pool that
+is never reset. Finding a cached start state takes a read lock and walking
+cached edges no lock; new states are built under the write lock. Past 32,768
+states or 2^20 contexts the cache stops growing (a flag read without a lock)
+and prediction it cannot answer runs uncached: starting over instead thrashes
+once the predictions in use outgrow the cache, and building cached states
+costs more than predicting uncached. It speeds up the conflicts the repair
+checks, and the whole-input rerun where that still runs.
 
 The **conflict report** (`galop -report`) lists every decision that is not
 statically decided, with its rule, source text, the alternatives in conflict and an

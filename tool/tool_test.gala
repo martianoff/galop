@@ -413,3 +413,11 @@ func TestWerrorStopsOnCommandLineWarnings(t T) T {
     val t1 = Eq(t, out, Outcome("", "warning(83):  unsupported option k\nerror(10):  warning treated as error\n", 1))
     Eq(t1, m.writes, EmptyArray[string]())
 }
+
+func TestMutualLeftRecursion(t T) T {
+    // ANTLR's error 119, with its text and no position; c is directly
+    // left-recursive, which ANTLR rewrites.
+    val m = newMemory(("M.g4", "grammar M;\na : b 'x' | 'y' ;\nb : a 'z' | 'w' ;\nc : c 'q' | 'r' ;\n"))
+    Eq(t, run(m, ArrayOf(fakeGo), "-check M.g4"),
+        Outcome("", "error(119): M.g4::: The following sets of rules are mutually left-recursive [a, b]\n", 1))
+}

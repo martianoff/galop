@@ -35,6 +35,14 @@ release archive (pinned by sha256 in `MODULE.bazel`); `//differential:corpus` li
 One file, `examples/slice_type_param.gala`, is not valid under `gala.g4` (GALA's own
 tests skip it too). The tests list it explicitly.
 
+The **held-out corpus** is GALA code galop was not tuned on: every `.gala` file of
+[gala-team](https://github.com/martianoff/gala-team),
+[gala-tui](https://github.com/martianoff/gala-tui) and
+[gala-server](https://github.com/martianoff/gala-server) at pinned commits of their
+default branches (247 files, 3.6 MB; `//differential:heldout`). ANTLR accepts all of
+them. Its two largest files need ANTLR's LL stage, so they exercise the repair of a
+failed SLL parse (see [DESIGN.md](../docs/DESIGN.md#repairing-a-failed-sll-parse)).
+
 ## Running
 
 ```sh
@@ -80,6 +88,20 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
   files that LL accepts; those are the decisions that need full-context prediction, and
   the test logs them.
 - LL accepts every corpus file but the one listed above.
+- `heldout_test` runs the two flavors' acceptance tests above on the held-out corpus.
+- On mutated corpus files (a token dropped or doubled, stray text, or a statement
+  added whose decisions need full-context prediction), both flavors agree with
+  ANTLR on whether the input parses and on the tree, and on rejected input give
+  the same error, at the same place, as the whole-input LL rerun
+  (`TestMutations`; 200 mutants
+  per corpus in `diff_test` and `heldout_test`, `-mutants` and `-mutant_seed` for
+  more). `mutations_large_test` and `heldout_mutations_large_test` (tagged
+  `manual`) check 20,000 and 10,000; CI runs them on pushes to `main`.
+- `//differential/repair:repair_test` checks both flavors against ANTLR on
+  [`repair/Repair.g4`](repair/Repair.g4), a grammar whose SLL prediction fails
+  where LL prediction finds the parse: through the static automaton, through
+  runtime prediction past deep nesting, several times in one input, with no
+  viable alternative, and for an entry rule without EOF.
 
 ## Plugging in a parser
 

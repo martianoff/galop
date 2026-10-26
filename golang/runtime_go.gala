@@ -646,46 +646,6 @@ func PFXAllInStop(list []PFXConfig) bool {
 	return true
 }
 
-// predictLL runs ANTLR's full-context prediction of decision d from the
-// current token, with the parser's call stack as the outer context.
-func (p *PARSER) predictLL(d int) int {
-	pr := &p.pred
-	pr.full = true
-	pr.pool.reset(false)
-	cp := &pr.pool
-	outer := int32(0)
-	for _, ret := range p.stack {
-		outer = cp.singleton(outer, ret)
-	}
-	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
-	cur.reset()
-	pr.busy.reset()
-	s := PFXDecisionState[d]
-	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
-		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, outer}, cur, false)
-	}
-	offset := 0
-	for {
-		t := p.la(offset + 1)
-		if alt := pr.reach(cur, t, intermediate, next); alt != 0 {
-			return int(alt)
-		}
-		if len(next.list) == 0 {
-			p.noViableAlt(d)
-		}
-		if alt := PFXUniqueAlt(next.list); alt != 0 {
-			return int(alt)
-		}
-		if alt, _ := pr.subsets(next); alt != 0 {
-			return int(alt)
-		}
-		cur, next = next, cur
-		if t != -1 {
-			offset++
-		}
-	}
-}
-
 // PFXDFAState is a state of a decision's SLL lookahead DFA, cached for the
 // life of the process as ANTLR caches its DFA. Walking existing edges takes
 // no lock; new states are computed under PFXDFA.mu.
@@ -717,7 +677,14 @@ func init() {
 
 // PFXDFAIntern returns decision d's cached state for the configurations in set.
 func PFXDFAIntern(d int, set *PFXConfigSet) *PFXDFAState {
-	pr := &PFXDFA.pr
+	return PFXInternState(PFXDFA.states, &PFXDFA.pr, &PFXDFA.key, d, set)
+}
+
+// PFXInternState returns the state in states for the configurations in set,
+// adding it if new. A state keeps its configurations sorted by state and
+// alternative; its key is that list, after decision d when d >= 0. pr and key
+// are scratch, owned by whoever owns states.
+func PFXInternState(states map[string]*PFXDFAState, pr *PFXPredictor, key *[]byte, d int, set *PFXConfigSet) *PFXDFAState {
 	s := append(pr.sorted[:0], set.list...)
 	pr.sorted = s
 	slices.SortFunc(s, func(a, b PFXConfig) int {
@@ -726,18 +693,21 @@ func PFXDFAIntern(d int, set *PFXConfigSet) *PFXDFAState {
 		}
 		return int(a.alt - b.alt)
 	})
-	key := binary.LittleEndian.AppendUint32(PFXDFA.key[:0], uint32(d))
-	for _, c := range s {
-		key = binary.LittleEndian.AppendUint32(key, uint32(c.state))
-		key = binary.LittleEndian.AppendUint32(key, uint32(c.alt))
-		key = binary.LittleEndian.AppendUint32(key, uint32(c.ctx))
+	k := (*key)[:0]
+	if d >= 0 {
+		k = binary.LittleEndian.AppendUint32(k, uint32(d))
 	}
-	PFXDFA.key = key
-	if st, ok := PFXDFA.states[string(key)]; ok {
+	for _, c := range s {
+		k = binary.LittleEndian.AppendUint32(k, uint32(c.state))
+		k = binary.LittleEndian.AppendUint32(k, uint32(c.alt))
+		k = binary.LittleEndian.AppendUint32(k, uint32(c.ctx))
+	}
+	*key = k
+	if st, ok := states[string(k)]; ok {
 		return st
 	}
 	st := &PFXDFAState{configs: slices.Clone(s), edges: make([]atomic.Pointer[PFXDFAState], PFXMaxTokenType+2)}
-	PFXDFA.states[string(key)] = st
+	states[string(k)] = st
 	return st
 }
 
@@ -800,7 +770,7 @@ func PFXDFANext(d int, from *PFXDFAState, t int32) *PFXDFAState {
 
 // adaptivePredict predicts decision d as ANTLR does: SLL prediction over the
 // cached DFA and, on an SLL conflict, the lowest conflicting alternative in SLL
-// mode or full-context prediction in LL mode.
+// mode or full-context prediction in LL mode (see onConflict).
 func (p *PARSER) adaptivePredict(d int) int {
 	st := PFXDFA.starts[d].Load()
 	if st == nil {
@@ -821,21 +791,9 @@ func (p *PARSER) adaptivePredict(d int) int {
 		case next.alt > 0:
 			return int(next.alt)
 		case next.conflict > 0:
-			if p.ll {
-				return p.predictLL(d)
-			}
-			return int(next.conflict)
+			return p.onConflict(d, int(next.conflict))
 		}
 		st = next
 	}
-}
-
-// conflictPredict settles an SLL conflict the static automaton found: SLL mode
-// takes ANTLR's SLL answer, LL mode runs full-context prediction.
-func (p *PARSER) conflictPredict(d int, sllAlt int) int {
-	if !p.ll {
-		return sllAlt
-	}
-	return p.predictLL(d)
 }
 `

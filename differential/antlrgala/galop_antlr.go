@@ -12,3 +12,11 @@ func init() {
 		return tree, nil
 	}
 }
+
+// ParseGalopByRerun parses stream with galop's antlr flavor, rerunning the
+// whole parse in LL mode after a syntax error of the SLL pass, as ANTLR does,
+// instead of repairing the failed parse.
+func ParseGalopByRerun(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
+	p := NewgalaGalopParser(stream)
+	return p.parse(p.ruleSourceFile, false)
+}

@@ -203,8 +203,12 @@ sources for a `go_library`.
 
 Not supported yet, and reported as errors rather than ignored: rule arguments,
 `returns`/`locals`, rule-level options and actions, element options
-(`<assoc=right>`), lexer modes, grammar imports, and the `tokenVocab` and
-`caseInsensitive` options.
+(`<assoc=right>`), lexer modes, grammar imports, the `tokenVocab` and
+`caseInsensitive` options, and in the Go target, directly left-recursive rules
+(`e : e '+' e | INT`, which ANTLR rewrites into a loop) and semantic
+predicates. Mutually left-recursive rules are an error, as in ANTLR (error 119);
+`-check` does not report ANTLR's errors for left recursion its rewrite cannot
+handle (148, 169); the Go target rejects those rules as left-recursive.
 
 ## Development
 

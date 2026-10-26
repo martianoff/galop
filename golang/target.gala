@@ -9,6 +9,7 @@ import (
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/leftrec"
     "github.com/martianoff/galop/lexgen"
 )
 
@@ -108,12 +109,21 @@ func generateFlavor(in codegen.Input, opts codegen.Options, version string, f Fl
 // flavorParserFile generates a flavor's parser, if the grammar has parser rules.
 func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f Flavor) Either[Array[string], Array[codegen.OutputFile]] {
     val compiled = in.Compiled
-    val predicates = compiled.Rules.Exists((r) => r.Alts.Exists((a) => hasPredicate(a.Steps)))
+    val predicates = compiled.Rules.Exists((r) => r.Alts.Exists((a) => hasStep(a.Steps, isPredicate)))
     if predicates {
         return Left(ArrayOf("Go target: semantic predicates are not supported yet"))
     }
     (compiled.Parser, in.Analysis) match {
         case (Some(parser), Some(an)) => {
+            // ANTLR rewrites directly left-recursive rules into precedence loops
+            // (the front end reports other left recursion as error 119); parsed
+            // as written, they would call themselves forever.
+            val lr = leftrec.FindLeftRecursion(in.Grammar, compiled)
+            if !lr.IsEmpty() {
+                val names = lr.Direct.AppendAll(lr.Cycles.FlatMap((c) => c)).Distinct()
+                    .Map((i) => compiled.Rules.Get(i).Name).MkString(", ")
+                return Left(ArrayOf(s"Go target: left-recursive rules are not supported yet: $names"))
+            }
             val grammar = in.Grammar.Name
             val base = baseName(in.Grammar)
             val e = env(
@@ -127,6 +137,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 adaptive = an.Plans.Exists((p) => hasAdaptive(p.Lookahead)),
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
+                repair = GrammarRepairable(compiled.Rules, lr),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"
@@ -150,9 +161,7 @@ func hasAdaptive(la analysis.Lookahead) bool = la match {
     case _ => false
 }
 
-func hasPredicate(steps Array[atn.Step]) bool = steps.Exists((s) => s match {
+func isPredicate(s atn.Step) bool = s match {
     case atn.CheckPredicate(_) => true
-    case atn.Choose(_, alts, _) => alts.Exists(hasPredicate)
-    case atn.Loop(_, _, _, body) => hasPredicate(body)
     case _ => false
-})
+}

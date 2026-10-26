@@ -1,0 +1,49 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# ANTLR 4.13.1's parser for Repair.g4, and galop's antlr flavor next to it,
+# both generated at build time (see //differential/antlrgala).
+genrule(
+    name = "antlr_go",
+    srcs = ["//differential/repair:Repair.g4"],
+    outs = [
+        "repair_base_listener.go",
+        "repair_lexer.go",
+        "repair_listener.go",
+        "repair_parser.go",
+    ],
+    cmd = """
+        set -e
+        out=$(RULEDIR)/antlr_out
+        "$(JAVA)" -jar $(location @antlr4_tool//jar) -Dlanguage=Go -package antlr \
+            -Xexact-output-dir -o "$$out" $(location //differential/repair:Repair.g4)
+        cp "$$out"/*.go $(RULEDIR)/
+        rm -rf "$$out"
+    """,
+    toolchains = ["@bazel_tools//tools/jdk:current_host_java_runtime"],
+    tools = ["@antlr4_tool//jar"],
+)
+
+genrule(
+    name = "galop_go",
+    srcs = [
+        "//cmd/galop",
+        "//differential/repair:Repair.g4",
+    ],
+    outs = [
+        "repair_galop_lexer.go",
+        "repair_galop_parser.go",
+    ],
+    cmd = "$(location //cmd/galop) -Dlanguage=Go -Dflavor=antlr -package antlr -Xexact-output-dir -o $(RULEDIR) $(location //differential/repair:Repair.g4)",
+)
+
+go_library(
+    name = "antlr",
+    srcs = [
+        ":antlr_go",
+        ":galop_go",
+        "entries.go",
+    ],
+    importpath = "github.com/martianoff/galop/differential/repair/antlr",
+    visibility = ["//differential/repair:__pkg__"],
+    deps = ["@com_github_antlr4_go_antlr_v4//:antlr"],
+)

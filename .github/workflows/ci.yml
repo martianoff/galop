@@ -74,6 +74,33 @@ jobs:
           path: ~/.cache/bazel-disk
           key: bazel-disk-${{ github.run_id }}
 
+  # The large mutation runs compare galop with ANTLR on tens of thousands of
+  # mutated files, too slow for pull requests. They start from the Bazel disk
+  # cache an earlier run saved.
+  fuzz:
+    name: mutation fuzz
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ github.run_id }}
+          restore-keys: bazel-disk-
+
+      - name: Mutation fuzz
+        run: |
+          echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
+          bazel test //differential/diff:mutations_large_test //differential/diff:heldout_mutations_large_test --jobs=2
+
   cli:
     name: gala test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

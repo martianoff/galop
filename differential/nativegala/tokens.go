@@ -25,3 +25,18 @@ func Parse(src string) (SourceFileNode, error) {
 	}
 	return ParseSourceFile(ts)
 }
+
+// ParseByRerun parses src as Parse does, but after a syntax error of the SLL
+// pass it reruns the whole parse in LL mode, as ANTLR does, instead of
+// repairing the failed parse: the reference the repair is checked against.
+func ParseByRerun(src string) (SourceFileNode, error) {
+	ts := Tokens(src)
+	if len(ts.Errors) > 0 {
+		return SourceFileNode{}, &ts.Errors[0]
+	}
+	t, root, err := newgalaGalopParser(ts).run((*galaGalopParser).ruleSourceFile, false)
+	if err != nil {
+		return SourceFileNode{}, err
+	}
+	return SourceFileNode{GalaNodeRef{t, root}}, nil
+}

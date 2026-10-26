@@ -1,0 +1,95 @@
+package golang
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/leftrec"
+)
+
+// The witness-based repair (repair_go.gala) replaces the whole-input LL
+// rerun only where it gives exactly ANTLR's result and behaviour, as checked
+// here: per grammar (GrammarRepairable) and per entry rule (Repairable).
+
+// GrammarRepairable says whether a grammar's parsers may repair a failed SLL
+// parse: no semantic predicate takes part in prediction, no rule is
+// left-recursive, and no embedded action runs while parsing (a repair replays
+// the parse, which would run an action more often than ANTLR's two passes do).
+// rules: the parser rules, indexed by rule number.
+// lr: the grammar's left recursion.
+func GrammarRepairable(rules Array[atn.RuleIR], lr leftrec.LeftRecursion) bool =
+    lr.IsEmpty() && !rules.Exists((r) => r.Alts.Exists((a) => hasStep(a.Steps, isPredicateOrAction)))
+
+func isPredicateOrAction(s atn.Step) bool = s match {
+    case atn.CheckPredicate(_) => true
+    case atn.RunAction(_) => true
+    case _ => false
+}
+
+// hasStep says whether some step in steps, nested ones included, satisfies p.
+func hasStep(steps Array[atn.Step], p func(atn.Step) bool) bool = steps.Exists((s) => p(s) || (s match {
+    case atn.Choose(_, alts, _) => alts.Exists((a) => hasStep(a, p))
+    case atn.Loop(_, _, _, body) => hasStep(body, p)
+    case _ => false
+}))
+
+// Repairable says whether a parse that starts at entry rule r may repair a
+// failed SLL parse: r ends with EOF, and no rule it calls can call r again.
+// A call of the entry rule inside itself is where full-context merges can
+// drop the empty context ANTLR's LL prediction ends with, so the repair's
+// argument is kept to grammars without it.
+// rules: the parser rules, indexed by rule number.
+// r: the entry rule.
+func Repairable(rules Array[atn.RuleIR], r atn.RuleIR) bool {
+    val calls = rules.Map((rule) =>
+        rule.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(callees(a.Steps))))
+    EndsWithEOF(rules, r) && !reaches(calls, calls.Get(r.Index), r.Index, EmptyHashSet[int]())
+}
+
+// callees are the rules steps call anywhere.
+func callees(steps Array[atn.Step]) HashSet[int] = steps.FoldLeft(EmptyHashSet[int](), (acc, s) => s match {
+    case atn.CallRule(rule, _, _) => acc.Add(rule)
+    case atn.Choose(_, alts, _) => alts.FoldLeft(acc, (inner, a) => inner.Union(callees(a)))
+    case atn.Loop(_, _, _, body) => acc.Union(callees(body))
+    case _ => acc
+})
+
+// reaches says whether target is reachable from the rules in frontier along
+// edges, skipping rules already seen.
+func reaches(edges Array[HashSet[int]], frontier HashSet[int], target int, seen HashSet[int]) bool {
+    if frontier.Contains(target) {
+        return true
+    }
+    val fresh = frontier.Filter((r) => !seen.Contains(r))
+    if fresh.IsEmpty() {
+        return false
+    }
+    val next = fresh.ToArray().FoldLeft(EmptyHashSet[int](), (acc, r) => acc.Union(edges.Get(r)))
+    reaches(edges, next, target, seen.Union(fresh))
+}
+
+// EndsWithEOF says whether every way through rule r ends by matching EOF,
+// directly or as the last thing of a rule it calls last (actions after it
+// aside). For such an entry rule a parse that succeeds consumed the whole
+// input, which the repair's correctness argument needs.
+// rules: the parser rules, indexed by rule number.
+// r: the entry rule.
+func EndsWithEOF(rules Array[atn.RuleIR], r atn.RuleIR) bool = ruleEndsWithEOF(rules, r, HashSetOf(r.Index))
+
+// ruleEndsWithEOF is EndsWithEOF, not following calls into the rules in seen.
+func ruleEndsWithEOF(rules Array[atn.RuleIR], r atn.RuleIR, seen HashSet[int]) bool =
+    r.Alts.ForAll((a) => stepsEndWithEOF(rules, a.Steps, seen))
+
+func stepsEndWithEOF(rules Array[atn.RuleIR], steps Array[atn.Step], seen HashSet[int]) bool {
+    val tail = steps.Filter((s) => s match {
+        case atn.RunAction(_) => false
+        case _ => true
+    })
+    tail.LastOption() match {
+        case Some(atn.MatchToken(t, _)) => t == atn.TokenEOF
+        case Some(atn.Choose(_, alts, None())) => alts.ForAll((a) => stepsEndWithEOF(rules, a, seen))
+        case Some(atn.CallRule(rule, _, _)) =>
+            !seen.Contains(rule) && ruleEndsWithEOF(rules, rules.Get(rule), seen.Add(rule))
+        case _ => false
+    }
+}

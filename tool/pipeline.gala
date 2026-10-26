@@ -11,6 +11,7 @@ import (
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/diag"
     "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/leftrec"
 )
 
 // Toolkit is what a run needs from outside the tool: the code generators,
@@ -125,20 +126,36 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
     }
     val rest = atn.Compile(g) match {
         case Left(ds) => done(problemsOnly(ds))
-        case Right(c) => stage.Action match {
-            case Validate(roundTrip) => done(validated(path, g, roundTrip))
-            case PrintReport() => done(report(path, c))
-            // -depend only needs the file names, which come from the compiled grammar.
-            case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
-            case _ => {
-                val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))
-                FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
+        case Right(c) => leftRecursionProblem(g, c, path) match {
+            case Some(d) => done(problemsOnly(ArrayOf(d)))
+            case None() => stage.Action match {
+                case Validate(roundTrip) => done(validated(path, g, roundTrip))
+                case PrintReport() => done(report(path, c))
+                // -depend only needs the file names, which come from the compiled grammar.
+                case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
+                case _ => {
+                    val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))
+                    FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
+                }
             }
         }
     }
     val placed = rest.Result.Copy(Diagnostics = rest.Result.Diagnostics.Map((d) => located(d, path)))
     FrontEnd(problemsOnly(problems).Then(placed), rest.Ready)
 }
+
+// leftRecursionProblem is ANTLR's error 119 for the grammar's mutually
+// left-recursive rules, if any, with ANTLR's text and, like ANTLR's, no
+// position. A rule with an alternative that starts with a call of itself is
+// not one: ANTLR rewrites it (galop's Go target does not yet).
+func leftRecursionProblem(g g4.Grammar, c atn.Compiled, path string) Option[diag.Diagnostic] =
+    leftrec.FindLeftRecursion(g, c).Cycles match {
+        case Array() => None()
+        case cycles => {
+            val sets = cycles.Map((cycle) => "[" + cycle.Map((i) => c.Rules.Get(i).Name).MkString(", ") + "]")
+            Some(leftrec.LeftRecursionCycles.New(sets.MkString(" and ")).In(path))
+        }
+    }
 
 // nameProblems checks, as ANTLR does, that `grammar X;` is in a file called X.g4.
 func nameProblems(path string, g g4.Grammar) Array[diag.Diagnostic] =

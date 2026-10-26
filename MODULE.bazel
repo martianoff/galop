@@ -57,3 +57,26 @@ filegroup(
     strip_prefix = "gala-0.92.1",
     urls = ["https://github.com/martianoff/gala/archive/refs/tags/0.92.1.tar.gz"],
 )
+
+# The held-out corpus: GALA code galop was never tuned on, from three projects
+# at pinned commits of their default branches. The tests compare galop with
+# ANTLR on it as on the GALA corpus.
+[http_archive(
+    name = name,
+    build_file_content = """
+filegroup(
+    name = "gala_files",
+    srcs = glob(["**/*.gala"]),
+    visibility = ["//visibility:public"],
+)
+""",
+    patch_cmds = ["find . -mindepth 2 \\( -name BUILD -o -name BUILD.bazel \\) -delete"],
+    patch_cmds_win = ["Get-ChildItem -Recurse -File -Include BUILD,BUILD.bazel | Where-Object { $_.DirectoryName -ne (Get-Location).Path } | Remove-Item"],
+    sha256 = sha256,
+    strip_prefix = repo + "-" + commit,
+    urls = ["https://github.com/martianoff/%s/archive/%s.tar.gz" % (repo, commit)],
+) for name, repo, commit, sha256 in [
+    ("heldout_gala_team", "gala-team", "44e03ea2c32ca47fbbadb9bc780ec7a1720758dc", "91c3504b430c830e3ee18fbc9df771066f4d632c2cc184dc5de9d8361b5bbcb1"),
+    ("heldout_gala_tui", "gala-tui", "c46554dd1e24a2074c4b99dd2294f30cbe955489", "c73c94b1b84a481d786f8e8402c3d4593bbf0bf9d5346de05c917c8ffff6624d"),
+    ("heldout_gala_server", "gala-server", "ba67dc284908010cde53c7984a06288534c54dfb", "c013c4b8d8a3cf9a33ba99b6f7ebb1ed325ce628107a13b7d94f5f18cf950ad5"),
+]]
