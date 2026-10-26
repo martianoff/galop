@@ -218,8 +218,18 @@ the position LL mode reports there. The conflict to switch is almost always
 within a few of the error (on the GALA and held-out corpora and 10,000 mutants
 of them, at most 5 back), so a valid file needs a handful of predictions,
 while a file with a real syntax error and nothing to switch costs at most 8
-predictions and one replay more than the rerun (each switch adds a pass). Past 16 passes the parser falls back to the
-whole-input LL rerun. On the held-out corpus (see `differential/`) the two
+predictions and one replay more than the rerun.
+
+**Cost bound.** Each switch adds a pass, and a file the repair cannot finish
+would pay for its passes and then the rerun. So the repair gives up and runs
+the whole-input LL rerun once the passes after the first would replay more
+tokens than the input holds, or after 8 passes. A file the repair gives up on
+costs about two SLL passes more than the rerun (the first pass and the replays
+after it), and the rerun itself runs full-context prediction at every conflict,
+which costs more than an SLL pass. On the two
+corpora and 20,000 mutants of them, a file with a real syntax error needed
+at most 4 passes; 5 of the GALA corpus's 14 files that need the LL stage fall
+back. On the held-out corpus (see `differential/`) the two
 files that needed the LL stage took 2 full-context predictions instead of
 about 15,000.
 

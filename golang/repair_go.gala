@@ -64,16 +64,18 @@ type PFXRepair struct {
 	stacks []int32
 }
 
-// PFXRepairPasses bounds the passes of one repair; past it the parse falls
-// back to the whole-input LL rerun. PFXRepairBackward is how many conflicts a
-// pass checks backwards from its error before it checks the rest forwards
-// from the start, as LL mode meets them. The conflict to switch is almost
-// always within a few of the error (on the GALA and held-out corpora and
-// 10,000 mutants of them, at most 5 back), and a parse that fails for good
-// makes at most PFXRepairBackward full-context predictions more than the
-// rerun would when no conflict needs switching (each switch adds a pass).
+// A repair stops and falls back to the whole-input LL rerun when the passes
+// after the first would replay more tokens in total than the input holds, so
+// that a file it cannot repair costs about two SLL passes more than the rerun;
+// PFXRepairPasses also bounds the number of passes. PFXRepairBackward is how
+// many conflicts a pass checks backwards from its error before it checks the
+// rest forwards from the start, as LL mode meets them. The conflict to switch
+// is almost always within a few of the error (on the GALA and held-out
+// corpora and 10,000 mutants of them, at most 5 back), and a parse that fails
+// for good makes at most PFXRepairBackward full-context predictions more than
+// the rerun would.
 const (
-	PFXRepairPasses   = 16
+	PFXRepairPasses   = 8
 	PFXRepairBackward = 8
 )
 
@@ -102,13 +104,21 @@ func (p *PARSER) llParse(rule @RULE@, repair bool, sllErr error) (@ROOT@, error)
 		r.on = true
 		defer func() { r.on = false }()
 		r.recs, r.stacks = r.recs[:0], r.stacks[:0]
+		replayed := 0 // tokens up to the errors of the failed passes after the first
 		for pass := 0; pass < PFXRepairPasses; pass++ {
 			r.seq = 0
 			root, err := p.attempt(rule)
 			if err == nil {
 				return root, nil
 			}
+			if pass > 0 {
+				replayed += p.pos
+			}
 			switched, dead := p.switchConflict()
+			// The next pass replays about as far as this one did.
+			if switched && replayed+p.pos > len(p.types) {
+				break
+			}
 			switch {
 			case switched:
 			case dead != nil:
