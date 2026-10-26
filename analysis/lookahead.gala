@@ -443,6 +443,7 @@ func render(l Lookahead) string = l match {
     case Predict(alt) => s"$alt"
     case Adaptive(alts) => s"adaptive(${alts.MkString(",")})"
     case Automaton(states) => s"automaton(${states.Size()})"
+    case Otherwise() => "otherwise"
     case Switch(depth, cases) => s"LA$depth{" + cases.Map((c) => c.Tokens.String() + ":" + render(c.Then)).MkString(" ") + "}"
 }
 
@@ -456,7 +457,7 @@ func render(l Lookahead) string = l match {
 func (g grammarInfo) planDecision(dec atn.Decision, maxK int) DecisionPlan {
     val (tree, static) = g.lookaheadTree(dec, maxK)
     val lookahead =
-        if (static && NeedsRuntime(tree)) g.buildAutomaton(dec).GetOrElse(g.deferUnexpected(tree))
+        if (static && NeedsRuntime(tree)) g.buildAutomaton(dec).GetOrElse(deferUnexpected(tree))
         else tree
     DecisionPlan(dec, classify(tree), lookahead, conflictsOf(tree, EmptyArray[int]()))
 }
@@ -484,10 +485,11 @@ func classify(l Lookahead) DecisionClass =
     }
 
 // NeedsRuntime reports whether generated code needs runtime prediction for a
-// lookahead: whether it has an Adaptive part. An automaton settles every input.
+// lookahead: whether it has an Adaptive or Otherwise part. An automaton settles
+// every input.
 // l: a decision's lookahead.
 func NeedsRuntime(l Lookahead) bool = l match {
-    case Adaptive(_) => true
+    case Adaptive(_) | Otherwise() => true
     case Switch(_, cases) => cases.Exists((c) => NeedsRuntime(c.Then))
     case _ => false
 }
@@ -504,6 +506,7 @@ func conflictsOf(l Lookahead, prefix Array[int]) Array[Conflict] = l match {
     case Predict(_) => EmptyArray[Conflict]()
     case Adaptive(alts) => ArrayOf(Conflict(alts, prefix))
     case Automaton(_) => EmptyArray[Conflict]()
+    case Otherwise() => EmptyArray[Conflict]()
     case Switch(_, cases) => cases.FlatMap((c) => conflictsOf(c.Then, prefix.Append(exampleToken(c.Tokens))))
 }
 
@@ -523,13 +526,10 @@ func unique[T comparable](xs Array[T]) Array[T] {
 // prediction too, instead of reporting a syntax error there: SLL prediction may
 // stop at a conflict before that token, and the syntax error is then found
 // where ANTLR finds it.
-func (g grammarInfo) deferUnexpected(l Lookahead) Lookahead = l match {
+func deferUnexpected(l Lookahead) Lookahead = l match {
     case Switch(depth, cases) => {
-        val inner = cases.Map((c) => LookaheadCase(c.Tokens, g.deferUnexpected(c.Then)))
-        val rest = atn.SetOf(atn.TokenEOF).Union(atn.RangeSet(1, g.a.Vocab.MaxType()))
-            .Subtract(cases.FoldLeft(atn.EmptySet(), (acc, c) => acc.Union(c.Tokens)))
-        if (depth > 1 && rest.NonEmpty()) Switch(depth, inner.Append(LookaheadCase(rest, Adaptive(EmptyArray[int]()))))
-        else Switch(depth, inner)
+        val inner = cases.Map((c) => LookaheadCase(c.Tokens, deferUnexpected(c.Then)))
+        if (depth > 1) Switch(depth, inner.Append(LookaheadCase(atn.EmptySet(), Otherwise()))) else Switch(depth, inner)
     }
     case _ => l
 }

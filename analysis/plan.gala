@@ -20,8 +20,11 @@ sealed type Lookahead {
     case Predict(Alt int)
     // Switch looks at token LA(Depth) (1-based) and continues with the first
     // case whose Tokens contain it. A token in no case means no alternative
-    // can match: a syntax error.
+    // can match: a syntax error, unless a case leads to Otherwise.
     case Switch(Depth int, Cases Array[LookaheadCase])
+    // Otherwise, as the last case of a Switch (its Tokens empty), takes every
+    // token no other case takes to runtime prediction of the decision.
+    case Otherwise()
     // Adaptive asks the runtime predictor to choose among Alts by simulating
     // the ATN from the decision with the real call stack (ANTLR's LL mode).
     case Adaptive(Alts Array[int])

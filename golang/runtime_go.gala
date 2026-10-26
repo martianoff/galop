@@ -791,7 +791,11 @@ func (p *PARSER) adaptivePredict(d int) int {
 		st = PFXDFAStart(d)
 	}
 	for i := p.pos; ; {
-		t := p.types[i]
+		// Past the end of the tokens (a slice with no EOF at its end) reads as EOF.
+		t := int32(-1)
+		if i < len(p.types) {
+			t = p.types[i]
+		}
 		if t < -1 || int(t) > PFXMaxTokenType {
 			p.noViableAlt(d)
 		}

@@ -13,6 +13,12 @@ func init() {
 	}
 }
 
+// ParseGalopTokens parses stream with galop's antlr flavor generated with
+// -Xno-brackets: prediction reads tokens only.
+func ParseGalopTokens(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
+	return NewgalaGalopTokParser(stream).SourceFile()
+}
+
 // ParseGalopByRerun parses stream with galop's antlr flavor, rerunning the
 // whole parse in LL mode after a syntax error of the SLL pass, as ANTLR does,
 // instead of repairing the failed parse.

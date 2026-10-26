@@ -325,6 +325,19 @@ X : 'x' ; Y : 'y' ;
     IsTrue(t1, strings.Contains(code, "if t < -1 || int(t) > AGalopMaxTokenType {\n\t\t\tcontinue"))
 }
 
+func TestNoBracketsWithActions(t T) T {
+    // An action rules out repair, so a failed first pass over groups would
+    // add a parse that runs the action again: no brackets are read.
+    val code = parserOf(generate(`grammar A;
+s : a EOF | b EOF ;
+a : '(' a ')' | X {count++} ;
+b : '(' b ')' | Y ;
+X : 'x' ; Y : 'y' ;
+`, antlrDefines))
+    val t1 = IsTrue(t, strings.Contains(code, "p.adaptivePredict("))
+    IsTrue(t1, strings.Contains(code, "const AGalopOpenerCount = 0"))
+}
+
 func TestNoBracketsNoAbstraction(t T) T {
     // Adaptive, but no token pair behaves like brackets.
     val code = parserOf(generate(`grammar A;

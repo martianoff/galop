@@ -209,7 +209,8 @@ parse reads bracketed groups only where it may be repaired: its entry rule ends
 with EOF (a rule that can stop early could take a smaller alternative that
 ends it sooner), and the grammar has no predicates, no left recursion and no
 actions run while parsing (an extra pass would run an action once more than
-ANTLR does). Other entries predict over tokens, as without brackets.
+ANTLR does). Other entries predict over tokens, as without brackets; a grammar
+that is never repaired gets no bracket tables at all.
 
 ### SLL automata
 

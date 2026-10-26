@@ -40,6 +40,26 @@ genrule(
     cmd = "$(location //cmd/galop) -Dlanguage=Go -Dflavor=antlr -package antlrgala -Xexact-output-dir -o $(RULEDIR) $(location //testdata/grammars:gala.g4)",
 )
 
+# The same parser generated with -Xno-brackets, so prediction reads tokens
+# only, with its names renamed from galaGalop to galaGalopTok to live next to
+# it. The mutation tests compare the two on trees and first errors.
+genrule(
+    name = "galop_tokens_go",
+    srcs = [
+        "//cmd/galop",
+        "//testdata/grammars:gala.g4",
+    ],
+    outs = ["gala_galop_tokens_parser.go"],
+    cmd = """
+        set -e
+        out=$(RULEDIR)/galop_tokens_out
+        $(location //cmd/galop) -Dlanguage=Go -Dflavor=antlr -Xno-brackets -package antlrgala \
+            -Xexact-output-dir -o "$$out" $(location //testdata/grammars:gala.g4)
+        sed 's/galaGalop/galaGalopTok/g' "$$out"/gala_galop_parser.go > $@
+        rm -rf "$$out"
+    """,
+)
+
 go_library(
     name = "antlrgala",
     srcs = [
@@ -47,6 +67,7 @@ go_library(
         ":antlr_go",
         "galop_antlr.go",
         ":galop_go",
+        ":galop_tokens_go",
     ],
     importpath = "github.com/martianoff/galop/differential/antlrgala",
     visibility = ["//differential:__subpackages__"],

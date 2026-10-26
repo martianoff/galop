@@ -26,6 +26,7 @@ func show(a atn.ATN, l Lookahead) string = l match {
     case Predict(alt) => s"$alt"
     case Adaptive(alts) => s"?${alts.MkString(",")}"
     case Automaton(states) => s"dfa(${states.Size()})"
+    case Otherwise() => "?"
     case Switch(_, cases) => "{" + cases.Map((c) => tokens(a, c.Tokens) + ":" + show(a, c.Then)).MkString(" ") + "}"
 }
 
@@ -346,5 +347,5 @@ e : '(' e ')' | X ;
     // a token past the first that no case expects.
     val r = show(a, planFor(a, an, "r", "r : e Y | e Z").Lookahead)
     val t2 = Contains(t1, r, "T__0 X:?1,2")
-    Contains(t2, r, "X:{Y:1 Z:2 EOF T__0 T__1 X W Q:?}")
+    Contains(t2, r, "X:{Y:1 Z:2 :?}")
 }

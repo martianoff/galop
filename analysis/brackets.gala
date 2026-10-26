@@ -74,8 +74,11 @@ func AnalyzeBrackets(a atn.ATN) Brackets {
     val (kept, dropped) = g.keepBalanced(second.Collect((r) => r.V1))
     val droppedRejections = dropped.FlatMap((d) =>
         d.V1.Openers.Values().Map((o) => BracketRejection(o, d.V1.Closer, d.V2)))
-    // One reason per pair: the first one found.
-    val all = first.FlatMap(_.V2).AppendAll(shared).AppendAll(second.FlatMap(_.V2)).AppendAll(droppedRejections)
+    // One reason per pair, from the last phase that looked at it: a family
+    // checked again replaces its first reasons.
+    val all = droppedRejections.AppendAll(second.FlatMap(_.V2)).AppendAll(shared).AppendAll(first.FlatMap(_.V2))
+    // String keys: a HashSet of tuples or structs panics at runtime
+    // (martianoff/gala#880).
     val key = (r BracketRejection) => s"${r.Opener}/${r.Closer}"
     val rejected = all.FoldLeft((EmptyArray[BracketRejection](), EmptyHashSet[string]()), (acc, r) =>
         if (acc.V2.Contains(key(r))) acc else (acc.V1.Append(r), acc.V2.Add(key(r)))).V1
@@ -170,7 +173,10 @@ func (g bracketGrammar) largestBalanced(
     val family = (mask int) => BracketFamily(openers.ZipWithIndex()
         .FoldLeft(atn.EmptySet(), (acc, p) => if (in(mask, p.V2)) acc.Union(atn.SetOf(p.V1)) else acc), closer)
     // Try the subsets from the largest down; groups of openers are small. A
-    // closer without any of its openers rules out every subset at once.
+    // closer without any of its openers rules out every subset at once. An
+    // opener that fails on its own is not pruned first: openers sharing a
+    // closer can need each other (GALA's '(' and NL_LPAREN each leave ')'
+    // unmatched alone, and balance together).
     val all = (1 << n) - 1
     val whole = g.balanceFailure(ArrayOf(family(all)))
     val smaller =
@@ -251,6 +257,8 @@ func bracketShow(a atn.ATN, f BracketFamily) string =
 // brackets open there, innermost first.
 struct walkItem(State int, Open List[int])
 
+// key identifies the point for the walk's seen set; a string, since a
+// HashSet of structs panics at runtime (martianoff/gala#880).
 func (w walkItem) key() string = s"${w.State}/${w.Open.MkString(",")}"
 
 // walkStep is what visiting a walk point gives: the points it moves on to,

@@ -126,6 +126,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             }
             val grammar = in.Grammar.Name
             val base = baseName(in.Grammar)
+            val repair = GrammarRepairable(compiled.Rules, lr)
             val e = env(
                 names = Names(Grammar = grammar, Combined = isCombined(in.Grammar)),
                 pfx = base + "Galop",
@@ -135,10 +136,13 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 rules = compiled.Rules,
                 plans = an.Plans,
                 adaptive = an.Plans.Exists((p) => analysis.NeedsRuntime(p.Lookahead)),
-                brackets = an.Brackets,
+                // Reading groups is safe only where a wrong guess is repaired:
+                // without repair, a failed grouped pass would add a parse, and
+                // actions would run once more than in ANTLR.
+                brackets = if (repair) an.Brackets else analysis.NoBrackets("no repair in a grammar with actions or predicates"),
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
-                repair = GrammarRepairable(compiled.Rules, lr),
+                repair = repair,
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"

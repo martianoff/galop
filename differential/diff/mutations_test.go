@@ -54,7 +54,7 @@ var statements = []string{
 // mutants are rejected; the rest are where SLL prediction and LL prediction
 // part ways, which is what the repair of a failed SLL parse has to get right.
 // Both flavors must agree with ANTLR on whether the input parses and, if it
-// does, on the tree. The native parser must also agree with the same parser
+// does, on the tree. Each flavor must also agree with the same parser
 // generated with -Xno-brackets on everything, the first error included:
 // reading bracketed groups as one symbol changes neither trees nor errors.
 // -mutants and -mutant_seed size the run.
@@ -70,9 +70,19 @@ func TestMutations(t *testing.T) {
 	// and with ANTLR's whole-input LL rerun (rerun true). On error, where says
 	// where the parse left off: the error text, with its position, and for the
 	// antlr flavor the token stream's index.
+	antlrFlavor := func(src string, parse func(antlr.TokenStream) (antlr.ParserRuleContext, error)) (string, string, error) {
+		stream := gala.GalopTokens(src)
+		ctx, err := parse(stream)
+		if err != nil {
+			return "", fmt.Sprintf("%v, stream at %d", err, stream.Index()), err
+		}
+		return gala.TreeString(ctx), "", nil
+	}
 	flavors := []struct {
 		name  string
 		parse func(src string, rerun bool) (tree, where string, err error)
+		// tokens parses with the parser generated with -Xno-brackets.
+		tokens func(src string) (tree, where string, err error)
 	}{
 		{"native", func(src string, rerun bool) (string, string, error) {
 			parse := nativegala.Parse
@@ -84,20 +94,22 @@ func TestMutations(t *testing.T) {
 				return "", err.Error(), err
 			}
 			return root.ToStringTree(), "", nil
+		}, func(src string) (string, string, error) {
+			root, err := nativetokens.Parse(src)
+			if err != nil {
+				return "", err.Error(), err
+			}
+			return root.ToStringTree(), "", nil
 		}},
 		{"antlr flavor", func(src string, rerun bool) (string, string, error) {
-			stream := gala.GalopTokens(src)
-			var ctx antlr.ParserRuleContext
-			var err error
 			if rerun {
-				ctx, err = antlrgala.ParseGalopByRerun(stream)
-			} else {
-				ctx, err = antlrgala.NewgalaGalopParser(stream).SourceFile()
+				return antlrFlavor(src, antlrgala.ParseGalopByRerun)
 			}
-			if err != nil {
-				return "", fmt.Sprintf("%v, stream at %d", err, stream.Index()), err
-			}
-			return gala.TreeString(ctx), "", nil
+			return antlrFlavor(src, func(s antlr.TokenStream) (antlr.ParserRuleContext, error) {
+				return antlrgala.NewgalaGalopParser(s).SourceFile()
+			})
+		}, func(src string) (string, string, error) {
+			return antlrFlavor(src, antlrgala.ParseGalopTokens)
 		}},
 	}
 	r := rand.New(rand.NewSource(*mutantSeed))
@@ -108,18 +120,17 @@ func TestMutations(t *testing.T) {
 		if wantOK {
 			accepted++
 		}
-		tree, err := nativegala.Parse(src)
-		ref, refErr := nativetokens.Parse(src)
-		switch {
-		case (err == nil) != (refErr == nil) || err != nil && err.Error() != refErr.Error():
-			differ++
-			t.Errorf("mutant %d: with brackets error=%v, without error=%v\n%s", i, err, refErr, src)
-		case err == nil && tree.ToStringTree() != ref.ToStringTree():
-			differ++
-			t.Errorf("mutant %d: trees differ with and without brackets\n%s", i, firstDifference(ref.ToStringTree(), tree.ToStringTree()))
-		}
 		for _, f := range flavors {
 			got, where, err := f.parse(src, false)
+			ref, refWhere, refErr := f.tokens(src)
+			switch {
+			case (err == nil) != (refErr == nil) || where != refWhere:
+				differ++
+				t.Errorf("mutant %d: %s with brackets error=%s, without error=%s\n%s", i, f.name, where, refWhere, src)
+			case err == nil && got != ref:
+				differ++
+				t.Errorf("mutant %d: %s trees differ with and without brackets\n%s", i, f.name, firstDifference(ref, got))
+			}
 			switch {
 			case wantOK != (err == nil):
 				differ++

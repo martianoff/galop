@@ -123,7 +123,7 @@ func predictorFields(e env) string =
 // with a pass over the tokens; only when the first pass met no conflict, where
 // llParse would keep that pass's error, does the pass over tokens run first.
 func retryCode(e env, root string) string =
-    if (e.adaptive) s"\n\tif err != nil {\n\t\tif p.group && p.rp.seen == 0 {\n\t\t\tp.group = false\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t\tp.group = false\n\t\tif err != nil {\n\t\t\t$root, err = p.llParse(rule, repair, err)\n\t\t}\n\t}" else ""
+    if (e.adaptive) s"\n\tif err != nil {\n\t\tgrouped := p.group\n\t\tp.group = false\n\t\tif grouped && p.rp.seen == 0 {\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t\tif err != nil {\n\t\t\t$root, err = p.llParse(rule, repair, err)\n\t\t}\n\t}" else ""
 
 // parserCore is the parser struct and the helpers every rule uses.
 func parserCore(e env) string {
@@ -395,7 +395,7 @@ func emitDecision(e env, plan analysis.DecisionPlan) string {
 // (a token goes to the first case that has it), as Go requires.
 func emitLookahead(e env, d int, la analysis.Lookahead, ind string) Array[string] = la match {
     case analysis.Predict(alt) => ArrayOf(s"${ind}return $alt")
-    case analysis.Adaptive(_) => ArrayOf(s"${ind}return p.adaptivePredict($d)")
+    case analysis.Adaptive(_) | analysis.Otherwise() => ArrayOf(s"${ind}return p.adaptivePredict($d)")
     case analysis.Automaton(states) => emitAutomaton(e, d, states)
     case analysis.Switch(depth, cases) => {
         val subject = if (depth == 1) "p.types[p.pos]" else s"p.la($depth)"
@@ -403,17 +403,14 @@ func emitLookahead(e env, d int, la analysis.Lookahead, ind string) Array[string
             val own = c.Tokens.Subtract(acc.V2)
             Tuple(if (own.IsEmpty()) acc.V1 else acc.V1.Append(analysis.LookaheadCase(own, c.Then)), acc.V2.Union(own))
         }).V1
-        // The analysis's catch-all case (an Adaptive leaf for every token the
-        // others do not take) is the default.
-        val rest = disjoint.LastOption().Exists((c) => c.Then match {
-            case analysis.Adaptive(alts) => alts.IsEmpty()
+        // An Otherwise case (no tokens of its own) becomes the default.
+        val otherwise = cases.Exists((c) => c.Then match {
+            case analysis.Otherwise() => true
             case _ => false
         })
-        val label = (i int, c analysis.LookaheadCase) =>
-            if (rest && i == disjoint.Size() - 1) s"${ind}default:" else s"${ind}case ${e.tokenList(c.Tokens)}:"
         val body = ArrayOf(s"${ind}switch $subject {")
-            .AppendAll(disjoint.ZipWithIndex().FlatMap((p) => ArrayOf(label(p.V2, p.V1)).AppendAll(emitLookahead(e, d, p.V1.Then, ind + "\t"))))
-        if (rest) body.Append(s"$ind}")
+            .AppendAll(disjoint.FlatMap((c) => ArrayOf(s"${ind}case ${e.tokenList(c.Tokens)}:").AppendAll(emitLookahead(e, d, c.Then, ind + "\t"))))
+        if (otherwise) body.AppendAll(ArrayOf(s"${ind}default:", s"$ind\treturn p.adaptivePredict($d)", s"$ind}"))
         else body.AppendAll(ArrayOf(s"$ind}", s"${ind}p.noViableAlt($d)", s"${ind}return 0"))
     }
 }
