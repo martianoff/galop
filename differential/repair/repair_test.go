@@ -81,10 +81,11 @@ func TestRepairMatchesANTLR(t *testing.T) {
 			g := ra.GalopEntries[c.rule]
 			tree, where, gerr := galop(src, g.Parse)
 			_, rerunWhere, _ := galop(src, g.Rerun)
+			galopTree := ""
 			if gerr == nil {
-				got = antlr.TreesStringTree(tree, ruleNames, nil)
+				galopTree = antlr.TreesStringTree(tree, ruleNames, nil)
 			}
-			check("antlr", got, where, gerr, rerunWhere)
+			check("antlr", galopTree, where, gerr, rerunWhere)
 		}
 		if needLL < c.needLL {
 			t.Errorf("%s: %d inputs need LL prediction, want at least %d", c.rule, needLL, c.needLL)

@@ -125,7 +125,7 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
     }
     val rest = atn.Compile(g) match {
         case Left(ds) => done(problemsOnly(ds))
-        case Right(c) => leftRecursionProblem(g, c) match {
+        case Right(c) => leftRecursionProblem(g, c, path) match {
             case Some(d) => done(problemsOnly(ArrayOf(d)))
             case None() => stage.Action match {
                 case Validate(roundTrip) => done(validated(path, g, roundTrip))
@@ -144,18 +144,15 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
 }
 
 // leftRecursionProblem is ANTLR's error 119 for the grammar's mutually
-// left-recursive rules, if any, placed at the first rule of the first set
-// (ANTLR gives no position). A rule whose alternatives start with a call of
-// itself is not one: ANTLR rewrites it (galop's Go target does not yet).
-func leftRecursionProblem(g g4.Grammar, c atn.Compiled) Option[diag.Diagnostic] =
-    atn.FindLeftRecursion(c.Rules).Cycles match {
+// left-recursive rules, if any, with ANTLR's text and, like ANTLR's, no
+// position. A rule with an alternative that starts with a call of itself is
+// not one: ANTLR rewrites it (galop's Go target does not yet).
+func leftRecursionProblem(g g4.Grammar, c atn.Compiled, path string) Option[diag.Diagnostic] =
+    atn.FindLeftRecursion(g, c).Cycles match {
         case Array() => None()
         case cycles => {
-            val name = (i int) => c.Rules.Get(i).Name
-            val sets = cycles.Map((cycle) => " [" + cycle.Map(name).MkString(", ") + "]").MkString(" and ")
-            val first = name(cycles.Head().Head())
-            val pos = g.Rules.Find((r) => r.Name == first).Map(_.Pos).GetOrElse(g.Pos)
-            Some(diag.LeftRecursionCycles.New(sets).At(pos.Line, pos.Col))
+            val sets = cycles.Map((cycle) => "[" + cycle.Map((i) => c.Rules.Get(i).Name).MkString(", ") + "]")
+            Some(diag.LeftRecursionCycles.New(sets.MkString(" and ")).In(path))
         }
     }
 

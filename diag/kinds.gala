@@ -62,10 +62,9 @@ val IllegalOptionValue = Kind(84, Warning(), "unsupported option value <arg>=<ar
 // NoRules: a grammar with no rules.
 val NoRules = Kind(99, Error(), "grammar <arg> has no rules")
 
-// LeftRecursionCycles: rules that call each other before consuming a token,
-// or one rule that does so other than as an alternative's first element
-// (which ANTLR rewrites). The argument is the sets, each as ` [a, b]`, joined
-// by ` and `, as ANTLR prints them.
+// LeftRecursionCycles: rules that can call each other, or one rule that can
+// call itself, before consuming a token, other than the left recursion ANTLR
+// rewrites. The argument is the sets, each as `[a, b]`, joined by ` and `.
 val LeftRecursionCycles = Kind(119, Error(), "The following sets of rules are mutually left-recursive <arg>")
 
 // ImplicitTokenDefinition: a parser rule uses a token no rule or `tokens {}` defines.

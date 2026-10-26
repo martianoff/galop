@@ -71,7 +71,7 @@ type PFXRepair struct {
 // always within a few of the error (on the GALA and held-out corpora and
 // 10,000 mutants of them, at most 5 back), and a parse that fails for good
 // makes at most PFXRepairBackward full-context predictions more than the
-// rerun would.
+// rerun would when no conflict needs switching (each switch adds a pass).
 const (
 	PFXRepairPasses   = 16
 	PFXRepairBackward = 8
@@ -92,12 +92,12 @@ const (
 // finds nothing to change, LL fails too: at the earliest conflict where no
 // alternative is viable, or where this pass failed.
 func (p *PARSER) llParse(rule @RULE@, repair bool, sllErr error) (@ROOT@, error) {
-	if repair && p.rp.seen == 0 {
-		// No conflict before the error: every decision was LL's, so LL mode
-		// fails at the same token.
-		return @ZERO@, sllErr
-	}
 	if repair {
+		if p.rp.seen == 0 {
+			// No conflict before the error: every decision was LL's, so LL
+			// mode fails at the same token.
+			return @ZERO@, sllErr
+		}
 		r := &p.rp
 		r.on = true
 		defer func() { r.on = false }()
@@ -130,7 +130,8 @@ func (p *PARSER) llParse(rule @RULE@, repair bool, sllErr error) (@ROOT@, error)
 // switches one whose LL answer differs from the alternative taken: the latest
 // such among the PFXRepairBackward before the error, or else the earliest of
 // the rest. When none differs it returns the earliest conflict where no
-// alternative is viable, if any: there LL mode fails.
+// alternative is viable, if any: there LL mode fails. (Scanning backwards,
+// the last dead one seen is the earliest; the forward scan returns its first.)
 func (p *PARSER) switchConflict() (switched bool, dead *PFXConflict) {
 	r := &p.rp
 	budget := PFXRepairBackward
@@ -144,7 +145,10 @@ func (p *PARSER) switchConflict() (switched bool, dead *PFXConflict) {
 			budget--
 			p.checkConflict(c)
 		}
-		if c.known > 0 && c.known != c.alt {
+		switch {
+		case c.known < 0:
+			dead = c
+		case c.known != c.alt:
 			p.switchTo(i)
 			return true, nil
 		}
@@ -164,12 +168,7 @@ func (p *PARSER) switchConflict() (switched bool, dead *PFXConflict) {
 			return true, nil
 		}
 	}
-	for j := i + 1; j < r.seq; j++ {
-		if r.recs[j].known < 0 {
-			return false, &r.recs[j]
-		}
-	}
-	return false, nil
+	return false, dead
 }
 
 // switchTo makes conflict i take its LL answer and drops the records after
@@ -285,15 +284,12 @@ const (
 )
 
 // PFXFull is the process's full-context prediction cache.
-var PFXFull = PFXNewFullCache()
-
-// PFXNewFullCache returns an empty cache.
-func PFXNewFullCache() *PFXFullCache {
+var PFXFull = func() *PFXFullCache {
 	g := &PFXFullCache{starts: map[string]*PFXDFAState{}, states: map[string]*PFXDFAState{}}
 	g.pr.pool.reset(false)
 	g.pr.full = true
 	return g
-}
+}()
 
 // isFull says whether g has stopped growing, and records it in g.full; call
 // it under the write lock.

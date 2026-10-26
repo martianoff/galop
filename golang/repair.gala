@@ -15,9 +15,9 @@ import (
 // left-recursive, and no embedded action runs while parsing (a repair replays
 // the parse, which would run an action more often than ANTLR's two passes do).
 // rules: the parser rules, indexed by rule number.
-func GrammarRepairable(rules Array[atn.RuleIR]) bool =
-    !rules.Exists((r) => r.Alts.Exists((a) => hasStep(a.Steps, isPredicateOrAction))) &&
-        atn.FindLeftRecursion(rules).IsEmpty()
+// lr: the grammar's left recursion.
+func GrammarRepairable(rules Array[atn.RuleIR], lr atn.LeftRecursion) bool =
+    lr.IsEmpty() && !rules.Exists((r) => r.Alts.Exists((a) => hasStep(a.Steps, isPredicateOrAction)))
 
 func isPredicateOrAction(s atn.Step) bool = s match {
     case atn.CheckPredicate(_) => true

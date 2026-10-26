@@ -117,7 +117,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             // ANTLR rewrites directly left-recursive rules into precedence loops
             // (the front end reports other left recursion as error 119); parsed
             // as written, they would call themselves forever.
-            val lr = atn.FindLeftRecursion(compiled.Rules)
+            val lr = atn.FindLeftRecursion(in.Grammar, compiled)
             if !lr.IsEmpty() {
                 val names = lr.Direct.AppendAll(lr.Cycles.FlatMap((c) => c)).Distinct()
                     .Map((i) => compiled.Rules.Get(i).Name).MkString(", ")
@@ -136,7 +136,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 adaptive = an.Plans.Exists((p) => hasAdaptive(p.Lookahead)),
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
-                repair = GrammarRepairable(compiled.Rules),
+                repair = GrammarRepairable(compiled.Rules, lr),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"

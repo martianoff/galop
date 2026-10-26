@@ -1,96 +1,141 @@
 package atn
 
-import . "martianoff/gala/collection_immutable"
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/g4"
+)
 
 // Left recursion: a rule that can call itself before consuming a token.
-// ANTLR rewrites a rule whose alternatives start with a call of the rule
-// itself (`e : e '*' e | INT`) into a precedence loop, and reports every other
-// left-recursive cycle as error 119. galop does not rewrite yet.
+// ANTLR 4.13.1 rewrites a rule with an alternative that starts with a call of
+// the rule itself (`e : e '*' e | INT`) into a precedence loop, then runs its
+// left-recursion detector over the result and reports what it finds as error
+// 119. galop does not rewrite yet; it finds the same rules and cycles.
 
-// LeftRecursion is what a grammar's rules do before consuming a token.
-// Cycles are the sets of rules ANTLR rejects as mutually left-recursive
-// (error 119), each in rule order; Direct are the rules whose only left
-// recursion is an alternative that starts with a call of the rule itself,
-// which ANTLR rewrites.
-struct LeftRecursion(Cycles Array[Array[int]], Direct Array[int])
+// LeftRecursion is a grammar's left recursion as ANTLR sees it. Direct are
+// the rules ANTLR rewrites; Cycles are the sets of rules its detector reports
+// as mutually left-recursive (error 119), in its order.
+struct LeftRecursion(Direct Array[int], Cycles Array[Array[int]])
 
 // IsEmpty says whether no rule is left-recursive.
-func (l LeftRecursion) IsEmpty() bool = l.Cycles.IsEmpty() && l.Direct.IsEmpty()
+func (l LeftRecursion) IsEmpty() bool = l.Direct.IsEmpty() && l.Cycles.IsEmpty()
 
-// leftEdge is what a sequence of steps can do before it consumes a token:
-// the rules it can call there, and whether it can match nothing at all.
-struct leftEdge(calls HashSet[int], nullable bool)
-
-func emptyEdge() leftEdge = leftEdge(EmptyHashSet[int](), true)
-
-func stepsEdge(steps Array[Step], nullable Array[bool]) leftEdge =
-    steps.FoldLeft(emptyEdge(), (acc, s) => if (!acc.nullable) acc else {
-        val e = stepEdge(s, nullable)
-        leftEdge(acc.calls.Union(e.calls), e.nullable)
-    })
-
-func stepEdge(s Step, nullable Array[bool]) leftEdge = s match {
-    case MatchToken(_, _) => leftEdge(EmptyHashSet[int](), false)
-    case MatchSet(_, _, _) => leftEdge(EmptyHashSet[int](), false)
-    case CallRule(rule, _, _) => leftEdge(HashSetOf(rule), nullable.Get(rule))
-    case Choose(_, alts, exitAlt) => {
-        val edges = alts.Map((a) => stepsEdge(a, nullable))
-        leftEdge(
-            edges.FoldLeft(EmptyHashSet[int](), (acc, e) => acc.Union(e.calls)),
-            exitAlt.IsDefined() || edges.Exists(_.nullable),
-        )
+// FindLeftRecursion finds c's left recursion, g being the grammar c was
+// compiled from.
+func FindLeftRecursion(g g4.Grammar, c Compiled) LeftRecursion = c.Parser match {
+    case None() => LeftRecursion(EmptyArray[int](), EmptyArray[Array[int]]())
+    case Some(atn) => {
+        val direct = c.Rules.Filter((r) => startsWithItself(g, r)).Map(_.Index)
+        // The calls ANTLR's rewrite removes: each rewritten rule's call of
+        // itself at the start of an alternative, known by its follow state.
+        // The rest of such an alternative becomes a loop after the rule's
+        // other (primary) alternatives, so it is at the rule's left edge only
+        // when a primary alternative can match nothing.
+        val rewritten = (r RuleIR, alt int) =>
+            direct.Contains(r.Index) && g4Alts(g, r).GetOption(alt).Exists((a) => altStartsWith(a, r.Name))
+        val nullable = nullableRules(c.Rules, rewritten)
+        val skip = direct.FoldLeft(EmptyHashMap[int, bool](), (acc, i) => {
+            val r = c.Rules.Get(i)
+            r.Alts.ZipWithIndex().FoldLeft(acc, (inner, alt) => alt.V1.Steps.HeadOption() match {
+                case Some(CallRule(rule, follow, _)) if rule == i && rewritten(r, alt.V2) => inner.Put(follow, nullable.Get(i))
+                case _ => inner
+            })
+        })
+        val found = atn.RuleStart.FoldLeft(detection(EmptyHashSet[int](), EmptyArray[Array[int]]()), (d, start) => {
+            val rule = atn.States.Get(start).Rule
+            detect(atn, skip, rule, start, HashSetOf(start), d.Copy(visited = EmptyHashSet[int]())).V2
+        })
+        LeftRecursion(direct, found.cycles)
     }
-    case Loop(plus, _, _, body) => {
-        val e = stepsEdge(body, nullable)
-        leftEdge(e.calls, !plus || e.nullable)
-    }
-    case RunAction(_) => emptyEdge()
-    case CheckPredicate(_) => emptyEdge()
 }
 
-// NullableRules says, per rule, whether it can match the empty input: the
-// least fixed point of "some alternative can match nothing".
-// rules: the parser rules, indexed by rule number.
-func NullableRules(rules Array[RuleIR]) Array[bool] = nullableFrom(rules, rules.Map((_) => false))
+func g4Alts(g g4.Grammar, r RuleIR) Array[g4.Alt] =
+    g.Rules.Find((gr) => gr.Name == r.Name).Map(_.Alts).GetOrElse(EmptyArray[g4.Alt]())
 
-func nullableFrom(rules Array[RuleIR], known Array[bool]) Array[bool] {
-    val next = rules.Map((r) => r.Alts.Exists((a) => stepsEdge(a.Steps, known).nullable))
-    if (next.Zip(known).ForAll((t) => t.V1 == t.V2)) known else nullableFrom(rules, next)
+// startsWithItself is ANTLR's test for a rule to rewrite: some alternative's
+// first element is a reference to the rule, labeled or not.
+func startsWithItself(g g4.Grammar, r RuleIR) bool = g4Alts(g, r).Exists((a) => altStartsWith(a, r.Name))
+
+func altStartsWith(a g4.Alt, rule string) bool = a.Elements.HeadOption() match {
+    case Some(g4.RuleRef(name)) => name == rule
+    case Some(g4.Labeled(_, _, g4.RuleRef(name))) => name == rule
+    case _ => false
 }
 
-// FindLeftRecursion finds the grammar's left recursion.
-// rules: the parser rules, indexed by rule number.
-func FindLeftRecursion(rules Array[RuleIR]) LeftRecursion {
-    val nullable = NullableRules(rules)
-    val edges = rules.Map((r) =>
-        r.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(stepsEdge(a.Steps, nullable).calls)))
-    val reach = rules.Map((r) => reachable(edges, edges.Get(r.Index), EmptyHashSet[int]()))
-    val recursive = rules.Filter((r) => reach.Get(r.Index).Contains(r.Index))
-    // A rule's cycle: the rules it reaches that reach it back.
-    val cycleOf = (r RuleIR) => recursive
-        .Filter((s) => reach.Get(r.Index).Contains(s.Index) && reach.Get(s.Index).Contains(r.Index))
-        .Map(_.Index)
-    val direct = recursive.Filter((r) => cycleOf(r).Size() == 1 && rewritable(r, nullable))
-    val cycles = recursive
-        .Filter((r) => !direct.Exists((d) => d.Index == r.Index))
-        .Map(cycleOf)
-        .Distinct()
-    LeftRecursion(cycles, direct.Map(_.Index))
+// nullableRules says, per rule, whether it can match nothing, leaving out
+// the alternatives skipped(rule, alternative index) says to: the least fixed
+// point of "some alternative left in can match nothing".
+func nullableRules(rules Array[RuleIR], skipped func(RuleIR, int) bool) Array[bool] =
+    nullableFrom(rules, skipped, rules.Map((_) => false))
+
+func nullableFrom(rules Array[RuleIR], skipped func(RuleIR, int) bool, known Array[bool]) Array[bool] {
+    val next = rules.Map((r) =>
+        r.Alts.ZipWithIndex().Exists((a) => !skipped(r, a.V2) && stepsNullable(a.V1.Steps, known)))
+    if (next.Zip(known).ForAll((t) => t.V1 == t.V2)) known else nullableFrom(rules, skipped, next)
 }
 
-// rewritable says whether r calls itself before a token only as the first
-// step of a top-level alternative, the shape ANTLR rewrites.
-func rewritable(r RuleIR, nullable Array[bool]) bool = r.Alts.ForAll((a) => a.Steps.HeadOption() match {
-    case Some(CallRule(rule, _, _)) if rule == r.Index => !nullable.Get(r.Index)
-    case _ => !stepsEdge(a.Steps, nullable).calls.Contains(r.Index)
+func stepsNullable(steps Array[Step], nullable Array[bool]) bool = steps.ForAll((s) => s match {
+    case MatchToken(_, _) => false
+    case MatchSet(_, _, _) => false
+    case CallRule(rule, _, _) => nullable.Get(rule)
+    case Choose(_, alts, exitAlt) => exitAlt.IsDefined() || alts.Exists((a) => stepsNullable(a, nullable))
+    case Loop(plus, _, _, body) => !plus || stepsNullable(body, nullable)
+    case RunAction(_) => true
+    case CheckPredicate(_) => true
 })
 
-// reachable is every rule reachable from frontier along left edges.
-func reachable(edges Array[HashSet[int]], frontier HashSet[int], seen HashSet[int]) HashSet[int] {
-    val fresh = frontier.Filter((r) => !seen.Contains(r))
-    if (fresh.IsEmpty()) seen
-    else {
-        val next = fresh.ToArray().FoldLeft(EmptyHashSet[int](), (acc, r) => acc.Union(edges.Get(r)))
-        reachable(edges, next, seen.Union(fresh))
+// detection is the state of ANTLR's LeftRecursionDetector: the states visited
+// from the current rule's start, and the cycles found so far.
+struct detection(visited HashSet[int], cycles Array[Array[int]])
+
+// detect is LeftRecursionDetector.check from state s of rule rule, with the
+// rule starts on the current call path in onPath: it walks transitions that
+// consume nothing, enters rule calls, goes on past a call only when the
+// called rule can match nothing, and records a cycle at a call of a rule
+// already on the path. It reports whether s reaches its rule's end.
+func detect(atn ATN, skip HashMap[int, bool], rule int, s int, onPath HashSet[int], d detection) Tuple[bool, detection] {
+    val state = atn.States.Get(s)
+    if state.IsRuleStop() {
+        return (true, d)
     }
+    if d.visited.Contains(s) {
+        return (false, d)
+    }
+    state.Out.FoldLeft((false, d.Copy(visited = d.visited.Add(s))), (acc, t) => {
+        val (reaches, cur) = acc
+        t match {
+            case RuleCall(_, _, follow) if skip.Contains(follow) =>
+                if (skip.GetOrElse(follow, false)) {
+                    val (r, next) = detect(atn, skip, rule, follow, onPath, cur)
+                    (reaches || r, next)
+                } else (reaches, cur)
+            case RuleCall(target, callee, _) if onPath.Contains(target) => (reaches, addToCycle(cur, rule, callee))
+            case RuleCall(target, callee, follow) => {
+                val (nullable, inner) = detect(atn, skip, callee, target, onPath.Add(target), cur)
+                if (nullable) {
+                    val (r, next) = detect(atn, skip, rule, follow, onPath, inner)
+                    (reaches || r, next)
+                } else (reaches, inner)
+            }
+            case _ if t.IsEpsilon() => {
+                val (r, next) = detect(atn, skip, rule, t.Target(), onPath, cur)
+                (reaches || r, next)
+            }
+            case _ => (reaches, cur)
+        }
+    })
+}
+
+// addToCycle is LeftRecursionDetector.addRulesToCycle: a call from rule from
+// of rule to puts both in every cycle that has either, or else starts a cycle
+// (to, from). A cycle keeps its rules in the order they were added.
+func addToCycle(d detection, from int, to int) detection {
+    val add = (cycle Array[int], r int) => if (cycle.Contains(r)) cycle else cycle.Append(r)
+    val joined = d.cycles.Map((cycle) => {
+        val withFrom = if (cycle.Contains(to)) add(cycle, from) else cycle
+        if (withFrom.Contains(from)) add(withFrom, to) else withFrom
+    })
+    val found = d.cycles.Exists((cycle) => cycle.Contains(to) || cycle.Contains(from))
+    if (found) d.Copy(cycles = joined)
+    else d.Copy(cycles = d.cycles.Append(add(ArrayOf(to), from)))
 }

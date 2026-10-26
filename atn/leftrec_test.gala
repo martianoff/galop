@@ -2,18 +2,26 @@ package atn
 
 import (
     . "martianoff/gala/collection_immutable"
+    "martianoff/gala/go_builtins"
     . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/g4"
 )
 
 // leftRecursion names the rules of src's left recursion: the cycles ANTLR
-// rejects, then the directly left-recursive rules it rewrites.
-func leftRecursion(t T, src string) Tuple[Array[Array[string]], Array[string]] {
-    val c = compiled(t, src)
-    val lr = FindLeftRecursion(c.Rules)
-    val name = (i int) => c.Rules.Get(i).Name
-    (lr.Cycles.Map((cycle) => cycle.Map(name)), lr.Direct.Map(name))
+// reports as error 119, then the rules it rewrites.
+func leftRecursion(t T, src string) Tuple[Array[Array[string]], Array[string]] = g4.Parse(src) match {
+    case Right(g) => {
+        val c = compiled(t, src)
+        val lr = FindLeftRecursion(g, c)
+        val name = (i int) => c.Rules.Get(i).Name
+        (lr.Cycles.Map((cycle) => cycle.Map(name)), lr.Direct.Map(name))
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
 }
 
+// The expected results are ANTLR 4.13.1's: what it rewrites, and the sets
+// and order of its error 119.
 func TestFindLeftRecursion(t T) T = RunCases(t, (sub, src, want) => Eq(sub, leftRecursion(sub, src), want),
     Case[string, Tuple[Array[Array[string]], Array[string]]](
         Name = "direct, as ANTLR rewrites it",
@@ -21,9 +29,29 @@ func TestFindLeftRecursion(t T) T = RunCases(t, (sub, src, want) => Eq(sub, left
         Expected = (EmptyArray[Array[string]](), ArrayOf("e")),
     ),
     Case[string, Tuple[Array[Array[string]], Array[string]]](
+        Name = "direct with a label",
+        Input = "grammar L;\ne : l=e '+' e | X ;\nX : 'x' ;\n",
+        Expected = (EmptyArray[Array[string]](), ArrayOf("e")),
+    ),
+    Case[string, Tuple[Array[Array[string]], Array[string]]](
+        Name = "direct, in a rule that can match nothing",
+        Input = "grammar L;\na : a 'x' | ;\n",
+        Expected = (EmptyArray[Array[string]](), ArrayOf("a")),
+    ),
+    Case[string, Tuple[Array[Array[string]], Array[string]]](
         Name = "mutual",
         Input = "grammar L;\na : b 'x' | 'y' ;\nb : a 'z' | 'w' ;\n",
         Expected = (ArrayOf(ArrayOf("a", "b")), EmptyArray[string]()),
+    ),
+    Case[string, Tuple[Array[Array[string]], Array[string]]](
+        Name = "in ANTLR's discovery order",
+        Input = "grammar L;\nx0 : a ;\na : b 'x' | 'y' ;\nb : c 'z' | 'w' ;\nc : a 'q' | 'r' ;\n",
+        Expected = (ArrayOf(ArrayOf("a", "c", "b")), EmptyArray[string]()),
+    ),
+    Case[string, Tuple[Array[Array[string]], Array[string]]](
+        Name = "in a parenthesized block",
+        Input = "grammar L;\na : ( a 'x' ) | 'y' ;\n",
+        Expected = (ArrayOf(ArrayOf("a")), EmptyArray[string]()),
     ),
     Case[string, Tuple[Array[Array[string]], Array[string]]](
         Name = "after a nullable prefix",
@@ -33,11 +61,6 @@ func TestFindLeftRecursion(t T) T = RunCases(t, (sub, src, want) => Eq(sub, left
     Case[string, Tuple[Array[Array[string]], Array[string]]](
         Name = "after an empty rule",
         Input = "grammar L;\na : n a 'x' | 'y' ;\nn : ;\n",
-        Expected = (ArrayOf(ArrayOf("a")), EmptyArray[string]()),
-    ),
-    Case[string, Tuple[Array[Array[string]], Array[string]]](
-        Name = "inside a block",
-        Input = "grammar L;\na : ('(' | a) 'x' | 'y' ;\n",
         Expected = (ArrayOf(ArrayOf("a")), EmptyArray[string]()),
     ),
     Case[string, Tuple[Array[Array[string]], Array[string]]](
@@ -52,7 +75,9 @@ func TestFindLeftRecursion(t T) T = RunCases(t, (sub, src, want) => Eq(sub, left
     ),
 )
 
-func TestNullableRules(t T) T {
-    val c = compiled(t, "grammar N;\na : b c ;\nb : 'b'? ;\nc : d* ;\nd : 'd' ;\ne : 'e' | ;\n")
-    Eq(t, NullableRules(c.Rules), ArrayOf(true, true, true, false, true))
+func TestRewrittenAlternativesAfterThePrimaries(t T) T {
+    // After ANTLR's rewrite, a rewritten alternative's rest comes after a
+    // primary alternative: left-recursive again only if one can be empty.
+    val t1 = Eq(t, leftRecursion(t, "grammar L;\na : a a | 'y' ;\n"), (EmptyArray[Array[string]](), ArrayOf("a")))
+    Eq(t1, leftRecursion(t, "grammar L;\na : a a | ;\n"), (ArrayOf(ArrayOf("a")), ArrayOf("a")))
 }

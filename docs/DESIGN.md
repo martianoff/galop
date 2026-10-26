@@ -217,8 +217,8 @@ where no alternative is viable, or where the pass failed, with the error and
 the position LL mode reports there. The conflict to switch is almost always
 within a few of the error (on the GALA and held-out corpora and 10,000 mutants
 of them, at most 5 back), so a valid file needs a handful of predictions,
-while a file with a real syntax error costs at most 8 predictions and one
-replay more than the rerun. Past 16 passes the parser falls back to the
+while a file with a real syntax error and nothing to switch costs at most 8
+predictions and one replay more than the rerun (each switch adds a pass). Past 16 passes the parser falls back to the
 whole-input LL rerun. On the held-out corpus (see `differential/`) the two
 files that needed the LL stage took 2 full-context predictions instead of
 about 15,000.
