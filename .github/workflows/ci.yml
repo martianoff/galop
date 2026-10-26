@@ -31,7 +31,9 @@ env:
 #
 # Pull requests can only read caches saved on main, so pushes to main get
 # longer limits: they run cold when the cache is stale and fill it for the
-# pull requests after them. Pull requests stay within 10 minutes.
+# pull requests after them: a cold macOS build (-p=1) takes about 45 minutes,
+# and Windows needs about 8 minutes after its tests to save the Go cache. Pull
+# requests stay within 10 minutes.
 jobs:
   bazel:
     name: bazel test
@@ -109,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":30,"tests":25},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":45,"tests":40},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":30,"tests":25}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":30,"tests":25},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":65,"tests":55},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":45,"tests":25}]') }}
     defaults:
       run:
         shell: bash
