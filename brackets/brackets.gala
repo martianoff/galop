@@ -393,4 +393,3 @@ func Section(a atn.ATN, b Brackets) Array[string] {
 func punctuation(a atn.ATN, t int) bool =
     a.Vocab.Literals.GetOption(t).FlatMap((o) => o).Exists((lit) =>
         lit != "" && !strings.ContainsFunc(lit, (r) => unicode.IsLetter(r) || unicode.IsDigit(r)))
-

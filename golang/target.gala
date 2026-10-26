@@ -7,7 +7,6 @@ import (
 
     "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
-    "github.com/martianoff/galop/brackets"
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/g4"
     "github.com/martianoff/galop/leftrec"
@@ -110,7 +109,7 @@ func generateFlavor(in codegen.Input, opts codegen.Options, version string, f Fl
 // flavorParserFile generates a flavor's parser, if the grammar has parser rules.
 func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f Flavor) Either[Array[string], Array[codegen.OutputFile]] {
     val compiled = in.Compiled
-    val predicates = compiled.Rules.Exists((r) => r.Alts.Exists((a) => hasStep(a.Steps, isPredicate)))
+    val predicates = compiled.Rules.Exists((r) => r.Alts.Exists((a) => atn.HasStep(a.Steps, isPredicate)))
     if predicates {
         return Left(ArrayOf("Go target: semantic predicates are not supported yet"))
     }
@@ -127,7 +126,6 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             }
             val grammar = in.Grammar.Name
             val base = baseName(in.Grammar)
-            val repair = GrammarRepairable(compiled.Rules, lr)
             val e = env(
                 names = Names(Grammar = grammar, Combined = isCombined(in.Grammar)),
                 pfx = base + "Galop",
@@ -137,13 +135,10 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 rules = compiled.Rules,
                 plans = an.Plans,
                 adaptive = an.Plans.Exists((p) => analysis.NeedsRuntime(p.Lookahead)),
-                // Reading groups is safe only where a wrong guess is repaired:
-                // without repair, a failed grouped pass would add a parse, and
-                // actions would run once more than in ANTLR.
-                brackets = if (repair) an.Brackets else brackets.NoBrackets("no repair in a grammar with actions or predicates"),
+                brackets = an.Brackets,
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
-                repair = repair,
+                repair = GrammarRepairable(compiled.Rules, lr),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"

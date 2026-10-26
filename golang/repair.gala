@@ -18,20 +18,7 @@ import (
 // rules: the parser rules, indexed by rule number.
 // lr: the grammar's left recursion.
 func GrammarRepairable(rules Array[atn.RuleIR], lr leftrec.LeftRecursion) bool =
-    lr.IsEmpty() && !rules.Exists((r) => r.Alts.Exists((a) => hasStep(a.Steps, isPredicateOrAction)))
-
-func isPredicateOrAction(s atn.Step) bool = s match {
-    case atn.CheckPredicate(_) => true
-    case atn.RunAction(_) => true
-    case _ => false
-}
-
-// hasStep says whether some step in steps, nested ones included, satisfies p.
-func hasStep(steps Array[atn.Step], p func(atn.Step) bool) bool = steps.Exists((s) => p(s) || (s match {
-    case atn.Choose(_, alts, _) => alts.Exists((a) => hasStep(a, p))
-    case atn.Loop(_, _, _, body) => hasStep(body, p)
-    case _ => false
-}))
+    lr.IsEmpty() && !atn.RunsCode(rules)
 
 // Repairable says whether a parse that starts at entry rule r may repair a
 // failed SLL parse: r ends with EOF, and no rule it calls can call r again.

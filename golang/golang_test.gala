@@ -29,7 +29,7 @@ WS : [ \t\r\n]+ -> skip ;
 func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], Array[codegen.OutputFile]] = g4.Parse(src) match {
     case Right(g) => atn.Compile(g) match {
         case Right(c) => Target("test").Generate(
-            codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))),
+            codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK, analysis.BracketsOff(c.Rules, false)))),
             codegen.Options(Package = "expr", Defines = defines),
         )
         case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
