@@ -8,6 +8,7 @@ gala_library(
         "escape.gala",
         "intervals.gala",
         "ir.gala",
+        "leftrec.gala",
         "vocab.gala",
     ],
     importpath = "github.com/martianoff/galop/atn",
@@ -22,7 +23,10 @@ gala_library(
 
 gala_test(
     name = "atn_test",
-    srcs = ["atn_test.gala"],
+    srcs = [
+        "atn_test.gala",
+        "leftrec_test.gala",
+    ],
     importpath = "github.com/martianoff/galop/atn",
     lib_srcs = [
         "atn.gala",
@@ -31,6 +35,7 @@ gala_test(
         "intervals.gala",
         "ir.gala",
         "vocab.gala",
+        "leftrec.gala",
     ],
     pkg = "atn",
     deps = [

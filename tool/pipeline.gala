@@ -125,19 +125,37 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
     }
     val rest = atn.Compile(g) match {
         case Left(ds) => done(problemsOnly(ds))
-        case Right(c) => stage.Action match {
-            case Validate(roundTrip) => done(validated(path, g, roundTrip))
-            case PrintReport() => done(report(path, c))
-            // -depend only needs the file names, which come from the compiled grammar.
-            case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
-            case _ => {
-                val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))
-                FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
+        case Right(c) => leftRecursionProblem(g, c) match {
+            case Some(d) => done(problemsOnly(ArrayOf(d)))
+            case None() => stage.Action match {
+                case Validate(roundTrip) => done(validated(path, g, roundTrip))
+                case PrintReport() => done(report(path, c))
+                // -depend only needs the file names, which come from the compiled grammar.
+                case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
+                case _ => {
+                    val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))
+                    FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
+                }
             }
         }
     }
     val placed = rest.Result.Copy(Diagnostics = rest.Result.Diagnostics.Map((d) => located(d, path)))
     FrontEnd(problemsOnly(problems).Then(placed), rest.Ready)
+}
+
+// leftRecursionProblem is ANTLR's error 119 for the grammar's mutually
+// left-recursive rules, if any, placed at the first rule of the first set
+// (ANTLR gives no position). A rule whose alternatives start with a call of
+// itself is not one: ANTLR rewrites it (galop's Go target does not yet).
+func leftRecursionProblem(g g4.Grammar, c atn.Compiled) Option[diag.Diagnostic] = atn.FindLeftRecursion(c.Rules).Cycles match {
+    case Array() => None()
+    case cycles => {
+        val name = (i int) => c.Rules.Get(i).Name
+        val sets = cycles.Map((cycle) => " [" + cycle.Map(name).MkString(", ") + "]").MkString(" and ")
+        val first = name(cycles.Head().Head())
+        val pos = g.Rules.Find((r) => r.Name == first).Map(_.Pos).GetOrElse(g.Pos)
+        Some(diag.LeftRecursionCycles.New(sets).At(pos.Line, pos.Col))
+    }
 }
 
 // nameProblems checks, as ANTLR does, that `grammar X;` is in a file called X.g4.

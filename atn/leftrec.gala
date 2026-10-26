@@ -1,0 +1,91 @@
+package atn
+
+import . "martianoff/gala/collection_immutable"
+
+// Left recursion: a rule that can call itself before consuming a token.
+// ANTLR rewrites a rule whose alternatives start with a call of the rule
+// itself (`e : e '*' e | INT`) into a precedence loop, and reports every other
+// left-recursive cycle as error 119. galop does not rewrite yet.
+
+// LeftRecursion is what a grammar's rules do before consuming a token.
+// Cycles are the sets of rules ANTLR rejects as mutually left-recursive
+// (error 119), each in rule order; Direct are the rules whose only left
+// recursion is an alternative that starts with a call of the rule itself,
+// which ANTLR rewrites.
+struct LeftRecursion(Cycles Array[Array[int]], Direct Array[int])
+
+// IsEmpty says whether no rule is left-recursive.
+func (l LeftRecursion) IsEmpty() bool = l.Cycles.IsEmpty() && l.Direct.IsEmpty()
+
+// leftEdge is what a sequence of steps can do before it consumes a token:
+// the rules it can call there, and whether it can match nothing at all.
+struct leftEdge(calls HashSet[int], nullable bool)
+
+func emptyEdge() leftEdge = leftEdge(EmptyHashSet[int](), true)
+
+func stepsEdge(steps Array[Step], nullable Array[bool]) leftEdge =
+    steps.FoldLeft(emptyEdge(), (acc, s) => if (!acc.nullable) acc else {
+        val e = stepEdge(s, nullable)
+        leftEdge(acc.calls.Union(e.calls), e.nullable)
+    })
+
+func stepEdge(s Step, nullable Array[bool]) leftEdge = s match {
+    case MatchToken(_, _) => leftEdge(EmptyHashSet[int](), false)
+    case MatchSet(_, _, _) => leftEdge(EmptyHashSet[int](), false)
+    case CallRule(rule, _, _) => leftEdge(HashSetOf(rule), nullable.Get(rule))
+    case Choose(_, alts, exitAlt) => {
+        val edges = alts.Map((a) => stepsEdge(a, nullable))
+        leftEdge(
+            edges.FoldLeft(EmptyHashSet[int](), (acc, e) => acc.Union(e.calls)),
+            exitAlt.IsDefined() || edges.Exists(_.nullable),
+        )
+    }
+    case Loop(plus, _, _, body) => {
+        val e = stepsEdge(body, nullable)
+        leftEdge(e.calls, !plus || e.nullable)
+    }
+    case RunAction(_) => emptyEdge()
+    case CheckPredicate(_) => emptyEdge()
+}
+
+// NullableRules says, per rule, whether it can match the empty input: the
+// least fixed point of "some alternative can match nothing".
+// rules: the parser rules, indexed by rule number.
+func NullableRules(rules Array[RuleIR]) Array[bool] = nullableFrom(rules, rules.Map((_) => false))
+
+func nullableFrom(rules Array[RuleIR], known Array[bool]) Array[bool] {
+    val next = rules.Map((r) => r.Alts.Exists((a) => stepsEdge(a.Steps, known).nullable))
+    if (next.Zip(known).ForAll((t) => t.V1 == t.V2)) known else nullableFrom(rules, next)
+}
+
+// FindLeftRecursion finds the grammar's left recursion.
+// rules: the parser rules, indexed by rule number.
+func FindLeftRecursion(rules Array[RuleIR]) LeftRecursion {
+    val nullable = NullableRules(rules)
+    val edges = rules.Map((r) =>
+        r.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(stepsEdge(a.Steps, nullable).calls)))
+    val reach = rules.Map((r) => reachable(edges, edges.Get(r.Index), EmptyHashSet[int]()))
+    val recursive = rules.Filter((r) => reach.Get(r.Index).Contains(r.Index))
+    // A rule's cycle: the rules it reaches that reach it back.
+    val cycleOf = (r RuleIR) => recursive.Filter((s) => reach.Get(r.Index).Contains(s.Index) && reach.Get(s.Index).Contains(r.Index)).Map(_.Index)
+    val direct = recursive.Filter((r) => cycleOf(r).Size() == 1 && rewritable(r, nullable))
+    val cycles = recursive
+        .Filter((r) => !direct.Exists((d) => d.Index == r.Index))
+        .Map(cycleOf)
+        .Distinct()
+    LeftRecursion(cycles, direct.Map(_.Index))
+}
+
+// rewritable says whether r calls itself before a token only as the first
+// step of a top-level alternative, the shape ANTLR rewrites.
+func rewritable(r RuleIR, nullable Array[bool]) bool = r.Alts.ForAll((a) => a.Steps.HeadOption() match {
+    case Some(CallRule(rule, _, _)) if rule == r.Index => !nullable.Get(r.Index)
+    case _ => !stepsEdge(a.Steps, nullable).calls.Contains(r.Index)
+})
+
+// reachable is every rule reachable from frontier along left edges.
+func reachable(edges Array[HashSet[int]], frontier HashSet[int], seen HashSet[int]) HashSet[int] {
+    val fresh = frontier.Filter((r) => !seen.Contains(r))
+    if (fresh.IsEmpty()) seen
+    else reachable(edges, fresh.ToArray().FoldLeft(EmptyHashSet[int](), (acc, r) => acc.Union(edges.Get(r))), seen.Union(fresh))
+}

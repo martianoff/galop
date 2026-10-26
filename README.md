@@ -204,8 +204,9 @@ sources for a `go_library`.
 Not supported yet, and reported as errors rather than ignored: rule arguments,
 `returns`/`locals`, rule-level options and actions, element options
 (`<assoc=right>`), lexer modes, grammar imports, the `tokenVocab` and
-`caseInsensitive` options, and in the Go target, left-recursive rules and
-semantic predicates.
+`caseInsensitive` options, and in the Go target, directly left-recursive rules
+(`e : e '+' e | INT`, which ANTLR rewrites into a loop) and semantic
+predicates. Mutually left-recursive rules are an error, as in ANTLR (error 119).
 
 ## Development
 
