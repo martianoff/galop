@@ -162,7 +162,7 @@ flowchart TD
 | | What it does | Off when |
 |---|---|---|
 | [SLL automata](#sll-automata) | decide a decision without runtime prediction | always tried, and kept only when the automaton settles every input (none in `gala.g4`) |
-| [Bracket abstraction](#bracket-abstraction) | reads each bracketed group as one symbol, so prediction stops scanning operands | `-Xno-brackets`; the grammar has actions, predicates or left recursion, or no entry rule may be repaired (`repair.BracketsOff`: no bracket tables are generated); an entry rule that may not be repaired; after a failed first pass |
+| [Bracket abstraction](#bracket-abstraction) | reads each bracketed group as one symbol, so prediction stops scanning operands | `-Xno-brackets`; the grammar has actions, predicates or left recursion, or no entry rule may be repaired (the grammar's `repair.Plan`: no bracket families are generated); an entry rule that may not be repaired; after a failed first pass |
 | [Repair](#repairing-a-failed-sll-parse) | settles a failed first pass with a few full-context predictions instead of ANTLR's whole-input LL rerun | the grammar has actions, predicates or left recursion, or the entry rule does not end with EOF or can be called again from inside itself: then the parser reruns in LL mode, as ANTLR does; also after 8 passes, or once its replays would cover more tokens than the input holds |
 | [Full-context cache](#full-context-cache) | caches full-context prediction per decision and call stack | never; it stops growing past 32,768 states or 2^20 contexts |
 
