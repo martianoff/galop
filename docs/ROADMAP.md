@@ -67,8 +67,10 @@ contexts ports by changing imports.
 
 **Lexer.** Generated (regex → DFA, longest match, rule priority).
 
-**Errors.** Expected-token sets come out of the analysis. Until generated error recovery
-is good enough for editor use, a consumer can fall back to ANTLR on a syntax error.
+**Errors.** A failed parse reports the first syntax error ANTLR reports, with the same
+message and position; the expected-token sets come out of the analysis. Until generated
+error recovery is good enough for editor use, a consumer that needs every error can fall
+back to ANTLR on a syntax error.
 
 ## Milestones
 
@@ -79,9 +81,9 @@ is good enough for editor use, a consumer can fall back to ANTLR on a syntax err
 | M2 | Codegen spike | Within 2× of the hand-written parser, and at least 2× faster than ANTLR warm | **done**, and past the 10× goal: the native flavor parses the GALA corpus 12× faster than ANTLR warm (64 ms vs 797 ms) and 20× in a fresh process (75 ms vs 1.47 s); on code it was not tuned on, 54× and 36×. `array.gala` takes 1.08 ms warm, against 0.74 ms for the hand-written parser measured earlier on the same machine (1.5×). The antlr flavor is 3.3× and 7.7× on the corpus. See the [README](../README.md) for the full table |
 | M3 | Codegen: all of `gala.g4`, recognizer and tree | Every corpus file gives a tree identical to ANTLR's | **done**: 722/722 (ANTLR rejects the 723rd), checked in CI by the Bazel differential test |
 | B1 | Bazel: a `galop_parser` rule in rules_gala, using galop's release binaries | A Bazel build generates the same files as the CLI, with no GALA toolchain needed to run galop | **done**: rules_gala 0.5.0 with galop 0.1.0 (`galop.toolchain(version = "0.1.0")`) |
-| M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | |
+| M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | errors ready: a failed parse reports ANTLR's first syntax error (message, line and column), so the fallback is needed only for errors after the first |
 | M5 | Expression entry points on the generated parser | No ANTLR call on the success path | |
-| M6 | Generated error recovery | Editor diagnostics match ANTLR on a broken-input corpus | |
+| M6 | Generated error recovery | Editor diagnostics match ANTLR on a broken-input corpus | first error done: it matches ANTLR on 60,000+ broken files of both corpora; recovery past it remains |
 | T2 | Standalone track begins | M4 shipped; differential harness over grammars-v4 running | |
 
 ## Beyond ANTLR (track 2)

@@ -3,6 +3,7 @@ load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
 gala_library(
     name = "golang",
     srcs = [
+        "errors_go.gala",
         "names.gala",
         "native_emit.gala",
         "parser_emit.gala",
@@ -42,6 +43,7 @@ gala_test(
         "tables.gala",
         "target.gala",
         "repair_go.gala",
+        "errors_go.gala",
     ],
     pkg = "golang",
     deps = [

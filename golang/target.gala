@@ -133,6 +133,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 parser = parser,
                 rules = compiled.Rules,
                 plans = an.Plans,
+                analysis = an,
                 adaptive = an.Plans.Exists((p) => analysis.NeedsRuntime(p.Lookahead)),
                 repairPlan = an.Repair,
                 brackets = an.Brackets,

@@ -324,9 +324,10 @@ predictor stop early. At an abstract conflict (`onConflict`) the first pass
 takes the smallest alternative left; if that was wrong the parse fails. The
 first pass then runs again over tokens alone, and the repair of a failed parse
 (or the LL pass) follows exactly as it would without brackets, so it settles
-the parse with full-context prediction and a parse that fails reports the
-error prediction over tokens finds (see [Performance](#performance) for how
-often that happens). A unique abstract answer is exact in every pass.
+the parse with full-context prediction, and a parse that fails reports the
+error ANTLR reports, replayed over tokens alone (see [Reporting syntax errors
+as ANTLR does](#reporting-syntax-errors-as-antlr-does), and
+[Performance](#performance) for how often that happens). A unique abstract answer is exact in every pass.
 
 The argument needs a first pass that can only succeed on the whole input, so a
 parse reads bracketed groups only where it may be repaired: its entry rule ends
@@ -337,6 +338,75 @@ ANTLR does). Other entries predict over tokens, as without brackets, and pair
 no brackets. A grammar that is never repaired, or none of whose entry rules
 is, gets no bracket families at all: its `repair.Plan` decides that once, and
 `-report` and code generation both follow it.
+
+### Reporting syntax errors as ANTLR does
+
+A failed parse reports the first syntax error ANTLR 4.13.1's Go runtime
+reports for the same tokens: the same message and the same position. That error
+depends on more than the token where the input stops making sense:
+
+- **The shape ANTLR generates for each decision.** Where the alternatives'
+  one-token lookahead sets are disjoint, ANTLR's code generator writes a switch
+  on the next token, which fails with "no viable alternative" at that token.
+  Elsewhere it calls adaptive prediction, which can fail several tokens later,
+  or not at all.
+- **Where the generated code syncs.** At choice blocks, loop entries, loop
+  backs and before a `+` loop's first iteration, the default error strategy
+  checks the next token: it reports "extraneous input" when the token after it
+  fits, and otherwise a "mismatched input" for the error check that follows.
+- **Token matches.** A failed match reports "extraneous input" when deleting the
+  token would let the parse go on, "missing X at Y" when inserting a token
+  would, and otherwise "mismatched input ... expecting ...". The expected set
+  follows the actual call stack up to EOF.
+- **Errors that wait.** In the Go target a failed set match (`('(' | '[')`, or
+  a rule ANTLR turns into a set, like `literal : INT | STRING ;`) or a failed
+  sync at an optional block only records the error. The parse goes on without
+  consuming. The next error check reports the recorded error, a later failure
+  replaces it, a successful prediction clears it, and the end of the rule
+  reports it.
+- **How prediction fails.** When SLL prediction finds no viable
+  configuration, ANTLR reports "no viable alternative" for the text from the
+  decision's first token to the token where that happened. If a configuration
+  had already left the decision's rule by then, ANTLR predicts the lowest such
+  alternative instead and parses on. When full-context prediction fails, ANTLR
+  rewinds the input before it builds the error, so the error names only the
+  decision's first token.
+
+So when the final parse fails (after the repair or the LL rerun), the parser
+replays ANTLR's generated parser from the first token over galop's ATN, up to
+the first error ANTLR reports (`golang/errors_go.gala`). It walks the ATN with
+the call stack. It makes each decision with a one-token switch where ANTLR's
+code generator would, and with the runtime predictor elsewhere. For rule-level
+token alternatives it does the one set match ANTLR's tool turns them into.
+Where the predictor fails, the replay finds where SLL prediction ran out, and
+which alternatives had left the decision's rule, with a small SLL simulation
+on its own context pool. As in ANTLR, "has left the rule" is a flag on a
+configuration, not on one of its paths: two configurations with the same state
+and alternative merge, and so do their flags, so a configuration that only got
+back into the rule through a later statement can mark the one that never
+left it, and what that one reaches. The generator emits the
+sets the replay reads: each state's next tokens within its rule, and ANTLR's
+lookahead per decision alternative (`analysis.NextTokens`,
+`analysis.DecisionLookahead`). It also emits the kinds of states and decisions,
+and where ANTLR syncs.
+
+Every parser therefore carries the ATN tables and the runtime predictor, and
+keeps a call stack, whether or not a decision needs runtime prediction. Only
+grammars with runtime prediction parse again after a failed SLL pass.
+
+The replay runs only on input with a syntax error, and costs about one more
+pass over the tokens up to the error. Conflicts the repair already checked
+take their recorded LL answer, matched by decision, token and call stack,
+instead of full-context prediction again. On 1,000 rejected mutants, a broken
+file now takes 0.067 ms at the median on the GALA corpus (0.020 ms before the
+replay) and 0.41 ms on the held-out corpus (0.18 ms). Valid input costs the
+same.
+
+One known exception: ANTLR 4.13.1's Go runtime computes the complement of a
+`~` set wrongly when one of the set's ranges starts at the first token type
+(`IntervalSet.removeRange`), so its parser rejects input that matches such a
+set and reports a different first error. galop keeps the correct set. gala.g4
+has no such set.
 
 ## Lexer (`lexgen`)
 
@@ -437,16 +507,9 @@ tool rejects any other with error 508 before generating. The Go target has two
 Both flavors run the same decision functions and runtime predictor (SLL first,
 LL from the start on a syntax error), so they choose the same alternatives.
 Neither recovers from a syntax error yet: a parse stops at the first one and
-reports it in ANTLR's style (`line 3:7 mismatched input 'x'`, `no viable
-alternative at input 'x'`). It is not yet ANTLR's report: a prediction failure
-is placed at the decision's first token, where ANTLR places it at the token
-where prediction failed and quotes the text in between; a mismatch does not
-list the expected tokens; and ANTLR's recovery messages (`extraneous input`,
-`missing ...`) have no counterpart. On invalid single-token edits of GALA
-sources, galop's first error has ANTLR's position about 58% of the time and
-its exact text about 16%. Bracket abstraction does not change any of this: on
-input outside the language the last pass predicts over the tokens alone, so
-the error is the one prediction over tokens finds.
+reports the error ANTLR reports first, with its message, line and column (see
+"Reporting syntax errors as ANTLR does"). The replay reads the tokens alone,
+so bracket abstraction does not change the error.
 
 ### The native tree
 

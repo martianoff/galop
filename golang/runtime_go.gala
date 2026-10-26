@@ -403,17 +403,22 @@ func PFXMatches(i int32, t int32) bool {
 	case PFXKindAtom:
 		return PFXTransArg[i] == t
 	case PFXKindSet:
-		set := PFXSets[PFXTransArg[i]]
-		lo, hi := 0, len(set)/2-1
-		for lo <= hi {
-			mid := (lo + hi) / 2
-			if t < set[2*mid] {
-				hi = mid - 1
-			} else if t > set[2*mid+1] {
-				lo = mid + 1
-			} else {
-				return true
-			}
+		return PFXInSet(PFXSets[PFXTransArg[i]], t)
+	}
+	return false
+}
+
+// PFXInSet reports whether token type t is in set, a list of ranges.
+func PFXInSet(set []int32, t int32) bool {
+	lo, hi := 0, len(set)/2-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if t < set[2*mid] {
+			hi = mid - 1
+		} else if t > set[2*mid+1] {
+			lo = mid + 1
+		} else {
+			return true
 		}
 	}
 	return false

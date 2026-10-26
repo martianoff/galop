@@ -176,3 +176,24 @@ func isolateParserCaches(p *antlr.BaseParser) {
 	atn := p.GetATN()
 	p.Interpreter = antlr.NewParserATNSimulator(p, atn, parserDFA.get(atn), antlr.NewPredictionContextCache())
 }
+
+// FirstSyntaxError is the first syntax error the GALA compiler's strategy
+// (see Lenient) reports for src, as "line:col: message", and whether there
+// is one. Lexical errors are left out: ParseANTLR reports them.
+func FirstSyntaxError(src string) (string, bool) {
+	stream := Tokens(src)
+	errs := &errorListener{}
+	if parse(stream, SLL, errs); len(errs.errors) == 0 {
+		return "", false
+	}
+	stream.Seek(0)
+	errs = &errorListener{}
+	if parse(stream, LL, errs); len(errs.errors) == 0 {
+		return "", false
+	}
+	return errs.errors[0].Error(), true
+}
+
+// HideNewlineTokens is hideNewlineTokens for messages from other parsers, so
+// that their errors read as the GALA compiler's do.
+func HideNewlineTokens(msg string) string { return hideNewlineTokens(msg) }

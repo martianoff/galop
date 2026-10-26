@@ -24,5 +24,5 @@ func ParseGalopTokens(stream antlr.TokenStream) (antlr.ParserRuleContext, error)
 // instead of repairing the failed parse.
 func ParseGalopByRerun(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
 	p := NewgalaGalopParser(stream)
-	return p.parse(p.ruleSourceFile, false)
+	return p.parse(p.ruleSourceFile, galaGalopRuleStartState[galaParserRULE_sourceFile], false)
 }

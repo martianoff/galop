@@ -26,6 +26,9 @@ func (p *PARSER) onConflict(d int, sllAlt int) int {
 // records a new one.
 func (p *PARSER) onConflictSlow(d int, sllAlt int) int {
 	if p.ll {
+		if alt := p.rp.knownAt(d, p.pos, p.stack); alt > 0 {
+			return alt
+		}
 		return p.predictLL(d)
 	}
 	r := &p.rp
@@ -62,6 +65,21 @@ type PFXRepair struct {
 	seq    int
 	recs   []PFXConflict
 	stacks []int32
+	// byPos indexes recs by decision and token while an error replay (see
+	// antlrError) reads their LL answers; nil otherwise.
+	byPos map[uint64][]int32
+}
+
+// knownAt is the LL answer a repair recorded for decision d at token pos with
+// call stack stack, or 0.
+func (r *PFXRepair) knownAt(d, pos int, stack []int32) int {
+	for _, i := range r.byPos[uint64(pos)<<32|uint64(d)] {
+		c := &r.recs[i]
+		if c.known > 0 && slices.Equal(r.stacks[c.stackFrom:c.stackTo], stack) {
+			return int(c.known)
+		}
+	}
+	return 0
 }
 
 // A repair stops and falls back to the whole-input LL rerun when the passes
@@ -371,6 +389,7 @@ func (g *PFXFullCache) next(from *PFXDFAState, t int32) *PFXDFAState {
 // current token, with the parser's call stack as the outer context, through
 // the cache when it can.
 func (p *PARSER) predictLL(d int) int {
+	p.llRun++
 	key := binary.LittleEndian.AppendUint32(p.llKey[:0], uint32(d))
 	for _, ret := range p.stack {
 		key = binary.LittleEndian.AppendUint32(key, uint32(ret))
