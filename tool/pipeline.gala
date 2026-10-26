@@ -130,11 +130,11 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
             case Some(d) => done(problemsOnly(ArrayOf(d)))
             case None() => stage.Action match {
                 case Validate(roundTrip) => done(validated(path, g, roundTrip))
-                case PrintReport() => done(report(path, c, !stage.NoBrackets))
+                case PrintReport() => done(report(path, c, stage.NoBrackets))
                 // -depend only needs the file names, which come from the compiled grammar.
                 case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
                 case _ => {
-                    val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK, !stage.NoBrackets))
+                    val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK, analysis.BracketsOff(c.Rules, stage.NoBrackets)))
                     FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
                 }
             }
@@ -184,8 +184,8 @@ func validated(path string, g g4.Grammar, roundTrip bool) FileResult {
 }
 
 // report is -report: the decision report of the parser network, if any.
-func report(path string, c atn.Compiled, brackets bool) FileResult = c.Parser match {
-    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, analysis.MaxK, brackets)))
+func report(path string, c atn.Compiled, noBrackets bool) FileResult = c.Parser match {
+    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, analysis.MaxK, analysis.BracketsOff(c.Rules, noBrackets))))
     case None() => printed(s"$path: no parser rules, so no decisions\n")
 }
 

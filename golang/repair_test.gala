@@ -27,7 +27,7 @@ X : 'x' ; Y : 'y' ;
 func compiled(src string) Tuple[atn.Compiled, analysis.Analysis] = g4.Parse(src) match {
     case Right(g) => atn.Compile(g) match {
         case Right(c) => c.Parser match {
-            case Some(p) => (c, analysis.Analyze(p, analysis.MaxK))
+            case Some(p) => (c, analysis.Analyze(p, analysis.MaxK, analysis.BracketsOff(c.Rules, false)))
             case None() => go_builtins.Panic("no parser rules")
         }
         case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")

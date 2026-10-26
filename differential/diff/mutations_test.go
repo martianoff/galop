@@ -89,17 +89,9 @@ func TestMutations(t *testing.T) {
 			if rerun {
 				parse = nativegala.ParseByRerun
 			}
-			root, err := parse(src)
-			if err != nil {
-				return "", err.Error(), err
-			}
-			return root.ToStringTree(), "", nil
+			return nativeResult(parse(src))
 		}, func(src string) (string, string, error) {
-			root, err := nativetokens.Parse(src)
-			if err != nil {
-				return "", err.Error(), err
-			}
-			return root.ToStringTree(), "", nil
+			return nativeResult(nativetokens.Parse(src))
 		}},
 		{"antlr flavor", func(src string, rerun bool) (string, string, error) {
 			if rerun {
@@ -149,6 +141,14 @@ func TestMutations(t *testing.T) {
 		}
 	}
 	t.Logf("%d mutants, %d accepted by ANTLR, %d differences", *mutants, accepted, differ)
+}
+
+// nativeResult is a native parse's tree, or its error text, for comparing.
+func nativeResult[N interface{ ToStringTree() string }](root N, err error) (tree, where string, _ error) {
+	if err != nil {
+		return "", err.Error(), err
+	}
+	return root.ToStringTree(), "", nil
 }
 
 // mutate changes src at a random token or line.

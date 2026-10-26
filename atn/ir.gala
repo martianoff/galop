@@ -48,3 +48,19 @@ struct AltIR(Label Option[string], Steps Array[Step])
 // RuleIR is a parser rule. Decision is set when the rule has more than one
 // alternative; alternative i (from 0) is decision alternative i+1.
 struct RuleIR(Index int, Name string, Decision Option[int], Alts Array[AltIR])
+
+// HasStep says whether some step in steps, nested ones included, satisfies p.
+func HasStep(steps Array[Step], p func(Step) bool) bool = steps.Exists((s) => p(s) || (s match {
+    case Choose(_, alts, _) => alts.Exists((a) => HasStep(a, p))
+    case Loop(_, _, _, body) => HasStep(body, p)
+    case _ => false
+}))
+
+// RunsCode says whether parsing with rules runs grammar code: an embedded
+// action or a semantic predicate.
+func RunsCode(rules Array[RuleIR]) bool =
+    rules.Exists((r) => r.Alts.Exists((a) => HasStep(a.Steps, (s) => s match {
+        case RunAction(_) => true
+        case CheckPredicate(_) => true
+        case _ => false
+    })))
