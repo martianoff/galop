@@ -218,16 +218,17 @@ stage took 2 full-context predictions instead of about 15,000.
 The argument needs a successful parse to end at EOF, and prediction without
 semantic predicates. So an entry rule repairs only if every way through it ends
 by matching EOF (others rerun in LL mode, as ANTLR's prefix parses drop
-configurations that end early), and the generator enables the repair only for
-grammars without predicates or left recursion, which the Go target rejects
-today anyway.
+configurations that end early). An entry rule that some rule it calls can
+call again also reruns: there a full-context merge can drop the empty context
+LL prediction ends with. The repair needs grammars without predicates or left
+recursion, which the Go target rejects today anyway.
 
 **Full-context cache.** For a decision and a call stack, full-context
 prediction depends only on the tokens ahead, so the predictor caches it like
 the SLL DFA, as a DFA per (decision, stack) with its contexts in one pool that
-is never reset. Lookups walk cached edges without a lock; new states are
-built under a mutex; past 32,768 states the cache stops growing and prediction
-runs uncached. It speeds up the conflicts the repair checks and the whole-input
+is never reset. Finding a cached start state takes a read lock and walking
+cached edges no lock; new states are built under the write lock; past 32,768
+states or 2^20 contexts the cache stops growing and prediction runs uncached. It speeds up the conflicts the repair checks and the whole-input
 rerun where that still runs.
 
 The **conflict report** (`galop -report`) lists every decision that is not

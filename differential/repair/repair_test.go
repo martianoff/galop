@@ -47,13 +47,13 @@ var (
 )
 
 // cases are inputs per entry rule. Each one is checked against ANTLR, so
-// they need no expected results; sllFails counts how many must make ANTLR's
-// SLL parse fail, so the repair is exercised.
+// they need no expected results; at least `needLL` of them must be inputs
+// ANTLR accepts only with LL prediction, the ones a parse has to repair.
 var cases = []struct {
-	name     string
-	rule     entry
-	inputs   []string
-	sllFails int
+	name   string
+	rule   entry
+	inputs []string
+	needLL int
 }{
 	// p a a: SLL takes both a's into x and fails; LL leaves one for s1.
 	// r a a a: no alternative is viable at x's conflict, so LL fails there.
@@ -62,7 +62,7 @@ var cases = []struct {
 		"p " + parens(70) + " q", "r " + parens(70) + " q", "p " + parens(70) + " q q", "r " + parens(70)}, 3},
 	// Every p item and q item needs a repair pass of its own.
 	{"s3", s3, []string{"p a a ; r a a ; p a a ;", "p a a ; p a a ; p a a ; p a a ;", "r a ; p a a ; q b q ; q " + parens(70) + " q ;",
-		"p a a ; r a a a ;", "p a a ; p a ;"}, 3},
+		"p a a ; r a a a ;", "p a a ; p a ;", "q b q ;", "k b ; q " + parens(70) + " q ;", "q b q ; k b ; q b q ; p a a ;"}, 6},
 	{"s4", s4, []string{"p a a", "r a a", "p a a b", "p a"}, 1},
 }
 
@@ -70,12 +70,14 @@ func TestRepairMatchesANTLR(t *testing.T) {
 	ra.RepairParserInit()
 	ruleNames := ra.RepairParserStaticData.RuleNames
 	for _, c := range cases {
-		sllFails := 0
+		needLL := 0
 		for _, src := range c.inputs {
 			want, wantOK := antlrParse(c.rule, src, antlr.PredictionModeSLL)
 			if !wantOK {
-				sllFails++
 				want, wantOK = antlrParse(c.rule, src, antlr.PredictionModeLL)
+				if wantOK {
+					needLL++
+				}
 			}
 			check := func(flavor, got string, err error) {
 				switch {
@@ -94,8 +96,8 @@ func TestRepairMatchesANTLR(t *testing.T) {
 				check("antlr", antlr.TreesStringTree(tr, ruleNames, nil), nil)
 			}
 		}
-		if sllFails < c.sllFails {
-			t.Errorf("%s: SLL fails on %d inputs, want at least %d", c.name, sllFails, c.sllFails)
+		if needLL < c.needLL {
+			t.Errorf("%s: %d inputs need LL prediction, want at least %d", c.name, needLL, c.needLL)
 		}
 	}
 }

@@ -115,3 +115,15 @@ func TestStaticGrammarHasNoRepair(t T) T {
     val t1 = IsFalse(t, strings.Contains(code, ") llParse("))
     IsFalse(t1, strings.Contains(code, "Full struct"))
 }
+
+func repairable(src string) bool {
+    val (c, _) = compiled(src)
+    c.Rules.Find((r) => r.Name == "s").Exists((r) => Repairable(c.Rules, r))
+}
+
+func TestRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, repairable(src), want),
+    Case[string, bool](Name = "recursion below the entry rule", Input = "grammar R;\ns : e EOF ;\ne : '(' e ')' | X ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "an entry rule that calls itself", Input = "grammar R;\ns : '(' s ')' EOF | X EOF ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "through another rule", Input = "grammar R;\ns : e EOF ;\ne : '(' s ')' | X ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "no EOF", Input = "grammar R;\ns : e ;\ne : X ;\nX : 'x' ;\n", Expected = false),
+)

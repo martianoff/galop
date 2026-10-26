@@ -259,7 +259,7 @@ func (p *PARSER) METHOD() (IFACE, error) {
 	return ctx.(IFACE), nil
 }
 `, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
-        "REPAIR", s"${EndsWithEOF(e.rules, r)}")
+        "REPAIR", s"${Repairable(e.rules, r)}")
 }
 
 // emitRule emits the antlr flavor's function that parses one rule.

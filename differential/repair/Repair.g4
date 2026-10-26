@@ -16,10 +16,12 @@ s2 : 'p' z Q EOF | 'r' z EOF ;
 z : n Q | n ;
 n : '(' n ')' | B ;
 
-// Several such conflicts in one input.
-s3 : ('p' x A ';' | 'r' x ';' | 'q' z Q ';')+ EOF ;
+// Several such conflicts in one input, through both kinds of prediction: the
+// k items put ';' in FOLLOW(z), so a q item's z conflicts too.
+s3 : ('p' x A ';' | 'r' x ';' | 'q' z Q ';' | 'k' z ';')+ EOF ;
 
-// An entry rule without EOF: ANTLR parses the longest prefix it can.
+// An entry rule without EOF, which galop's parsers do not repair: they parse
+// again in LL mode, as ANTLR does.
 s4 : 'p' x A | 'r' x ;
 
 A : 'a' ;

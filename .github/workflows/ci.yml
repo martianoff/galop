@@ -75,8 +75,8 @@ jobs:
           key: bazel-disk-${{ github.run_id }}
 
   # The large mutation runs compare galop with ANTLR on tens of thousands of
-  # mutated files, too slow for pull requests. They read the Bazel disk cache
-  # the bazel job saves.
+  # mutated files, too slow for pull requests. They start from the Bazel disk
+  # cache an earlier run saved.
   fuzz:
     name: mutation fuzz
     if: github.event_name != 'pull_request'

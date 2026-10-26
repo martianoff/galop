@@ -85,7 +85,7 @@ func (p *PARSER) llParse(rule @RULE@, repair bool) (@ROOT@, error) {
 		r.on = true
 		defer func() { r.on = false }()
 		r.recs, r.stacks = r.recs[:0], r.stacks[:0]
-		for range PFXRepairPasses {
+		for pass := 0; pass < PFXRepairPasses; pass++ {
 			r.seq = 0
 			root, err := p.attempt(rule)
 			if err == nil {
@@ -95,6 +95,8 @@ func (p *PARSER) llParse(rule @RULE@, repair bool) (@ROOT@, error) {
 			switch {
 			case switched:
 			case dead != nil:
+				// LL mode stops at that conflict; so does the parse.
+				p.pos = int(dead.pos)
 				return @ZERO@, dead.err
 			default:
 				return root, err
@@ -247,8 +249,9 @@ func PFXFullIsFull() bool {
 func PFXFullStart(d int, stack []int32, key []byte) *PFXDFAState {
 	PFXFull.mu.RLock()
 	st, ok := PFXFull.starts[string(key)]
+	full := PFXFullIsFull()
 	PFXFull.mu.RUnlock()
-	if ok {
+	if ok || full {
 		return st
 	}
 	PFXFull.mu.Lock()

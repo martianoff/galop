@@ -94,3 +94,23 @@ func stepsEndWithEOF(rules Array[atn.RuleIR], steps Array[atn.Step], seen HashSe
         case _ => false
     }
 }
+
+// Repairable says whether a parse that starts at entry rule r may repair a
+// failed SLL parse: r ends with EOF, and no rule it calls can call r again.
+// A call of the entry rule inside itself is where full-context merges can
+// drop the empty context ANTLR's LL prediction ends with, so the repair's
+// argument is kept to grammars without it.
+// rules: the parser rules, indexed by rule number.
+// r: the entry rule.
+func Repairable(rules Array[atn.RuleIR], r atn.RuleIR) bool {
+    val calls = rules.Map((rule) => rule.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(callees(a.Steps))))
+    EndsWithEOF(rules, r) && !reaches(calls, calls.Get(r.Index), r.Index, EmptyHashSet[int]())
+}
+
+// callees are the rules steps call anywhere.
+func callees(steps Array[atn.Step]) HashSet[int] = steps.FoldLeft(EmptyHashSet[int](), (acc, s) => s match {
+    case atn.CallRule(rule, _, _) => acc.Add(rule)
+    case atn.Choose(_, alts, _) => alts.FoldLeft(acc, (inner, a) => inner.Union(callees(a)))
+    case atn.Loop(_, _, _, body) => acc.Union(callees(body))
+    case _ => acc
+})
