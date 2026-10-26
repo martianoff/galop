@@ -12,6 +12,7 @@ import (
 	"github.com/martianoff/galop/differential/antlrgala"
 	"github.com/martianoff/galop/differential/gala"
 	"github.com/martianoff/galop/differential/nativegala"
+	"github.com/martianoff/galop/differential/nativetokens"
 )
 
 var (
@@ -25,6 +26,10 @@ var (
 var insertions = []string{
 	"(", ")", "=>", "int", "x", ".", ",", "=", "{", "}", "[", "]", ":", "...", "func ", "return\n",
 	"(a, b) => ", "case (a, b) => a\n", "if x {", "x {", "\n(", "\n-", "f(a)", "Foo{a: 1}",
+	// Bracket-heavy text, balanced and not, for prediction over bracketed groups.
+	"()", "[]", "{}", "((", "))", "f(", "[(", "{)", "(a, (b, c)) => a", "xs[0]", "f[T](x)", "{ x }",
+	"((a) => (b) => a)", "Foo{a: (1, 2)}", "\n[", "{ case (a, b) => (a) }", "m[K, V]{}", "(f(a)[0])",
+	"(x int, y T[A]) => x",
 }
 
 // statements are valid statements TestMutations puts on a line of its own
@@ -44,11 +49,15 @@ var statements = []string{
 }
 
 // TestMutations compares galop's parsers with ANTLR on mutated corpus files:
-// a token dropped or doubled, text inserted, or a statement added. Most
+// a token dropped or doubled, text inserted, a statement added, or a bracket
+// pair wrapped around a span, changed to another kind or removed. Most
 // mutants are rejected; the rest are where SLL prediction and LL prediction
 // part ways, which is what the repair of a failed SLL parse has to get right.
 // Both flavors must agree with ANTLR on whether the input parses and, if it
-// does, on the tree. -mutants and -mutant_seed size the run.
+// does, on the tree. Each flavor must also agree with the same parser
+// generated with -Xno-brackets on everything, the first error included:
+// reading bracketed groups as one symbol changes neither trees nor errors.
+// -mutants and -mutant_seed size the run.
 func TestMutations(t *testing.T) {
 	var srcs []string
 	for _, f := range files(t) {
@@ -61,9 +70,19 @@ func TestMutations(t *testing.T) {
 	// and with ANTLR's whole-input LL rerun (rerun true). On error, where says
 	// where the parse left off: the error text, with its position, and for the
 	// antlr flavor the token stream's index.
+	antlrFlavor := func(src string, parse func(antlr.TokenStream) (antlr.ParserRuleContext, error)) (string, string, error) {
+		stream := gala.GalopTokens(src)
+		ctx, err := parse(stream)
+		if err != nil {
+			return "", fmt.Sprintf("%v, stream at %d", err, stream.Index()), err
+		}
+		return gala.TreeString(ctx), "", nil
+	}
 	flavors := []struct {
 		name  string
 		parse func(src string, rerun bool) (tree, where string, err error)
+		// tokens parses with the parser generated with -Xno-brackets.
+		tokens func(src string) (tree, where string, err error)
 	}{
 		{"native", func(src string, rerun bool) (string, string, error) {
 			parse := nativegala.Parse
@@ -75,20 +94,22 @@ func TestMutations(t *testing.T) {
 				return "", err.Error(), err
 			}
 			return root.ToStringTree(), "", nil
+		}, func(src string) (string, string, error) {
+			root, err := nativetokens.Parse(src)
+			if err != nil {
+				return "", err.Error(), err
+			}
+			return root.ToStringTree(), "", nil
 		}},
 		{"antlr flavor", func(src string, rerun bool) (string, string, error) {
-			stream := gala.GalopTokens(src)
-			var ctx antlr.ParserRuleContext
-			var err error
 			if rerun {
-				ctx, err = antlrgala.ParseGalopByRerun(stream)
-			} else {
-				ctx, err = antlrgala.NewgalaGalopParser(stream).SourceFile()
+				return antlrFlavor(src, antlrgala.ParseGalopByRerun)
 			}
-			if err != nil {
-				return "", fmt.Sprintf("%v, stream at %d", err, stream.Index()), err
-			}
-			return gala.TreeString(ctx), "", nil
+			return antlrFlavor(src, func(s antlr.TokenStream) (antlr.ParserRuleContext, error) {
+				return antlrgala.NewgalaGalopParser(s).SourceFile()
+			})
+		}, func(src string) (string, string, error) {
+			return antlrFlavor(src, antlrgala.ParseGalopTokens)
 		}},
 	}
 	r := rand.New(rand.NewSource(*mutantSeed))
@@ -101,6 +122,15 @@ func TestMutations(t *testing.T) {
 		}
 		for _, f := range flavors {
 			got, where, err := f.parse(src, false)
+			ref, refWhere, refErr := f.tokens(src)
+			switch {
+			case (err == nil) != (refErr == nil) || where != refWhere:
+				differ++
+				t.Errorf("mutant %d: %s with brackets error=%s, without error=%s\n%s", i, f.name, where, refWhere, src)
+			case err == nil && got != ref:
+				differ++
+				t.Errorf("mutant %d: %s trees differ with and without brackets\n%s", i, f.name, firstDifference(ref, got))
+			}
 			switch {
 			case wantOK != (err == nil):
 				differ++
@@ -133,6 +163,9 @@ func mutate(r *rand.Rand, src string) string {
 	if len(toks) < 2 {
 		return src
 	}
+	if r.Intn(4) == 0 {
+		return mutateBrackets(r, src, toks)
+	}
 	tok := toks[r.Intn(len(toks)-1)]
 	off, end := int(tok.Start), int(tok.End)
 	switch r.Intn(3) {
@@ -163,4 +196,42 @@ func addStatement(r *rand.Rand, src string) (string, bool) {
 	indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
 	stmt := indent + strings.ReplaceAll(statements[r.Intn(len(statements))], "\n", "\n"+indent)
 	return strings.Join(append(lines[:i:i], append([]string{stmt}, lines[i:]...)...), "\n"), true
+}
+
+// mutateBrackets wraps a balanced span in a new bracket pair, or changes a
+// matched pair to another kind (it stays balanced) or removes it.
+func mutateBrackets(r *rand.Rand, src string, toks []nativegala.GalaToken) string {
+	text := func(i int) string { return src[toks[i].Start:toks[i].End] }
+	kinds := []string{"()", "[]", "{}"}
+	kind := kinds[r.Intn(len(kinds))]
+	var open []int
+	var pairs [][2]int
+	for i := range toks {
+		switch text(i) {
+		case "(", "[", "{":
+			open = append(open, i)
+		case ")", "]", "}":
+			if len(open) > 0 {
+				pairs = append(pairs, [2]int{open[len(open)-1], i})
+				open = open[:len(open)-1]
+			}
+		}
+	}
+	if len(pairs) == 0 || r.Intn(2) == 0 {
+		// Wrap the span from a token to its pair (or to itself).
+		i := r.Intn(len(toks) - 1)
+		j := i
+		for _, p := range pairs {
+			if p[0] == i {
+				j = p[1]
+			}
+		}
+		return src[:toks[i].Start] + kind[:1] + src[toks[i].Start:toks[j].End] + kind[1:] + src[toks[j].End:]
+	}
+	p := pairs[r.Intn(len(pairs))]
+	if r.Intn(4) == 0 {
+		kind = "  "
+	}
+	a, b := toks[p[0]], toks[p[1]]
+	return src[:a.Start] + kind[:1] + src[a.End:b.Start] + kind[1:] + src[b.End:]
 }

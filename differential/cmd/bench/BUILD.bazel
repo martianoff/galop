@@ -11,5 +11,6 @@ go_binary(
         "//differential/corpus",
         "//differential/gala",
         "//differential/nativegala",
+        "//differential/nativetokens",
     ],
 )

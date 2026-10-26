@@ -529,9 +529,11 @@ func PFXUniqueAlt(list []PFXConfig) int32 {
 }
 
 // reach computes the configurations reachable from closure by consuming t
-// (ANTLR's computeReachSet). The result is in out; a non-zero return is an
+// (ANTLR's computeReachSet). With group set, t is an opening bracket and the
+// whole bracketed group is consumed: a configuration moves to the states after
+// the matching closer. The result is in out; a non-zero return is an
 // alternative decided early.
-func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, intermediate, out *PFXConfigSet) int32 {
+func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, group bool, intermediate, out *PFXConfigSet) int32 {
 	cp := &pr.pool
 	intermediate.reset()
 	pr.skipped = pr.skipped[:0]
@@ -544,8 +546,15 @@ func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, intermediate, out 
 		}
 		for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
 			k := PFXTransKind[i]
-			if (k == PFXKindAtom || k == PFXKindSet) && PFXMatches(i, t) {
+			if k != PFXKindAtom && k != PFXKindSet || !PFXMatches(i, t) {
+				continue
+			}
+			if !group {
 				intermediate.add(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, cp)
+				continue
+			}
+			for j := PFXAfterStart[i]; j < PFXAfterStart[i+1]; j++ {
+				intermediate.add(PFXConfig{PFXAfterState[j], c.alt, c.ctx}, cp)
 			}
 		}
 	}
@@ -677,14 +686,14 @@ func init() {
 
 // PFXDFAIntern returns decision d's cached state for the configurations in set.
 func PFXDFAIntern(d int, set *PFXConfigSet) *PFXDFAState {
-	return PFXInternState(PFXDFA.states, &PFXDFA.pr, &PFXDFA.key, d, set)
+	return PFXInternState(PFXDFA.states, &PFXDFA.pr, &PFXDFA.key, d, set, PFXEdges)
 }
 
 // PFXInternState returns the state in states for the configurations in set,
 // adding it if new. A state keeps its configurations sorted by state and
 // alternative; its key is that list, after decision d when d >= 0. pr and key
-// are scratch, owned by whoever owns states.
-func PFXInternState(states map[string]*PFXDFAState, pr *PFXPredictor, key *[]byte, d int, set *PFXConfigSet) *PFXDFAState {
+// are scratch, owned by whoever owns states. A new state has edges edges.
+func PFXInternState(states map[string]*PFXDFAState, pr *PFXPredictor, key *[]byte, d int, set *PFXConfigSet, edges int) *PFXDFAState {
 	s := append(pr.sorted[:0], set.list...)
 	pr.sorted = s
 	slices.SortFunc(s, func(a, b PFXConfig) int {
@@ -706,7 +715,7 @@ func PFXInternState(states map[string]*PFXDFAState, pr *PFXPredictor, key *[]byt
 	if st, ok := states[string(k)]; ok {
 		return st
 	}
-	st := &PFXDFAState{configs: slices.Clone(s), edges: make([]atomic.Pointer[PFXDFAState], PFXMaxTokenType+2)}
+	st := &PFXDFAState{configs: slices.Clone(s), edges: make([]atomic.Pointer[PFXDFAState], edges)}
 	states[string(k)] = st
 	return st
 }
@@ -732,12 +741,13 @@ func PFXDFAStart(d int) *PFXDFAState {
 	return st
 }
 
-// PFXDFANext computes and caches the edge of from on token t (ANTLR's
-// computeTargetState in SLL mode).
-func PFXDFANext(d int, from *PFXDFAState, t int32) *PFXDFAState {
+// PFXDFANext computes and caches the edge of from on symbol sym (ANTLR's
+// computeTargetState in SLL mode): token t, or with group set the bracketed
+// group t opens.
+func PFXDFANext(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAState {
 	PFXDFA.mu.Lock()
 	defer PFXDFA.mu.Unlock()
-	if st := from.edges[t+1].Load(); st != nil {
+	if st := from.edges[sym].Load(); st != nil {
 		return st
 	}
 	pr := &PFXDFA.pr
@@ -748,7 +758,7 @@ func PFXDFANext(d int, from *PFXDFAState, t int32) *PFXDFAState {
 		cur.add(c, &pr.pool)
 	}
 	var st *PFXDFAState
-	if alt := pr.reach(cur, t, intermediate, next); alt != 0 {
+	if alt := pr.reach(cur, t, group, intermediate, next); alt != 0 {
 		st = &PFXDFAState{alt: alt}
 	} else if len(next.list) == 0 {
 		st = PFXDFAError
@@ -764,26 +774,41 @@ func PFXDFANext(d int, from *PFXDFAState, t int32) *PFXDFAState {
 	} else {
 		st = PFXDFAIntern(d, next)
 	}
-	from.edges[t+1].Store(st)
+	from.edges[sym].Store(st)
 	return st
 }
 
-// adaptivePredict predicts decision d as ANTLR does: SLL prediction over the
-// cached DFA and, on an SLL conflict, the lowest conflicting alternative in SLL
-// mode or full-context prediction in LL mode (see onConflict).
+// adaptivePredict predicts decision d as ANTLR's SLL prediction does, over
+// the cached DFA, reading each bracketed group as one symbol (PFXBracketMatch
+// paired them) unless p.group is off. That over-approximates SLL: every path
+// over the tokens has a path over the groups, so an alternative ruled out here
+// is ruled out in SLL and in LL, and a unique answer is ANTLR's. A conflict
+// goes to onConflict with its smallest alternative: a first pass that
+// succeeds with such choices is ANTLR's LL parse, and a wrong one is repaired.
 func (p *PARSER) adaptivePredict(d int) int {
 	st := PFXDFA.starts[d].Load()
 	if st == nil {
 		st = PFXDFAStart(d)
 	}
-	for i := 1; ; i++ {
-		t := p.la(i)
-		if int(t)+1 >= len(st.edges) {
+	for i := p.pos; ; {
+		// Past the end of the tokens (a slice with no EOF at its end) reads as EOF.
+		t := int32(-1)
+		if i < len(p.types) {
+			t = p.types[i]
+		}
+		if t < -1 || int(t) > PFXMaxTokenType {
 			p.noViableAlt(d)
 		}
-		next := st.edges[t+1].Load()
+		sym, isGroup := int(t)+1, false
+		if g := PFXOpenerSym[t+1]; p.group && g >= 0 && p.pairs[i] >= 0 {
+			sym, isGroup = PFXMaxTokenType+2+int(g), true
+			i = int(p.pairs[i]) + 1
+		} else if t != -1 {
+			i++
+		}
+		next := st.edges[sym].Load()
 		if next == nil {
-			next = PFXDFANext(d, st, t)
+			next = PFXDFANext(d, st, sym, t, isGroup)
 		}
 		switch {
 		case next == PFXDFAError:
@@ -795,5 +820,44 @@ func (p *PARSER) adaptivePredict(d int) int {
 		}
 		st = next
 	}
+}
+
+// PFXEdges is the number of DFA edges per state: one per token type and EOF,
+// then one per opening bracket for the group it opens.
+const PFXEdges = PFXMaxTokenType + 2 + PFXOpenerCount
+
+// PFXBracketMatch pairs the brackets of types into m: m[i] is the index of
+// the closer of the opener at i, or -1. An opener with no well-nested closer
+// (the input is not in the language) is left at -1, and prediction reads it
+// as a token. Without brackets in the grammar m is not read and stays as is.
+func PFXBracketMatch(types []int32, m []int32) []int32 {
+	if PFXOpenerCount == 0 {
+		return m
+	}
+	m = slices.Grow(m[:0], len(types))[:len(types)]
+	var open []int32
+	for i, t := range types {
+		m[i] = -1
+		if t < -1 || int(t) > PFXMaxTokenType {
+			continue
+		}
+		if PFXOpenerSym[t+1] >= 0 {
+			open = append(open, int32(i))
+			continue
+		}
+		if !PFXIsCloser[t+1] || len(open) == 0 {
+			continue
+		}
+		top := open[len(open)-1]
+		if PFXOpenerCloser[PFXOpenerSym[types[top]+1]] == t {
+			m[top] = int32(i)
+			open = open[:len(open)-1]
+		} else {
+			// A closer of the wrong kind: no opener still open can close
+			// around it.
+			open = open[:0]
+		}
+	}
+	return m
 }
 `

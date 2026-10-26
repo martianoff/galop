@@ -16,6 +16,7 @@ var Entries = map[string]struct {
 	"s6": {tree(ParseS6), rerun((*RepairGalopParser).ruleS6)},
 	"s7": {tree(ParseS7), rerun((*RepairGalopParser).ruleS7)},
 	"s8": {tree(ParseS8), rerun((*RepairGalopParser).ruleS8)},
+	"s9": {tree(ParseS9), rerun((*RepairGalopParser).ruleS9)},
 }
 
 func tree[N interface{ ToStringTree() string }](parse func(*RepairTokens) (N, error)) func(*RepairTokens) (string, error) {

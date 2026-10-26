@@ -40,6 +40,16 @@ amb : 'x' # Amb1 | 'x' # Amb2 ;
 s8 : 'c' w 'z' EOF | w 'y' 'z' EOF ;
 w : 'x' # W1 | 'x' 'y' # W2 | 'x' 'y' # W3 ;
 
+// An entry rule without EOF that bracketed groups would mislead: over groups
+// r9's first alternative could still end r9 inside u9, and a conflict at the
+// end would take it; only the tokens inside the group rule that out. Such an
+// entry predicts over tokens.
+s9 : r9 ;
+u9 : r9 '(' e9 ')' ;
+r9 : 'x' | 'x' '(' f9 ')' ;
+f9 : '(' f9 ')' | B ;
+e9 : '(' e9 ')' | Q ;
+
 A : 'a' ;
 B : 'b' ;
 Q : 'q' ;

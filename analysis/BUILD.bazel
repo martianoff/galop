@@ -14,6 +14,7 @@ gala_library(
     visibility = ["//visibility:public"],
     deps = [
         "//atn",
+        "//brackets",
         "@gala//collection_immutable",
         "@gala//collection_mutable",
         "@gala//concurrent",
@@ -38,6 +39,7 @@ gala_test(
     pkg = "analysis",
     deps = [
         "//atn",
+        "//brackets",
         "//g4",
         "@gala//collection_immutable",
         "@gala//collection_mutable",

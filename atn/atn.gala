@@ -66,6 +66,13 @@ func (t Transition) Target() int = t match {
     case Action(target, _, _) => target
 }
 
+// WithinRule is where a walk that stays in the transition's rule continues:
+// the follow state of a rule call, the target otherwise.
+func (t Transition) WithinRule() int = t match {
+    case RuleCall(_, _, follow) => follow
+    case _ => t.Target()
+}
+
 // IsEpsilon reports whether the transition consumes no symbol. A rule call
 // counts as epsilon: it moves into another rule without consuming.
 func (t Transition) IsEpsilon() bool = t match {

@@ -1,0 +1,176 @@
+package brackets
+
+import (
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/go_builtins"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+)
+
+// parserATN compiles a test grammar that must be valid; a problem panics.
+func parserATN(src string) atn.ATN = g4.Parse(src) match {
+    case Right(g) => atn.Compile(g) match {
+        case Right(c) => c.Parser.Get()
+        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+}
+
+// families renders the bracket families of src: `'(' LP ')'; '[' ']'`.
+func families(src string) string {
+    val a = parserATN(src)
+    renderFamilies(a, Analyze(a).Families)
+}
+
+func renderFamilies(a atn.ATN, fs Array[BracketFamily]) string =
+    fs.Map((f) => f.Openers.Values().Map((t) => a.Vocab.Display(t)).MkString(" ") + " " + a.Vocab.Display(f.Closer))
+        .Sorted().MkString("; ")
+
+// rejections renders why candidate pairs were left out: `'(' ')': reason`.
+func rejections(src string) string {
+    val a = parserATN(src)
+    Analyze(a).Rejected
+        .Map((r) => s"${a.Vocab.Display(r.Opener)} ${a.Vocab.Display(r.Closer)}: ${r.Reason}")
+        .Sorted().MkString(" | ")
+}
+
+func TestBracketFamilies(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, families(in), want),
+    Case[string, string](
+        Name = "nested parentheses",
+        Input = `grammar P;
+e : '(' e ')' | ID ;
+ID : [a-z]+ ;`,
+        Expected = "'(' ')'",
+    ),
+    Case[string, string](
+        Name = "two openers share a closer, across rules",
+        Input = `grammar P;
+tokens { LP }
+s : call* EOF ;
+call : ID args ;
+args : ('(' | LP) list? ')' ;
+list : item (',' item)* ;
+item : '[' ID ']' | ID ;
+ID : [a-z]+ ;`,
+        Expected = "'(' LP ')'; '[' ']'",
+    ),
+    Case[string, string](
+        Name = "an empty group",
+        Input = `grammar P;
+ty : '[' ']' ty | ID ;
+ID : [a-z]+ ;`,
+        Expected = "'[' ']'",
+    ),
+    Case[string, string](
+        Name = "a closer without its opener",
+        Input = `grammar P;
+e : '(' e ')' | ID | x ;
+x : ID ')' ;
+ID : [a-z]+ ;`,
+        Expected = "",
+    ),
+    Case[string, string](
+        Name = "an optional opener",
+        Input = `grammar P;
+e : '('? ID ')' | ID ;
+ID : [a-z]+ ;`,
+        Expected = "",
+    ),
+    Case[string, string](
+        Name = "a rule that can end inside a bracket",
+        Input = `grammar P;
+e : '(' e (')' | ) | ID ;
+ID : [a-z]+ ;`,
+        Expected = "",
+    ),
+    Case[string, string](
+        Name = "crossing kinds keep the one opened at more places",
+        Input = `grammar P;
+e : '(' '[' e ')' ']' | '(' e ')' | '[' e ']' | '[' ']' e | ID ;
+ID : [a-z]+ ;`,
+        Expected = "'[' ']'",
+    ),
+    Case[string, string](
+        Name = "crossing kinds opened equally often both go",
+        Input = `grammar P;
+e : '(' '[' e ')' ']' | '(' e ')' | '[' e ']' | ID ;
+ID : [a-z]+ ;`,
+        Expected = "",
+    ),
+    Case[string, string](
+        Name = "unbounded nesting in one rule",
+        Input = `grammar P;
+e : '(' '('* e ')' | ID ;
+ID : [a-z]+ ;`,
+        Expected = "",
+    ),
+    Case[string, string](
+        Name = "a keyword pair",
+        Input = `grammar P;
+s : 'if' ID 'then' s ('else' s)? | ID ;
+ID : [a-z]+ ;`,
+        Expected = "'if' 'then'",
+    ),
+)
+
+func TestBracketRejectionsSayWhy(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, rejections(in), want),
+    Case[string, string](
+        Name = "a closer without its opener",
+        Input = `grammar P;
+e : '(' e ')' | ID | x ;
+x : ID ')' ;
+ID : [a-z]+ ;`,
+        Expected = "'(' ')': ')' appears without its opener in rule x",
+    ),
+    Case[string, string](
+        Name = "crossing",
+        Input = `grammar P;
+e : '(' '[' e ')' ']' | '(' e ')' | '[' e ']' | ID ;
+ID : [a-z]+ ;`,
+        Expected = "'(' ')': '(' … ')' closes inside '[' … ']' in rule e | '[' ']': '(' … ')' closes inside '[' … ']' in rule e",
+    ),
+    Case[string, string](
+        Name = "more openers than closers",
+        Input = `grammar P;
+e : '(' '('* e ')' | ID ;
+ID : [a-z]+ ;`,
+        Expected = "'(' ')': rule e can end inside '(' … ')'",
+    ),
+    Case[string, string](
+        Name = "an opener closed by two closers, neither outermost",
+        Input = `grammar P;
+e : '<' e '>' ']' | '<' e ']' '>' | ID ;
+ID : [a-z]+ ;`,
+        Expected = "'<' '>': '<' is closed by '>' and ']', none of them outermost" +
+            " | '<' ']': '<' is closed by '>' and ']', none of them outermost",
+    ),
+)
+
+// The structural cases of the adversarial review: '(' must never be paired
+// with ')' where a rule can end inside, or close, a bracket it did not open.
+// Other pairs the check finds in these tiny grammars ('x' … ')' in C1) are
+// sound too: every rule stays balanced with them.
+func TestBracketStructuralCases(t T) T = RunCases[string, string](t,
+    (sub, in, want) => Eq(sub, families(in), want),
+    Case[string, string](Name = "C1 closer in a callee", Input = "grammar C1; s: r EOF; r: '(' e; e: 'x' ')';", Expected = "'x' ')'"),
+    Case[string, string](Name = "C2 opener and closer in different alternatives", Input = "grammar C2; s: r EOF; r: '(' 'x' | 'y' ')';", Expected = "'(' 'x'; 'y' ')'"),
+    Case[string, string](Name = "C3 one path closes in a callee", Input = "grammar C3; s: r EOF; r: '(' (t | ')'); t: ')';", Expected = ""),
+    Case[string, string](Name = "C4 a set holding brackets", Input = "grammar C4; s: r EOF; r: 'a' ~';'* ';';", Expected = ""),
+    Case[string, string](Name = "C5 optional bypass", Input = "grammar C5; s: r EOF; r: '(' 'x'?;", Expected = ""),
+    Case[string, string](Name = "C6 outer opener never closed", Input = "grammar C6; s: r EOF; r: '(' '(' 'x' ')';", Expected = "'x' ')'"),
+    Case[string, string](Name = "C7 closer in the caller", Input = "grammar C7; s: r ')' EOF; r: '(' 'x';", Expected = "'(' 'x'"),
+    Case[string, string](Name = "C8 wrong closer kind", Input = "grammar C8; s: r EOF; r: '(' 'x' ']';", Expected = "'(' ']'"),
+    Case[string, string](Name = "P1 recursion through a callee", Input = "grammar P1; s: r EOF; r: '(' e? ')'; e: 'x' | r;", Expected = "'(' ')'"),
+    Case[string, string](Name = "P2 nested kinds in a loop", Input = "grammar P2; s: r EOF; r: '(' ('[' 'x' ']')* ')';", Expected = "'(' ')'; '[' ']'"),
+    Case[string, string](
+        Name = "P3 three kinds",
+        Input = "grammar P3; s: r EOF; r: '(' (e | '{' e '}') ')' | '[' e ']'; e: 'x' | r;",
+        Expected = "'(' ')'; '[' ']'; '{' '}'",
+    ),
+    // A closer without its opener in rule a: '(' … ')' is left out.
+    Case[string, string](Name = "P4 a stray closer", Input = "grammar P4; s: r EOF; r: '(' a ')' EOF; a: ')' | ;", Expected = ""),
+)

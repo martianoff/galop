@@ -8,6 +8,7 @@ import (
 
     "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
     "github.com/martianoff/galop/lexgen"
 )
 
@@ -21,6 +22,8 @@ struct env(
     rules Array[atn.RuleIR],
     plans Array[analysis.DecisionPlan],
     adaptive bool,
+    // brackets are the families adaptive prediction reads as one symbol.
+    brackets brackets.Brackets = brackets.NoBrackets(),
     flavor Flavor = ANTLRFlavor(),
     // tokenLabels says whether some rule labels a token (`op=('+'|'-')`).
     tokenLabels bool = false,
@@ -106,22 +109,29 @@ func tokenAssertions(e env) string {
     "// galop numbers tokens the way ANTLR does; these constants fail to compile if the two disagree.\nconst (\n" + lines.MkString("\n") + "\n)\n"
 }
 
-// predictorFields are the parser's fields for runtime prediction.
+// predictorFields are the parser's fields for runtime prediction: pairs are
+// the input's bracket pairs, and group says prediction reads bracketed groups.
 func predictorFields(e env) string =
-    if (e.adaptive) s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte" else ""
+    if (e.adaptive) s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool" else ""
 
 // retryCode handles a failed SLL parse, whose result is in variable root.
 // With runtime prediction the parse runs in SLL mode first, as GALA does with
 // ANTLR; on a syntax error the result is ANTLR's LL parse (see llParse; an
 // entry passes repair).
+// After a failed first pass, prediction reads the tokens alone: the repair
+// (or LL pass) is then exactly the one without bracket abstraction, so a parse
+// that fails reports the error prediction over tokens finds. The repair starts
+// with a pass over the tokens; only when the first pass met no conflict, where
+// llParse would keep that pass's error, does the pass over tokens run first.
 func retryCode(e env, root string) string =
-    if (e.adaptive) s"\n\tif err != nil {\n\t\t$root, err = p.llParse(rule, repair, err)\n\t}" else ""
+    if (e.adaptive) s"\n\tif err != nil {\n\t\tgrouped := p.group\n\t\tp.group = false\n\t\tif grouped && p.rp.seen == 0 {\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t\tif err != nil {\n\t\t\t$root, err = p.llParse(rule, repair, err)\n\t\t}\n\t}" else ""
 
 // parserCore is the parser struct and the helpers every rule uses.
 func parserCore(e env) string {
     val p = e.parserType
     val x = e.pfx
     val predictor = predictorFields(e)
+    val absMatch = bracketMatchLine(e)
     val retry = retryCode(e, "ctx")
     val resetStack = if (e.adaptive) "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0" else ""
     fill(`// PARSER parses GRAMMAR input with decisions galop made at generation time.
@@ -152,7 +162,7 @@ func NewPARSER(input antlr.TokenStream) *PARSER {
 			break
 		}
 		input.Consume()
-	}
+	}ABSMATCH
 	return p
 }
 
@@ -177,7 +187,7 @@ func PFXTokenText(t antlr.Token) string {
 // parse runs a rule function as an entry point and leaves the token stream just
 // after the input it consumed. repair says whether a failed SLL parse may be
 // repaired rather than rerun in LL mode (see llParse).
-func (p *PARSER) parse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext, repair bool) (antlr.ParserRuleContext, error) {
+func (p *PARSER) parse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext, repair bool) (antlr.ParserRuleContext, error) {GROUPON
 	ctx, err := p.attempt(rule)RETRY
 	p.input.Seek(p.toks[p.pos].GetTokenIndex())
 	return ctx, err
@@ -245,7 +255,7 @@ func (p *PARSER) matchIf(ctx antlr.ParserRuleContext, ok bool) antlr.Token {
 func (p *PARSER) noViableAlt(decision int) {
 	panic(&PFXSyntaxError{p.toks[p.pos], "no viable alternative at input " + PFXTokenText(p.toks[p.pos])})
 }
-`, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "RETRY", retry, "RESETSTACK", resetStack)
+`, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "ABSMATCH", absMatch, "GROUPON", groupsOn(e), "RETRY", retry, "RESETSTACK", resetStack)
 }
 
 // entryMethod is the public method that parses input as one rule.
@@ -386,7 +396,7 @@ func emitDecision(e env, plan analysis.DecisionPlan) string {
 // (a token goes to the first case that has it), as Go requires.
 func emitLookahead(e env, d int, la analysis.Lookahead, ind string) Array[string] = la match {
     case analysis.Predict(alt) => ArrayOf(s"${ind}return $alt")
-    case analysis.Adaptive(_) => ArrayOf(s"${ind}return p.adaptivePredict($d)")
+    case analysis.Adaptive(_) | analysis.Otherwise() => ArrayOf(s"${ind}return p.adaptivePredict($d)")
     case analysis.Automaton(states) => emitAutomaton(e, d, states)
     case analysis.Switch(depth, cases) => {
         val subject = if (depth == 1) "p.types[p.pos]" else s"p.la($depth)"
@@ -394,9 +404,15 @@ func emitLookahead(e env, d int, la analysis.Lookahead, ind string) Array[string
             val own = c.Tokens.Subtract(acc.V2)
             Tuple(if (own.IsEmpty()) acc.V1 else acc.V1.Append(analysis.LookaheadCase(own, c.Then)), acc.V2.Union(own))
         }).V1
-        ArrayOf(s"${ind}switch $subject {")
+        // An Otherwise case (no tokens of its own) becomes the default.
+        val otherwise = cases.Exists((c) => c.Then match {
+            case analysis.Otherwise() => true
+            case _ => false
+        })
+        val body = ArrayOf(s"${ind}switch $subject {")
             .AppendAll(disjoint.FlatMap((c) => ArrayOf(s"${ind}case ${e.tokenList(c.Tokens)}:").AppendAll(emitLookahead(e, d, c.Then, ind + "\t"))))
-            .AppendAll(ArrayOf(s"$ind}", s"${ind}p.noViableAlt($d)", s"${ind}return 0"))
+        if (otherwise) body.AppendAll(ArrayOf(s"${ind}default:", s"$ind\treturn p.adaptivePredict($d)", s"$ind}"))
+        else body.AppendAll(ArrayOf(s"$ind}", s"${ind}p.noViableAlt($d)", s"${ind}return 0"))
     }
 }
 
@@ -413,9 +429,7 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
     val targets = states.FlatMap((s) => s.Edges.Map(_.Target)).Distinct()
     val reading = states.ZipWithIndex().Filter((si) => si.V1.Final.IsEmpty())
     val jump = (target int) => states.Get(target).Final match {
-        case Some(analysis.FinalPredict(alt)) => s"return $alt"
-        case Some(analysis.FinalFullLL(Some(alt))) => s"return p.onConflict($d, $alt)"
-        case Some(analysis.FinalFullLL(None())) => s"return p.adaptivePredict($d)"
+        case Some(alt) => s"return $alt"
         case None() => s"goto s$target"
     }
     val readsAgain = reading.Exists((si) => targets.Contains(si.V2))
@@ -428,3 +442,14 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
             .AppendAll(ArrayOf("\t}", s"\tp.noViableAlt($d)", "\treturn 0"))
     }))
 }
+
+// bracketMatchLine pairs the brackets of the input once its token types are
+// known (see PFXBracketMatch).
+func bracketMatchLine(e env) string =
+    if (e.adaptive) s"\n\tp.pairs = ${e.pfx}BracketMatch(p.types, p.pairs)" else ""
+
+// groupsOn lets a parse read bracketed groups when its first pass can only
+// succeed on the whole input: when it may be repaired, its entry rule ends
+// with EOF and the grammar runs no actions while parsing. A pass that stops
+// before EOF, or actions run once more, would not be what ANTLR does.
+func groupsOn(e env) string = if (e.adaptive) s"\n\tp.group = repair && ${e.pfx}OpenerCount > 0" else ""

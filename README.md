@@ -118,6 +118,7 @@ galop options:
  -roundtrip          with -check, also verify that formatting keeps each grammar
  -format             print each grammar in canonical form
  -report             print the decisions static lookahead cannot settle
+ -Xno-brackets       predict over tokens only, never reading a bracketed group as one
  -version            print the galop version
  -help               print this help
 ```

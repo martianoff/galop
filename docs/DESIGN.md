@@ -22,6 +22,7 @@ flowchart LR
 | `g4` | `.g4` reader: lexer, parser, model, formatter, semantic checks |
 | `atn` | Token numbering (ANTLR-compatible), the ATN, the parser rule IR |
 | `analysis` | FIRST/FOLLOW, static LL(k) per decision, adaptive decisions, conflict report |
+| `brackets` | Bracket pairs runtime prediction may read as one symbol (see [Bracket abstraction](#bracket-abstraction)) |
 | `lexgen` | Lexer ATN → DFA with ANTLR's lexer semantics |
 | `codegen` | The `Target` interface; `cmd/galop` lists the targets a binary ships |
 | `golang` | The Go target |
@@ -58,10 +59,11 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
      - **SLL first.** The calling context is a wildcard: a rule's end continues
        after every call of the rule. Prediction stops at a unique alternative or at
        an SLL conflict (`hasSLLConflictTerminatingPrediction`), which SLL settles by
-       the lowest conflicting alternative. The analysis builds as much of each
-       decision's SLL DFA as it can ahead of time (`Automaton`); states beyond that
-       are computed at runtime and cached for the life of the process, as ANTLR
-       caches them. Walking cached edges takes no lock.
+       the lowest conflicting alternative. Prediction reads the token stream with
+       each bracketed group, `( … )`, as one symbol (see
+       [Bracket abstraction](#bracket-abstraction)), which keeps the cached DFA
+       small: its states are computed at runtime and cached for the life of the
+       process, as ANTLR caches them, and walking cached edges takes no lock.
      - **LL after a failed SLL parse.** A parse runs in SLL mode; if it hits a
        syntax error, the result is the parse ANTLR's LL mode gives, where an SLL
        conflict runs full-context prediction with the parser's real call stack
@@ -69,7 +71,9 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
        ANTLR's stopping rule picks an alternative. This is how the GALA compiler
        drives ANTLR. galop gets that parse by
        [repairing the failed SLL parse](#repairing-a-failed-sll-parse) rather than
-       rerunning all of it in LL mode, and caches full-context predictions.
+       rerunning all of it in LL mode, and caches full-context predictions. A
+       first pass that succeeds always gives the LL tree (see
+       [Why the first pass is exact](#why-the-first-pass-is-exact)).
      - **Contexts** are graph-structured stacks, hash-consed and merged with ANTLR's
        rules (`merge`, `mergeSingletons`, `mergeArrays`, wildcard root in SLL), so
        configuration sets, conflict subsets and DFA states are exactly ANTLR's.
@@ -130,61 +134,101 @@ the rule's end with the caller's stack). So a true ambiguity such as
 identifier, as ANTLR resolves it. A decision whose alternatives start with a
 predicate is always adaptive: ANTLR evaluates those predicates while predicting.
 
+### Bracket abstraction
+
+Most of the prediction work in a grammar like GALA's is scanning: deciding
+whether `f(a, g(b))` continues a call or ends a statement means reading past
+the whole argument list, and every nesting deepens the SLL contexts, so the SLL
+DFA has no end and a corpus builds tens of thousands of states. Runtime
+prediction therefore reads the input with every bracketed group as one symbol:
+a configuration about to consume an opening bracket jumps straight to the state
+after the matching closing bracket in the same rule alternative. Brackets are
+paired once per parse, by a stack over the token types (`PFXBracketMatch`);
+an opener without a well-nested closer, which only input outside the language
+has, is read as a plain token.
+
+The `brackets` package infers the brackets from the grammar, with nothing
+configured:
+
+1. A candidate pair (o, c) is a token o that every path from every transition
+   accepting o is followed by c, within the rule (tokens of called rules do not
+   count).
+2. The candidate openers of one closer form a *family* (`'(' NL_LPAREN … ')'`).
+   The family keeps the largest set of openers for which every rule's own
+   tokens stay balanced on every path: no closer without its opener, no rule end
+   inside a bracket, no crossing with another family, bounded nesting, no token
+   set holding brackets of two kinds. An opener in several families stays in
+   the one whose closer always comes last.
+3. Families that cannot be used together are dropped until the rest keep every
+   rule balanced together. For each transition that opens a bracket the
+   analysis records the states after its closer (`PFXAfterState`).
+
+`galop -report` lists the families and every candidate pair left out, with the
+reason. For `gala.g4` the families are `( NL_LPAREN … )`, `[ … ]` and `{ … }`.
+
+**Why it is sound.** When every rule's own tokens are balanced, every
+derivation pairs brackets the way the token stream does: an opener and its
+closer sit in one rule alternative, and what lies between is balanced too. So
+every path of the SLL simulation over the real tokens has a path over the
+abstract stream, ending in the same configuration: abstract configurations
+over-approximate SLL ones, which over-approximate LL ones. An alternative dead
+in the abstract simulation is dead in LL. The pairing is the stream's own: an
+opener's closer is the first point after it where the brackets in between
+balance, so any derivation that closes it closes it there; an opener that never
+balances is read token by token, which is exact.
+
+The abstract symbols extend the token alphabet (a token edge per token type, a
+group edge per opener), so one cached DFA per decision serves both; it is
+built lazily and shared by all parses, as before.
+
+On the GALA corpus the abstract DFA has about 1,000 states where the SLL DFA
+had 13,500 (30,000 on the held-out code of gala_team, gala_tui and
+gala-server, against about 1,100), so a fresh process builds a tenth of the
+cache.
+
+### Why the first pass is exact
+
+On input it parses, ANTLR's LL prediction picks the smallest alternative that
+can parse the rest of the input: LL stops only when one alternative is left or
+when every group of configurations with the same state and stack has the same
+smallest alternative, and in both cases every smaller alternative is dead.
+Hence: **a first pass that always takes the smallest alternative not yet ruled
+out, and parses the whole input, has built the LL tree.** It succeeded, so every
+choice could parse the input, and every smaller choice had been ruled out.
+
+Any sound over-approximation may rule alternatives out, which is what lets the
+predictor stop early. At an abstract conflict (`onConflict`) the first pass
+takes the smallest alternative left; if that was wrong the parse fails. The
+first pass then runs again over tokens alone, and the repair of a failed parse
+(or the LL pass) follows exactly as it would without brackets, so it settles
+the parse with full-context prediction and a parse that fails reports the
+error prediction over tokens finds (see [Performance](#performance) for how
+often that happens). A unique abstract answer is exact in every pass.
+
+The argument needs a first pass that can only succeed on the whole input, so a
+parse reads bracketed groups only where it may be repaired: its entry rule ends
+with EOF (a rule that can stop early could take a smaller alternative that
+ends it sooner), and the grammar has no predicates, no left recursion and no
+actions run while parsing (an extra pass would run an action once more than
+ANTLR does). Other entries predict over tokens, as without brackets; a grammar
+that is never repaired gets no bracket tables at all.
+
 ### SLL automata
 
-A decision whose static tree would leave some prefix to adaptive prediction
-gets an **SLL automaton** instead (`Automaton` in `analysis/plan.gala`), which
-replaces its whole lookahead. It is the DFA that ANTLR's SLL prediction builds
-lazily at runtime, built ahead of time by subset construction:
-
-- A state is a set of SLL configurations (ATN state, alternative, context),
-  as ANTLR's `ATNConfigSet` holds them after a closure. Contexts are
-  graph-structured, like ANTLR's prediction contexts: configurations with the
-  same state and alternative merge their contexts, and the empty context is a
-  wildcard root that absorbs whatever it merges with. A rule end with an empty
-  context follows global FOLLOW, which is what SLL's empty outer context does.
-- A state other than the start is final as in ANTLR's `execATN`: with one
-  alternative left it predicts it; when
-  `PredictionMode.hasSLLConflictTerminatingPrediction` holds (all
-  configurations at the end of a start rule, or a (state, merged context)
-  group with several alternatives while no state has a single alternative) it
-  stops with `FinalFullLL(Some(m))`, m the smallest conflicting alternative:
-  pure SLL mode predicts m (ANTLR's `D.prediction`), LL mode runs full-context
-  prediction from the decision's start, as ANTLR then does.
-  EOF keeps only the configurations at the end of a start rule. A token with no
-  edge is a syntax error.
-- The SLL DFA is infinite under recursion, since each nesting deepens the
-  contexts. An edge into a state whose contexts are deeper than 64 frames, or
-  into a new state once the automaton has 50, ends in `FinalFullLL(None)`:
-  the runtime goes on predicting, SLL first and then LL as needed.
-
-**Why this is ANTLR's answer.** The automaton is the DFA of ANTLR's SLL stage:
-the same configurations, merges and stopping conditions, so in states it
-reaches it makes ANTLR's SLL decision. Where it stops at a bound
-(`FinalFullLL(None)`), the runtime simply goes on with the same SLL simulation,
-so nothing changes. What remains is what each mode does with the outcome:
-
-- *Pure SLL mode* returns the unique alternative, or at a conflict the smallest
-  conflicting alternative (`MinAlt`), exactly as ANTLR's SLL mode does.
-- *LL mode* (ANTLR's default two-stage prediction) returns the unique SLL
-  alternative, and at a conflict runs full-context prediction from the
-  decision's start, as ANTLR does.
-
-Both agree with full LL on input ANTLR parses, for the unique case by the
-over-approximation argument:
-
-1. SLL configurations over-approximate LL configurations. SLL replaces the
-   caller's stack with a wildcard (global FOLLOW, absorbing merges), so every
-   configuration LL reaches with the real stack is covered by one SLL reaches.
-2. So if only alternative X survives SLL after a prefix, no other alternative
-   can match that prefix in the real context. On input ANTLR parses, LL's
-   prediction is an alternative that matches the input, hence X: an
-   SLL-unique prediction equals the LL prediction.
-3. At an SLL conflict, LL mode runs full-context prediction, which is LL by
-   definition. Pure SLL mode's `MinAlt` can differ from LL; that is why GALA
-   parses in SLL mode first and turns to LL only on a syntax error, and the
-   corpus confirms the result: all 723 GALA corpus files give the same trees
-   as with LL.
+When static lookahead leaves part of a decision to adaptive prediction, the
+analysis tries to build the decision's SLL DFA ahead of time by subset
+construction (`Automaton` in `analysis/plan.gala`), and keeps it only if it
+settles every input on its own; the decision then needs no runtime prediction
+at all. States are sets of SLL configurations with graph-structured contexts
+and a wildcard root, as in ANTLR's `ATNConfigSet`; a state is final when one
+alternative is left. Construction gives up at the first SLL conflict
+(`hasSLLConflictTerminatingPrediction`), at contexts deeper than 64 frames and
+past 50 states, and the decision is predicted at runtime over the abstract
+stream instead. For `gala.g4` that is every adaptive decision, and the
+generated parser shrinks from 577 KB to 506 KB. The static lookahead tree stays
+in front: its unsettled leaves, and any token past the first that it does not
+expect, go to runtime prediction, which finds a syntax error where ANTLR's SLL
+prediction finds it.
 
 Decisions whose alternatives start with a predicate stay `Adaptive` (always
 full LL), because ANTLR evaluates those predicates while predicting.
@@ -357,8 +401,16 @@ tool rejects any other with error 508 before generating. The Go target has two
 Both flavors run the same decision functions and runtime predictor (SLL first,
 LL from the start on a syntax error), so they choose the same alternatives.
 Neither recovers from a syntax error yet: a parse stops at the first one and
-reports it with ANTLR's message (`mismatched input 'x'`, `no viable alternative
-at input 'x'`), line and column.
+reports it in ANTLR's style (`line 3:7 mismatched input 'x'`, `no viable
+alternative at input 'x'`). It is not yet ANTLR's report: a prediction failure
+is placed at the decision's first token, where ANTLR places it at the token
+where prediction failed and quotes the text in between; a mismatch does not
+list the expected tokens; and ANTLR's recovery messages (`extraneous input`,
+`missing ...`) have no counterpart. On invalid single-token edits of GALA
+sources, galop's first error has ANTLR's position about 58% of the time and
+its exact text about 16%. Bracket abstraction does not change any of this: on
+input outside the language the last pass predicts over the tokens alone, so
+the error is the one prediction over tokens finds.
 
 ### The native tree
 
@@ -492,33 +544,57 @@ generator. galop's own repository (or anyone else) can still register a
 
 ## Performance
 
-On the GALA corpus (723 files, 1.8 MB), Go 1.25 on Windows, one machine with 32
-hardware threads, from `bazel run -c opt //differential/cmd/bench` (lexing
-included; ANTLR driven as the GALA compiler drives it, SLL then LL):
+From `bazel run -c opt //differential/cmd/bench` (lexing included; ANTLR
+driven as the GALA compiler drives it, SLL then LL; galop repairing a failed
+SLL parse), Go 1.25 on Windows, one machine with 32 hardware threads that other
+work shared during the run, so compare columns rather than runs.
+`-Xno-brackets` is the native flavor generated without bracket abstraction.
 
-| | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` flavor |
-|---|---:|---:|---:|
-| Warm, 1 goroutine | 488 ms | 178 ms (2.7×) | 65 ms (7.5×) |
-| Warm, 32 goroutines | 349 ms | 35 ms (10×) | 14 ms (25×) |
-| Fresh process, 1 goroutine | 1.58 s | 0.40 s (3.9×) | 0.28 s (5.7×) |
-| Fresh process, 32 goroutines | 0.85 s | 0.29 s (2.9×) | 0.25 s (3.4×) |
-| Allocations per warm pass | 6.84 M, 526 MB | 3.67 M, 293 MB | 19 k, 74 MB |
-| Lexer only, warm, 1 goroutine | 62 ms | 37 ms | 17 ms |
-| Lexer only, warm, 32 goroutines | 92 ms | 6.6 ms | 2.2 ms |
+GALA corpus (723 files, 1.8 MB):
+
+| | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` | `native`, `-Xno-brackets` |
+|---|---:|---:|---:|---:|
+| Warm, 1 goroutine | 812 ms | 245 ms | 63 ms | 66 ms |
+| Warm, 32 goroutines | 450 ms | 49 ms | 9.9 ms | 10.0 ms |
+| Fresh process, 1 goroutine | 1.49 s | 192 ms | 79 ms | 234 ms |
+| Fresh process, 32 goroutines | 781 ms | 72 ms | 44 ms | 231 ms |
+| Allocations per warm pass | 6.84 M, 526 MB | 3.75 M, 298 MB | 19 k, 73 MB | 18 k, 71 MB |
+
+Held-out code (gala_team, gala_tui and gala-server; 247 files, 3.6 MB, not
+used to tune galop):
+
+| | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` | `native`, `-Xno-brackets` |
+|---|---:|---:|---:|---:|
+| Warm, 1 goroutine | 5.22 s | 367 ms | 98 ms | 105 ms |
+| Warm, 32 goroutines | 2.93 s | 93 ms | 20 ms | 22 ms |
+| Fresh process, 1 goroutine | 6.77 s | 362 ms | 186 ms | 486 ms |
+| Fresh process, 32 goroutines | 2.86 s | 197 ms | 146 ms | 512 ms |
 
 Where the `antlr` flavor's warm time goes (profiled on one goroutine): about
 half builds ANTLR's context objects, their child slices and terminal nodes, and
 about a fifth creates `CommonToken`s and fills the `CommonTokenStream`. Those
 are the costs the `native` flavor drops. What is left in it is the lexer and
-the line-break rule (about a quarter), the 14 corpus files where galop's SLL pass reports a false
-syntax error and the whole file is parsed again with LL (about a fifth, for 3%
-of the input), the cached prediction walks and the static decisions; building
-the tree is under a sixth.
+the line-break rule, the cached prediction walks and the static decisions, and
+building the tree.
 
-A fresh process pays for the runtime prediction cache: about 13,500 DFA states
-over 21,000 edges for the corpus, mostly for decisions that scan whole
-operands. Both flavors share that cost, which is why their fresh-process times
-are close.
+A fresh process pays for the runtime prediction cache. Over tokens alone that
+was about 13,500 DFA states for the GALA corpus, mostly for decisions that scan
+whole operands; with bracketed groups read as one symbol it is about a tenth of
+that, which is what the fresh-process columns show.
+
+The price of reading groups is precision. Where the groups hide what decides an
+alternative, prediction takes the smallest one and a few files fail their first
+pass where prediction over tokens would not, chiefly composite literals
+(`Home{Name: "flat"}`, where only the group's content tells it from an
+identifier followed by a block) and tuple patterns after `case`
+(`case (true, code) =>`, which reads like a lambda until the group's content).
+Such a file is parsed again over tokens and repaired as without brackets: 34 of
+the GALA corpus's 723 files take that extra pass (against 15 that fail their
+first pass over tokens), and 8 of the 247 held-out files (against 3). Each
+costs one more pass, over tokens; the full-context checks of the repair are the
+same. Invalid input costs no more than without brackets, apart from one pass
+over tokens where the first pass met no conflict. On 32 goroutines the extra pass can lengthen the
+slowest file, which is why that warm column is no faster.
 
 ## Concurrency
 
@@ -533,5 +609,5 @@ galop is written in GALA and uses `concurrent.Future`:
   in rule order, so output is deterministic.
 
 Generated lexers have no shared mutable state, and generated parsers share only
-the SLL DFA cache, which is safe for concurrent use; callers can parse files in
+the prediction caches (the abstract and SLL DFAs), which are safe for concurrent use; callers can parse files in
 parallel without the cache isolation ANTLR's Go runtime needs.

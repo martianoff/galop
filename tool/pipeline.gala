@@ -34,7 +34,7 @@ struct FileResult(Diagnostics Array[diag.Diagnostic], Stdout string)
 struct Source(Path string, Text Option[string])
 
 // Stage is the part of the configuration the front end needs.
-struct Stage(Action Action, Werror bool)
+struct Stage(Action Action, Werror bool, NoBrackets bool = false)
 
 // Analyzed is a grammar that passed the front end and is ready for a target.
 struct Analyzed(Grammar g4.Grammar, Compiled atn.Compiled, Analysis Option[analysis.Analysis])
@@ -66,7 +66,7 @@ func Run(args Array[string], kit Toolkit) Outcome {
             if diag.HasErrors(setup) || (cfg.Werror && setup.NonEmpty()) {
                 return finish(cfg, setup, "")
             }
-            val stage = Stage(cfg.Action, cfg.Werror)
+            val stage = Stage(cfg.Action, cfg.Werror, cfg.NoBrackets)
             val sources = cfg.Files.Map((path) => Source(path, kit.Files.Read(path).ToOption()))
             val fronts = sources.Map((src) => Future(frontEnd(stage, src)))
             val results = sources.Zip(fronts).Map((pair) => {
@@ -130,11 +130,11 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
             case Some(d) => done(problemsOnly(ArrayOf(d)))
             case None() => stage.Action match {
                 case Validate(roundTrip) => done(validated(path, g, roundTrip))
-                case PrintReport() => done(report(path, c))
+                case PrintReport() => done(report(path, c, !stage.NoBrackets))
                 // -depend only needs the file names, which come from the compiled grammar.
                 case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
                 case _ => {
-                    val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK))
+                    val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK, !stage.NoBrackets))
                     FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
                 }
             }
@@ -184,8 +184,8 @@ func validated(path string, g g4.Grammar, roundTrip bool) FileResult {
 }
 
 // report is -report: the decision report of the parser network, if any.
-func report(path string, c atn.Compiled) FileResult = c.Parser match {
-    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, analysis.MaxK)))
+func report(path string, c atn.Compiled, brackets bool) FileResult = c.Parser match {
+    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, analysis.MaxK, brackets)))
     case None() => printed(s"$path: no parser rules, so no decisions\n")
 }
 

@@ -6,6 +6,7 @@ import (
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
     "github.com/martianoff/galop/g4"
 )
 
@@ -26,6 +27,7 @@ func show(a atn.ATN, l Lookahead) string = l match {
     case Predict(alt) => s"$alt"
     case Adaptive(alts) => s"?${alts.MkString(",")}"
     case Automaton(states) => s"dfa(${states.Size()})"
+    case Otherwise() => "?"
     case Switch(_, cases) => "{" + cases.Map((c) => tokens(a, c.Tokens) + ":" + show(a, c.Then)).MkString(" ") + "}"
 }
 
@@ -198,6 +200,8 @@ s : {p()}? X | X Y ;
 Adaptive decisions:
 decision 0 in rule s (block): s : {p()}? X | X Y
   alts 1,2: predicates are evaluated before the first token
+
+Bracket abstraction: none
 `)
 }
 
@@ -223,6 +227,8 @@ Adaptive decisions:
 decision 1 in rule t (block): t : Q W Q Y | Q W Q Z
   alts 1,2 both start with: 'q' 'w' 'q'
   SLL automaton: 6 states, 2 of them final
+
+Bracket abstraction: skipped (no decision needs runtime prediction)
 `)
 }
 
@@ -247,23 +253,31 @@ func TestGalaGrammar(t T) T {
     Eq(t1, adaptive, galaAdaptive)
 }
 
-// automatonOf analyzes src and returns the SLL automaton of one decision.
-func automatonOf(src string, rule string, text string) Tuple[atn.ATN, Array[DFAState]] {
+// builtAutomaton builds the SLL automaton of one decision of src: None when
+// it cannot settle every input.
+func builtAutomaton(src string, rule string, text string) Tuple[atn.ATN, Option[Lookahead]] {
     val a = parserATN(src)
-    planFor(a, Analyze(a), rule, text).Lookahead match {
-        case Automaton(states) => (a, states)
-        case other => go_builtins.Panic(s"no automaton, got ${render(other)}")
+    val sites = callSites(a)
+    val dec = planFor(a, Analyze(a), rule, text).Decision
+    (a, newGrammarInfo(a, sites, startRules(a, sites)).buildAutomaton(dec))
+}
+
+// automatonOf builds the SLL automaton of one decision of src, which must
+// settle every input.
+func automatonOf(src string, rule string, text string) Tuple[atn.ATN, Array[DFAState]] {
+    val (a, built) = builtAutomaton(src, rule, text)
+    built match {
+        case Some(Automaton(states)) => (a, states)
+        case other => go_builtins.Panic(s"no automaton, got $other")
     }
 }
 
-// showAutomaton renders an automaton: `0 X:1 | 1 predict 2 | 2 full LL`.
+// showAutomaton renders an automaton: `0 X:1 | 1 predict 2`.
 func showAutomaton(a atn.ATN, states Array[DFAState]) string =
     states.ZipWithIndex().Map((p) => {
         val (st, i) = p
         st.Final match {
-            case Some(FinalPredict(alt)) => s"$i predict $alt"
-            case Some(FinalFullLL(Some(alt))) => s"$i conflict $alt"
-            case Some(FinalFullLL(None())) => s"$i bound"
+            case Some(alt) => s"$i predict $alt"
             case None() => s"$i " + st.Edges.Map((e) => s"${tokens(a, e.Tokens)}:${e.Target}").MkString(" ")
         }
     }).MkString(" | ")
@@ -275,9 +289,7 @@ func runAutomaton(a atn.ATN, states Array[DFAState], input Array[string]) string
 func runFrom(a atn.ATN, states Array[DFAState], state int, rest Array[string]) string {
     val st = states.Get(state)
     st.Final match {
-        case Some(FinalPredict(alt)) => s"predict $alt"
-        case Some(FinalFullLL(Some(alt))) => s"conflict $alt"
-        case Some(FinalFullLL(None())) => "bound"
+        case Some(alt) => s"predict $alt"
         case None() => rest.HeadOption().FlatMap((name) => a.Vocab.TypeOf(name)) match {
             case Some(tok) => st.Edges.Find(_.Tokens.Contains(tok)) match {
                 case Some(e) => runFrom(a, states, e.Target, rest.Drop(1))
@@ -299,31 +311,65 @@ a : X (Y X)* Z | X (Y X)* W ;
     Eq(t1, runAutomaton(a, states, ArrayOf("X", "Y", "X", "Y", "X", "W")), "predict 2")
 }
 
-func TestAutomatonConflictNeedsFullContext(t T) T {
+func TestAutomatonGivesUpAtAConflict(t T) T {
     // After `Y Y Q` both alternatives can end s, in different calling contexts
-    // of a: SLL prediction stops with a conflict and ANTLR retries in LL mode,
-    // which sees whether s started with W or Z.
-    val (a, states) = automatonOf(`grammar C;
+    // of a: SLL prediction stops with a conflict that only full-context
+    // prediction settles, so no automaton settles every input.
+    val (_, built) = builtAutomaton(`grammar C;
 s : W a Y Q | Z a Q ;
 a : Y Y | Y ;
 ` + tokensXYZ, "a", "a : Y Y | Y")
-    val t1 = Eq(t, showAutomaton(a, states), "0 Y:1 | 1 Y:2 Q:3 | 2 Y:4 Q:5 | 3 predict 2 | 4 predict 1 | 5 conflict 1")
-    Eq(t1, runAutomaton(a, states, ArrayOf("Y", "Y", "Q")), "conflict 1")
+    IsTrue(t, built.IsEmpty())
 }
 
-func TestAutomatonBoundsRecursion(t T) T {
-    // Every X nests e once more, so the SLL automaton would be infinite; past
-    // the stack limit it hands over to full-context prediction.
-    val (a, states) = automatonOf(`grammar R;
+func TestAutomatonGivesUpOnRecursion(t T) T {
+    // Every X nests e once more, so the SLL automaton would be infinite.
+    val (_, built) = builtAutomaton(`grammar R;
 s : e EOF ;
 e : X e Y Q | X e Y W | Z ;
 ` + tokensXYZ, "e", "e : X e Y Q | X e Y W | Z")
-    val deep = ArrayFill(dfaStackLimit + 2, "X")
-    val t1 = Eq(t, runAutomaton(a, states, deep), "bound")
-    val t2 = Eq(t1, runAutomaton(a, states, ArrayOf("X", "X", "Z", "Y", "Q", "Y", "W")), "predict 2")
-    val t3 = Eq(t2, runAutomaton(a, states, ArrayOf("Z")), "predict 3")
-    val t4 = Eq(t3, runAutomaton(a, states, ArrayOf("X", "Q")), "syntax error")
-    // The budget bounds the states still reading tokens; the shared final
-    // states come on top.
-    LessOrEq(t4, states.Count(_.Final.IsEmpty()), dfaStateLimit)
+    IsTrue(t, built.IsEmpty())
+}
+
+func TestOnlyAutomataThatSettleStay(t T) T {
+    // The automaton of s loops over X and settles every input, so it stays.
+    // Nesting in e makes the automaton of r give up, so r keeps its static
+    // tree, whose unsettled leaves are left to runtime prediction.
+    val a = parserATN(`grammar C;
+s : a | b ;
+a : X* Y ;
+b : X* Z ;
+r : e Y | e Z ;
+e : '(' e ')' | X ;
+` + tokensXYZ)
+    val an = Analyze(a)
+    val t1 = HasPrefix(t, render(planFor(a, an, "s", "s : a | b").Lookahead), "automaton(")
+    // The static tree stays; its unsettled leaves ask the runtime, and so does
+    // a token past the first that no case expects.
+    val r = show(a, planFor(a, an, "r", "r : e Y | e Z").Lookahead)
+    val t2 = Contains(t1, r, "T__0 X:?1,2")
+    Contains(t2, r, "X:{Y:1 Z:2 :?}")
+}
+
+// The bracket families of gala.g4, and somewhere to go after every closer.
+func TestGalaGrammarBrackets(t T) T {
+    val a = parserATN(galaGrammar)
+    val b = brackets.Analyze(a)
+    val families = b.Families.Map((f) => f.Openers.Values().Map((tok) => a.Vocab.Display(tok)).MkString(" ") + " " + a.Vocab.Display(f.Closer))
+        .Sorted().MkString("; ")
+    val t1 = Eq(t, families, "'(' NL_LPAREN ')'; '[' ']'; '{' '}'")
+    IsTrue(t1, b.Sites.NonEmpty() && b.Sites.ForAll(_.After.NonEmpty()))
+}
+
+func TestOpenerSitesJumpPastTheCloser(t T) T {
+    val a = parserATN(`grammar P;
+e : f '(' ID? ')' ID ;
+f : ID ;
+ID : [a-z]+ ;`)
+    val b = brackets.Analyze(a)
+    val (first, nullable) = firstSets(a)
+    val t1 = Eq(t, b.Sites.Size(), 1)
+    // From the state after ')', the only way on is ID.
+    val next = b.Sites.Head().After.Map((s) => tokens(a, lookFrom(a, s, first, nullable).Tokens))
+    Eq(t1, next, ArrayOf("ID"))
 }
