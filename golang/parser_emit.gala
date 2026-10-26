@@ -24,6 +24,9 @@ struct env(
     flavor Flavor = ANTLRFlavor(),
     // tokenLabels says whether some rule labels a token (`op=('+'|'-')`).
     tokenLabels bool = false,
+    // repair says whether a failed SLL parse may be repaired (repair_go.gala)
+    // rather than rerun in LL mode; see GrammarRepairable and Repairable.
+    repair bool = false,
 )
 
 // Flavor is the output style of the Go target (see GoFlavors).
@@ -112,7 +115,7 @@ func predictorFields(e env) string =
 // ANTLR; on a syntax error the result is ANTLR's LL parse (see llParse; an
 // entry passes repair).
 func retryCode(e env, root string) string =
-    if (e.adaptive) s"\n\tif err != nil {\n\t\t$root, err = p.llParse(rule, repair)\n\t}" else ""
+    if (e.adaptive) s"\n\tif err != nil {\n\t\t$root, err = p.llParse(rule, repair, err)\n\t}" else ""
 
 // parserCore is the parser struct and the helpers every rule uses.
 func parserCore(e env) string {
@@ -120,7 +123,7 @@ func parserCore(e env) string {
     val x = e.pfx
     val predictor = predictorFields(e)
     val retry = retryCode(e, "ctx")
-    val resetStack = if (e.adaptive) "\n\tp.stack = p.stack[:0]" else ""
+    val resetStack = if (e.adaptive) "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0" else ""
     fill(`// PARSER parses GRAMMAR input with decisions galop made at generation time.
 // It builds the same context objects as ANTLRPARSER. Each instance is
 // single-use and not safe for concurrent use; separate instances are independent.
@@ -259,7 +262,7 @@ func (p *PARSER) METHOD() (IFACE, error) {
 	return ctx.(IFACE), nil
 }
 `, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
-        "REPAIR", s"${Repairable(e.rules, r)}")
+        "REPAIR", s"${e.repair && Repairable(e.rules, r)}")
 }
 
 // emitRule emits the antlr flavor's function that parses one rule.
@@ -411,7 +414,7 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
     val reading = states.ZipWithIndex().Filter((si) => si.V1.Final.IsEmpty())
     val jump = (target int) => states.Get(target).Final match {
         case Some(analysis.FinalPredict(alt)) => s"return $alt"
-        case Some(analysis.FinalFullLL(Some(alt))) => s"return p.conflictPredict($d, $alt)"
+        case Some(analysis.FinalFullLL(Some(alt))) => s"return p.onConflict($d, $alt)"
         case Some(analysis.FinalFullLL(None())) => s"return p.adaptivePredict($d)"
         case None() => s"goto s$target"
     }

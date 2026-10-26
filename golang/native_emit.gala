@@ -82,7 +82,7 @@ func nativeEntry(e env, r atn.RuleIR) string = fill(`// ParseMETHOD parses the t
 // The parse stops after the input RULE matches; Tree().Next is the index of
 // the token after it.
 func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
-	t, root, err := PFXParse(ts, (*PARSER).RULEFUNC, REPAIR)
+	t, root, err := newPARSER(ts).run((*PARSER).RULEFUNC, REPAIR)
 	if err != nil {
 		return HANDLE{}, err
 	}
@@ -90,7 +90,7 @@ func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
 }
 `, "METHOD", nativeName(e.names.RuleMethod(r.Name)), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
     "HANDLE", nodeType(r.Name), "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported(),
-    "REPAIR", s"${Repairable(e.rules, r)}")
+    "REPAIR", s"${e.repair && Repairable(e.rules, r)}")
 
 // nodeType is the handle type of a rule or labeled alternative: `CaseClauseNode`.
 func nodeType(ruleOrLabel string) string = capitalize(ruleOrLabel) + "Node"
@@ -272,7 +272,7 @@ func nativeParserCore(e env) string {
     val predictor = predictorFields(e)
     val labs = if (e.tokenLabels) "\n\tlabs  []int32" else ""
     val retry = retryCode(e, "root")
-    val resetStack = if (e.adaptive) "\n\tp.stack = p.stack[:0]" else ""
+    val resetStack = if (e.adaptive) "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0" else ""
     val resetLabs = if (e.tokenLabels) "\n\tp.labs = p.labs[:0]\n\tp.tree.TokenLabels = p.tree.TokenLabels[:0]" else ""
     // The helpers go in through one placeholder, and fill does not rescan
     // what it inserts, so their own placeholders are filled first.
@@ -307,10 +307,14 @@ type PARSER struct {
 	tree  *@X@TreeLABSPREDICTOR
 }
 
-// PFXParse parses the tokens of ts with rule, SLL first and, on a syntax
-// error, as LL prediction would, as the antlr flavor does. repair says
-// whether a failed SLL parse may be repaired rather than rerun in LL mode.
-func PFXParse(ts *@X@Tokens, rule func(*PARSER) int32, repair bool) (*@X@Tree, int32, error) {
+// PFXParse parses the tokens of ts with rule, SLL first and LL on a syntax
+// error, as the antlr flavor does.
+func PFXParse(ts *@X@Tokens, rule func(*PARSER) int32) (*@X@Tree, int32, error) {
+	return newPARSER(ts).run(rule, false)
+}
+
+// newPARSER prepares a parse of the tokens of ts.
+func newPARSER(ts *@X@Tokens) *PARSER {
 	n := len(ts.Tokens)
 	p := &PARSER{ts: ts, types: make([]int32, n)}
 	for i := range ts.Tokens {
@@ -319,6 +323,12 @@ func PFXParse(ts *@X@Tokens, rule func(*PARSER) int32, repair bool) (*@X@Tree, i
 	// Grammars like GALA's have about four nodes and five child references
 	// per token; sizing for that saves growing the arrays.
 	p.tree = &@X@Tree{@X@Tokens: ts, Nodes: make([]@X@NodeData, 0, 4*n+4), Kids: make([]int32, 0, 5*n+4)}
+	return p
+}
+
+// run parses with rule; repair says whether a failed SLL parse may be
+// repaired rather than rerun in LL mode (see llParse).
+func (p *PARSER) run(rule func(*PARSER) int32, repair bool) (*@X@Tree, int32, error) {
 	root, err := p.attempt(rule)RETRY
 	if err != nil {
 		return nil, -1, err

@@ -205,31 +205,44 @@ that reaches EOF proves its choice at every conflict where it took the SLL
 answer: that alternative completes, the lowest that does. Only where it takes
 another alternative does it need full-context prediction, which then decides.
 
-**How.** A repair pass replays the parse from the start and records each SLL
+**How.** If the SLL pass met no conflict before its error, every decision it
+made is LL's and LL mode fails at the same token, so that is the result.
+Otherwise a repair pass replays the parse from the start and records each SLL
 conflict: decision, token, the alternative taken and the call stack. After a
-syntax error it checks the pass's conflicts from the error backwards with
-full-context prediction, switches the latest one whose LL answer differs, and
-replays. When none differs, LL fails too: at the earliest conflict where no
-alternative is viable, or where the pass failed, with the error LL mode reports
-there. Past 256 passes the parser falls back to the whole-input LL rerun. On
-the held-out corpus (see `differential/`) the two files that needed the LL
-stage took 2 full-context predictions instead of about 15,000.
+syntax error it checks the pass's conflicts with full-context prediction:
+first the 8 before the error, backwards, then the rest forwards from the start,
+as LL mode meets them. It switches the first one it finds whose LL answer
+differs and replays. When none differs, LL fails too: at the earliest conflict
+where no alternative is viable, or where the pass failed, with the error and
+the position LL mode reports there. The conflict to switch is almost always
+within a few of the error (on the GALA and held-out corpora and 10,000 mutants
+of them, at most 5 back), so a valid file needs a handful of predictions,
+while a file with a real syntax error costs at most 8 predictions and one
+replay more than the rerun. Past 16 passes the parser falls back to the
+whole-input LL rerun. On the held-out corpus (see `differential/`) the two
+files that needed the LL stage took 2 full-context predictions instead of
+about 15,000.
 
-The argument needs a successful parse to end at EOF, and prediction without
-semantic predicates. So an entry rule repairs only if every way through it ends
-by matching EOF (others rerun in LL mode, as ANTLR's prefix parses drop
-configurations that end early). An entry rule that some rule it calls can
-call again also reruns: there a full-context merge can drop the empty context
-LL prediction ends with. The repair needs grammars without predicates or left
-recursion, which the Go target rejects today anyway.
+A repair replays the parse, which would run embedded actions more often than
+ANTLR's two passes do, and its argument needs a successful parse to end at
+EOF and prediction without semantic predicates. So the generator enables it
+only for grammars without actions, predicates or left recursion (the Go target
+rejects the last two today anyway), and an entry rule repairs only if every
+way through it ends by matching EOF (others rerun in LL mode, as ANTLR's prefix
+parses drop configurations that end early). An entry rule that some rule it
+calls can call again also reruns: there a full-context merge can drop the
+empty context LL prediction ends with.
 
 **Full-context cache.** For a decision and a call stack, full-context
 prediction depends only on the tokens ahead, so the predictor caches it like
 the SLL DFA, as a DFA per (decision, stack) with its contexts in one pool that
 is never reset. Finding a cached start state takes a read lock and walking
-cached edges no lock; new states are built under the write lock; past 32,768
-states or 2^20 contexts the cache stops growing and prediction runs uncached. It speeds up the conflicts the repair checks and the whole-input
-rerun where that still runs.
+cached edges no lock; new states are built under the write lock. Past 32,768
+states or 2^20 contexts the cache stops growing (a flag read without a lock)
+and prediction it cannot answer runs uncached: starting over instead thrashes
+once the predictions in use outgrow the cache, and building cached states
+costs more than predicting uncached. It speeds up the conflicts the repair
+checks, and the whole-input rerun where that still runs.
 
 The **conflict report** (`galop -report`) lists every decision that is not
 statically decided, with its rule, source text, the alternatives in conflict and an

@@ -6,57 +6,54 @@ import (
     "github.com/martianoff/galop/atn"
 )
 
-// The witness-based repair (repair_go.gala) replaces the whole-file LL retry.
-// It is exact only under conditions the generator checks here: no semantic
-// predicate takes part in prediction, no rule is left-recursive, and the
-// entry rule ends by matching EOF.
+// The witness-based repair (repair_go.gala) replaces the whole-input LL
+// rerun only where it gives exactly ANTLR's result and behaviour, as checked
+// here: per grammar (GrammarRepairable) and per entry rule (Repairable).
 
-// leftEdge is what a sequence of steps can do before it consumes a token:
-// the rules it can call there, and whether it can match nothing at all.
-struct leftEdge(calls HashSet[int], nullable bool)
-
-func emptyEdge() leftEdge = leftEdge(EmptyHashSet[int](), true)
-
-// stepsEdge is the left edge of a sequence: each step's calls count while
-// every step before it can match nothing.
-func stepsEdge(steps Array[atn.Step], nullable Array[bool]) leftEdge =
-    steps.FoldLeft(emptyEdge(), (acc, s) => if (!acc.nullable) acc else {
-        val e = stepEdge(s, nullable)
-        leftEdge(acc.calls.Union(e.calls), e.nullable)
-    })
-
-func stepEdge(s atn.Step, nullable Array[bool]) leftEdge = s match {
-    case atn.MatchToken(_, _) => leftEdge(EmptyHashSet[int](), false)
-    case atn.MatchSet(_, _, _) => leftEdge(EmptyHashSet[int](), false)
-    case atn.CallRule(rule, _, _) => leftEdge(HashSetOf(rule), nullable.Get(rule))
-    case atn.Choose(_, alts, exitAlt) => {
-        val edges = alts.Map((a) => stepsEdge(a, nullable))
-        leftEdge(
-            edges.FoldLeft(EmptyHashSet[int](), (acc, e) => acc.Union(e.calls)),
-            exitAlt.IsDefined() || edges.Exists(_.nullable),
-        )
-    }
-    case atn.Loop(plus, _, _, body) => {
-        val e = stepsEdge(body, nullable)
-        leftEdge(e.calls, !plus || e.nullable)
-    }
-    case atn.RunAction(_) => emptyEdge()
-    case atn.CheckPredicate(_) => emptyEdge()
-}
-
-// LeftRecursiveRules names the rules that can call themselves before
-// consuming a token, directly or through other rules. ANTLR rewrites such
-// rules into precedence loops; galop does not yet.
+// GrammarRepairable says whether a grammar's parsers may repair a failed SLL
+// parse: no semantic predicate takes part in prediction, no rule is
+// left-recursive, and no embedded action runs while parsing (a repair replays
+// the parse, which would run an action more often than ANTLR's two passes do).
 // rules: the parser rules, indexed by rule number.
-// nullable: whether each rule can match the empty input.
-func LeftRecursiveRules(rules Array[atn.RuleIR], nullable Array[bool]) Array[string] {
-    val edges = rules.Map((r) =>
-        r.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(stepsEdge(a.Steps, nullable).calls)))
-    rules.Filter((r) => reaches(edges, edges.Get(r.Index), r.Index, EmptyHashSet[int]())).Map(_.Name)
+func GrammarRepairable(rules Array[atn.RuleIR]) bool =
+    !rules.Exists((r) => r.Alts.Exists((a) => hasStep(a.Steps, isPredicateOrAction))) &&
+        atn.FindLeftRecursion(rules).IsEmpty()
+
+func isPredicateOrAction(s atn.Step) bool = s match {
+    case atn.CheckPredicate(_) => true
+    case atn.RunAction(_) => true
+    case _ => false
 }
+
+// hasStep says whether some step in steps, nested ones included, satisfies p.
+func hasStep(steps Array[atn.Step], p func(atn.Step) bool) bool = steps.Exists((s) => p(s) || (s match {
+    case atn.Choose(_, alts, _) => alts.Exists((a) => hasStep(a, p))
+    case atn.Loop(_, _, _, body) => hasStep(body, p)
+    case _ => false
+}))
+
+// Repairable says whether a parse that starts at entry rule r may repair a
+// failed SLL parse: r ends with EOF, and no rule it calls can call r again.
+// A call of the entry rule inside itself is where full-context merges can
+// drop the empty context ANTLR's LL prediction ends with, so the repair's
+// argument is kept to grammars without it.
+// rules: the parser rules, indexed by rule number.
+// r: the entry rule.
+func Repairable(rules Array[atn.RuleIR], r atn.RuleIR) bool {
+    val calls = rules.Map((rule) => rule.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(callees(a.Steps))))
+    EndsWithEOF(rules, r) && !reaches(calls, calls.Get(r.Index), r.Index, EmptyHashSet[int]())
+}
+
+// callees are the rules steps call anywhere.
+func callees(steps Array[atn.Step]) HashSet[int] = steps.FoldLeft(EmptyHashSet[int](), (acc, s) => s match {
+    case atn.CallRule(rule, _, _) => acc.Add(rule)
+    case atn.Choose(_, alts, _) => alts.FoldLeft(acc, (inner, a) => inner.Union(callees(a)))
+    case atn.Loop(_, _, _, body) => acc.Union(callees(body))
+    case _ => acc
+})
 
 // reaches says whether target is reachable from the rules in frontier along
-// left edges, skipping rules already seen.
+// edges, skipping rules already seen.
 func reaches(edges Array[HashSet[int]], frontier HashSet[int], target int, seen HashSet[int]) bool {
     if frontier.Contains(target) {
         return true
@@ -94,23 +91,3 @@ func stepsEndWithEOF(rules Array[atn.RuleIR], steps Array[atn.Step], seen HashSe
         case _ => false
     }
 }
-
-// Repairable says whether a parse that starts at entry rule r may repair a
-// failed SLL parse: r ends with EOF, and no rule it calls can call r again.
-// A call of the entry rule inside itself is where full-context merges can
-// drop the empty context ANTLR's LL prediction ends with, so the repair's
-// argument is kept to grammars without it.
-// rules: the parser rules, indexed by rule number.
-// r: the entry rule.
-func Repairable(rules Array[atn.RuleIR], r atn.RuleIR) bool {
-    val calls = rules.Map((rule) => rule.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(callees(a.Steps))))
-    EndsWithEOF(rules, r) && !reaches(calls, calls.Get(r.Index), r.Index, EmptyHashSet[int]())
-}
-
-// callees are the rules steps call anywhere.
-func callees(steps Array[atn.Step]) HashSet[int] = steps.FoldLeft(EmptyHashSet[int](), (acc, s) => s match {
-    case atn.CallRule(rule, _, _) => acc.Add(rule)
-    case atn.Choose(_, alts, _) => alts.FoldLeft(acc, (inner, a) => inner.Union(callees(a)))
-    case atn.Loop(_, _, _, body) => acc.Union(callees(body))
-    case _ => acc
-})

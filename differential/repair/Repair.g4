@@ -24,6 +24,22 @@ s3 : ('p' x A ';' | 'r' x ';' | 'q' z Q ';' | 'k' z ';')+ EOF ;
 // again in LL mode, as ANTLR does.
 s4 : 'p' x A | 'r' x ;
 
+// SLL settles a's conflict with its first alternative, since global FOLLOW(a)
+// has 'y'; in s5's 'c' context only the second can go on.
+s5 : 'c' a 'z' EOF | a 'y' 'z' EOF ;
+a : 'x' # A1 | 'x' 'y' # A2 ;
+
+// Two such conflicts in one input.
+s6 : 'c' a 'z' a 'z' EOF | a 'y' 'z' EOF ;
+
+// An exact ambiguity: ANTLR takes the lower alternative, and nothing fails.
+s7 : amb EOF ;
+amb : 'x' # Amb1 | 'x' # Amb2 ;
+
+// Two alternatives with the same future: LL takes the lower one, W2.
+s8 : 'c' w 'z' EOF | w 'y' 'z' EOF ;
+w : 'x' # W1 | 'x' 'y' # W2 | 'x' 'y' # W3 ;
+
 A : 'a' ;
 B : 'b' ;
 Q : 'q' ;

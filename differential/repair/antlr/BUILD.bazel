@@ -41,6 +41,7 @@ go_library(
     srcs = [
         ":antlr_go",
         ":galop_go",
+        "entries.go",
     ],
     importpath = "github.com/martianoff/galop/differential/repair/antlr",
     visibility = ["//differential/repair:__pkg__"],

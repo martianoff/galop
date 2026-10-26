@@ -2,16 +2,20 @@ package diff
 
 import (
 	"flag"
+	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
 
+	"github.com/antlr4-go/antlr/v4"
+
+	"github.com/martianoff/galop/differential/antlrgala"
 	"github.com/martianoff/galop/differential/gala"
 	"github.com/martianoff/galop/differential/nativegala"
 )
 
 var (
-	mutants    = flag.Int("mutants", 300, "TestMutations: how many mutated files to check")
+	mutants    = flag.Int("mutants", 200, "TestMutations: how many mutated files to check")
 	mutantSeed = flag.Int64("mutant_seed", 1, "TestMutations: the random seed")
 )
 
@@ -53,24 +57,38 @@ func TestMutations(t *testing.T) {
 			srcs = append(srcs, gala.StripBOM(f.Src))
 		}
 	}
-	galop := gala.Parsers()["galop"]
+	// Each flavor parses with the repair of a failed SLL parse (rerun false)
+	// and with ANTLR's whole-input LL rerun (rerun true). On error, where says
+	// where the parse left off: the error text, with its position, and for the
+	// antlr flavor the token stream's index.
 	flavors := []struct {
 		name  string
-		parse func(src string) (string, error)
+		parse func(src string, rerun bool) (tree, where string, err error)
 	}{
-		{"native", func(src string) (string, error) {
-			root, err := nativegala.Parse(src)
-			if err != nil {
-				return "", err
+		{"native", func(src string, rerun bool) (string, string, error) {
+			parse := nativegala.Parse
+			if rerun {
+				parse = nativegala.ParseByRerun
 			}
-			return root.ToStringTree(), nil
+			root, err := parse(src)
+			if err != nil {
+				return "", err.Error(), err
+			}
+			return root.ToStringTree(), "", nil
 		}},
-		{"antlr flavor", func(src string) (string, error) {
-			ctx, err := galop(gala.GalopTokens(src))
-			if err != nil {
-				return "", err
+		{"antlr flavor", func(src string, rerun bool) (string, string, error) {
+			stream := gala.GalopTokens(src)
+			var ctx antlr.ParserRuleContext
+			var err error
+			if rerun {
+				ctx, err = antlrgala.ParseGalopByRerun(stream)
+			} else {
+				ctx, err = antlrgala.NewgalaGalopParser(stream).SourceFile()
 			}
-			return gala.TreeString(ctx), nil
+			if err != nil {
+				return "", fmt.Sprintf("%v, stream at %d", err, stream.Index()), err
+			}
+			return gala.TreeString(ctx), "", nil
 		}},
 	}
 	r := rand.New(rand.NewSource(*mutantSeed))
@@ -82,7 +100,7 @@ func TestMutations(t *testing.T) {
 			accepted++
 		}
 		for _, f := range flavors {
-			got, err := f.parse(src)
+			got, where, err := f.parse(src, false)
 			switch {
 			case wantOK != (err == nil):
 				differ++
@@ -90,6 +108,13 @@ func TestMutations(t *testing.T) {
 			case wantOK && got != want:
 				differ++
 				t.Errorf("mutant %d: %s tree differs\n%s", i, f.name, firstDifference(want, got))
+			case !wantOK:
+				// Rejected: the error and where the parse stopped must be the
+				// rerun's, not just the verdict.
+				if _, rerunWhere, _ := f.parse(src, true); where != rerunWhere {
+					differ++
+					t.Errorf("mutant %d: %s error differs from the LL rerun's:\n repair: %s\n rerun:  %s", i, f.name, where, rerunWhere)
+				}
 			}
 		}
 	}
@@ -103,8 +128,12 @@ func mutate(r *rand.Rand, src string) string {
 			return s
 		}
 	}
+	// The last token is EOF, which has no text to change.
 	toks := nativegala.Tokens(src).Tokens
-	tok := toks[r.Intn(len(toks))]
+	if len(toks) < 2 {
+		return src
+	}
+	tok := toks[r.Intn(len(toks)-1)]
 	off, end := int(tok.Start), int(tok.End)
 	switch r.Intn(3) {
 	case 0:

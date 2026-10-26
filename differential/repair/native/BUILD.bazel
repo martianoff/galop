@@ -16,7 +16,10 @@ genrule(
 
 go_library(
     name = "native",
-    srcs = [":galop_native_go"],
+    srcs = [
+        "entries.go",
+        ":galop_native_go",
+    ],
     importpath = "github.com/martianoff/galop/differential/repair/native",
     visibility = ["//differential/repair:__pkg__"],
 )

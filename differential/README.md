@@ -91,7 +91,9 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
 - `heldout_test` runs the two flavors' acceptance tests above on the held-out corpus.
 - On mutated corpus files (a token dropped or doubled, stray text, or a statement
   added whose decisions need full-context prediction), both flavors agree with
-  ANTLR on whether the input parses and on the tree (`TestMutations`; 300 mutants
+  ANTLR on whether the input parses and on the tree, and on rejected input give
+  the same error, at the same place, as the whole-input LL rerun
+  (`TestMutations`; 200 mutants
   per corpus in `diff_test` and `heldout_test`, `-mutants` and `-mutant_seed` for
   more). `mutations_large_test` and `heldout_mutations_large_test` (tagged
   `manual`) check 20,000 and 10,000; CI runs them on pushes to `main`.

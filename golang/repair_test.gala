@@ -34,21 +34,6 @@ func compiled(src string) Tuple[atn.Compiled, analysis.Analysis] = g4.Parse(src)
     case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
 }
 
-func leftRecursive(src string) Array[string] {
-    val (c, an) = compiled(src)
-    LeftRecursiveRules(c.Rules, an.Nullable)
-}
-
-func TestLeftRecursiveRules(t T) T = RunCases(t, (sub, src, want) => Eq(sub, leftRecursive(src), want),
-    Case[string, Array[string]](Name = "direct", Input = "grammar L;\ns : e EOF ;\ne : e '+' e | X ;\nX : 'x' ;\n", Expected = ArrayOf("e")),
-    Case[string, Array[string]](Name = "indirect", Input = "grammar L;\na : b 'x' | 'y' ;\nb : a 'z' ;\n", Expected = ArrayOf("a", "b")),
-    Case[string, Array[string]](Name = "after a nullable prefix", Input = "grammar L;\na : b? c* a 'x' | 'y' ;\nb : 'b' ;\nc : 'c' ;\n", Expected = ArrayOf("a")),
-    Case[string, Array[string]](Name = "after an empty rule", Input = "grammar L;\na : n a 'x' | 'y' ;\nn : ;\n", Expected = ArrayOf("a")),
-    Case[string, Array[string]](Name = "right recursion", Input = "grammar L;\ne : X ('+' e)* ;\nX : 'x' ;\n", Expected = EmptyArray[string]()),
-    Case[string, Array[string]](Name = "a token first", Input = "grammar L;\na : 'x' a | 'y' ;\n", Expected = EmptyArray[string]()),
-    Case[string, Array[string]](Name = "a + loop is not skippable", Input = "grammar L;\na : b+ a | 'y' ;\nb : 'b' ;\n", Expected = EmptyArray[string]()),
-)
-
 func TestGoTargetRejectsLeftRecursion(t T) T =
     generate("grammar L;\ns : e EOF ;\ne : e '+' e | X ;\nX : 'x' ;\n", EmptyArray[g4.OptionEntry]()) match {
         case Left(errs) => Eq(t, errs, ArrayOf("Go target: left-recursive rules are not supported yet: e"))
@@ -78,14 +63,13 @@ func TestRepairInANTLRFlavor(t T) T {
         // Entry rules ending with EOF may repair; others rerun in LL mode.
         "ctx, err := p.parse(p.ruleS, true)",
         "ctx, err := p.parse(p.ruleR, false)",
-        "ctx, err = p.llParse(rule, repair)",
-        "func (p *AGalopParser) llParse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext, repair bool) (antlr.ParserRuleContext, error)",
+        "ctx, err = p.llParse(rule, repair, err)",
+        "func (p *AGalopParser) llParse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext, repair bool, sllErr error) (antlr.ParserRuleContext, error)",
         "return nil, dead.err",
         "se, ok := e.(*AGalopSyntaxError)",
         // Every SLL conflict goes through onConflict, and LL prediction through the cache.
-        "return p.onConflict(d, sllAlt)",
         "return p.onConflict(d, int(next.conflict))",
-        "var AGalopFull struct",
+        "var AGalopFull = AGalopNewFullCache()",
         "return p.predictLLUncached(d)",
         "\trp    AGalopRepair",
     )
@@ -96,14 +80,15 @@ func TestRepairInANTLRFlavor(t T) T {
 func TestRepairInNativeFlavor(t T) T {
     val code = nativeFiles(adaptiveGrammar).Get("a_parser.go").GetOrElse("")
     val expected = ArrayOf(
-        "t, root, err := AGalopParse(ts, (*AGalopParser).ruleS, true)",
-        "t, root, err := AGalopParse(ts, (*AGalopParser).ruleR, false)",
-        "func AGalopParse(ts *ATokens, rule func(*AGalopParser) int32, repair bool)",
-        "root, err = p.llParse(rule, repair)",
-        "func (p *AGalopParser) llParse(rule func(*AGalopParser) int32, repair bool) (int32, error)",
+        "t, root, err := newAGalopParser(ts).run((*AGalopParser).ruleS, true)",
+        "t, root, err := newAGalopParser(ts).run((*AGalopParser).ruleR, false)",
+        // The exported entry point takes no repair flag and does not repair.
+        "func AGalopParse(ts *ATokens, rule func(*AGalopParser) int32) (*ATree, int32, error) {\n\treturn newAGalopParser(ts).run(rule, false)",
+        "root, err = p.llParse(rule, repair, err)",
+        "func (p *AGalopParser) llParse(rule func(*AGalopParser) int32, repair bool, sllErr error) (int32, error)",
         "return -1, dead.err",
         "se, ok := e.(*ASyntaxError)",
-        "var AGalopFull struct",
+        "var AGalopFull = AGalopNewFullCache()",
     )
     val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
     IsFalse(t1, strings.Contains(code, "@"))
@@ -113,7 +98,7 @@ func TestStaticGrammarHasNoRepair(t T) T {
     // Without runtime prediction there are no conflicts to repair.
     val code = parserFile(t)
     val t1 = IsFalse(t, strings.Contains(code, ") llParse("))
-    IsFalse(t1, strings.Contains(code, "Full struct"))
+    IsFalse(t1, strings.Contains(code, "FullCache struct"))
 }
 
 func repairable(src string) bool {
