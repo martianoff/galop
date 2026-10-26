@@ -646,46 +646,6 @@ func PFXAllInStop(list []PFXConfig) bool {
 	return true
 }
 
-// predictLLUncached runs ANTLR's full-context prediction of decision d from
-// the current token, with the parser's call stack as the outer context.
-func (p *PARSER) predictLLUncached(d int) int {
-	pr := &p.pred
-	pr.full = true
-	pr.pool.reset(false)
-	cp := &pr.pool
-	outer := int32(0)
-	for _, ret := range p.stack {
-		outer = cp.singleton(outer, ret)
-	}
-	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
-	cur.reset()
-	pr.busy.reset()
-	s := PFXDecisionState[d]
-	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
-		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, outer}, cur, false)
-	}
-	offset := 0
-	for {
-		t := p.la(offset + 1)
-		if alt := pr.reach(cur, t, intermediate, next); alt != 0 {
-			return int(alt)
-		}
-		if len(next.list) == 0 {
-			p.noViableAlt(d)
-		}
-		if alt := PFXUniqueAlt(next.list); alt != 0 {
-			return int(alt)
-		}
-		if alt, _ := pr.subsets(next); alt != 0 {
-			return int(alt)
-		}
-		cur, next = next, cur
-		if t != -1 {
-			offset++
-		}
-	}
-}
-
 // PFXDFAState is a state of a decision's SLL lookahead DFA, cached for the
 // life of the process as ANTLR caches its DFA. Walking existing edges takes
 // no lock; new states are computed under PFXDFA.mu.

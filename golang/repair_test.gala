@@ -57,7 +57,7 @@ func TestGoTargetRejectsLeftRecursion(t T) T =
 
 func endsWithEOF(src string, rule string) bool {
     val (c, _) = compiled(src)
-    c.Rules.Find((r) => r.Name == rule).Exists((r) => EndsWithEOF(r))
+    c.Rules.Find((r) => r.Name == rule).Exists((r) => EndsWithEOF(c.Rules, r))
 }
 
 func TestEndsWithEOF(t T) T = RunCases(t, (sub, src, want) => Eq(sub, endsWithEOF(src, "s"), want),
@@ -65,6 +65,8 @@ func TestEndsWithEOF(t T) T = RunCases(t, (sub, src, want) => Eq(sub, endsWithEO
     Case[string, bool](Name = "every alternative", Input = "grammar E;\ns : X EOF | Y EOF ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
     Case[string, bool](Name = "a block of EOF endings", Input = "grammar E;\ns : X (Y EOF | EOF) ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
     Case[string, bool](Name = "an action after EOF", Input = "grammar E;\ns : X EOF {} ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "through the rule called last", Input = "grammar E;\ns : X b ;\nb : X EOF ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "a recursive call last", Input = "grammar E;\ns : X s | X ;\nX : 'x' ;\n", Expected = false),
     Case[string, bool](Name = "no EOF", Input = "grammar E;\ns : X ;\nX : 'x' ;\n", Expected = false),
     Case[string, bool](Name = "one alternative without", Input = "grammar E;\ns : X EOF | Y ;\nX : 'x' ; Y : 'y' ;\n", Expected = false),
     Case[string, bool](Name = "optional EOF", Input = "grammar E;\ns : X EOF? ;\nX : 'x' ;\n", Expected = false),
@@ -76,7 +78,8 @@ func TestRepairInANTLRFlavor(t T) T {
         // Entry rules ending with EOF may repair; others rerun in LL mode.
         "ctx, err := p.parse(p.ruleS, true)",
         "ctx, err := p.parse(p.ruleR, false)",
-        "func (p *AGalopParser) repairParse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext) (antlr.ParserRuleContext, error)",
+        "ctx, err = p.llParse(rule, repair)",
+        "func (p *AGalopParser) llParse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext, repair bool) (antlr.ParserRuleContext, error)",
         "return nil, dead.err",
         "se, ok := e.(*AGalopSyntaxError)",
         // Every SLL conflict goes through onConflict, and LL prediction through the cache.
@@ -84,7 +87,7 @@ func TestRepairInANTLRFlavor(t T) T {
         "return p.onConflict(d, int(next.conflict))",
         "var AGalopFull struct",
         "return p.predictLLUncached(d)",
-        "\trepair AGalopRepair",
+        "\trepair  AGalopRepair",
     )
     val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
     IsFalse(t1, strings.Contains(code, "@"))
@@ -96,8 +99,8 @@ func TestRepairInNativeFlavor(t T) T {
         "t, root, err := AGalopParse(ts, (*AGalopParser).ruleS, true)",
         "t, root, err := AGalopParse(ts, (*AGalopParser).ruleR, false)",
         "func AGalopParse(ts *ATokens, rule func(*AGalopParser) int32, repair bool)",
-        "root, err = p.repairParse(rule)",
-        "func (p *AGalopParser) repairParse(rule func(*AGalopParser) int32) (int32, error)",
+        "root, err = p.llParse(rule, repair)",
+        "func (p *AGalopParser) llParse(rule func(*AGalopParser) int32, repair bool) (int32, error)",
         "return -1, dead.err",
         "se, ok := e.(*ASyntaxError)",
         "var AGalopFull struct",
@@ -109,6 +112,6 @@ func TestRepairInNativeFlavor(t T) T {
 func TestStaticGrammarHasNoRepair(t T) T {
     // Without runtime prediction there are no conflicts to repair.
     val code = parserFile(t)
-    val t1 = IsFalse(t, strings.Contains(code, ") repairParse("))
+    val t1 = IsFalse(t, strings.Contains(code, ") llParse("))
     IsFalse(t1, strings.Contains(code, "Full struct"))
 }

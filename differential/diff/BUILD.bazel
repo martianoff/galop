@@ -4,7 +4,7 @@ DIFF_TEST_SRCS = [
     "corpus_test.go",
     "diff_test.go",
     "native_test.go",
-    "repair_test.go",
+    "mutations_test.go",
 ]
 
 DIFF_TEST_DEPS = [
@@ -41,38 +41,31 @@ go_test(
     deps = DIFF_TEST_DEPS,
 )
 
-# The same comparisons on the held-out corpus, code galop was not tuned on.
-go_test(
-    name = "heldout_test",
-    size = "medium",
-    srcs = DIFF_TEST_SRCS,
-    args = [
-        "-manifest=$(rlocationpath //differential:heldout)",
-        "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestMutations)$$",
-    ],
-    data = ["//differential:heldout"],
-    embed = [":diff"],
-    deps = DIFF_TEST_DEPS,
-)
-
-# Many more mutants than the tests above check, on both corpora. Too slow for
-# pull requests; CI runs them on pushes to main:
+# The same comparisons on the held-out corpus, code galop was not tuned on
+# (heldout_test), and many more mutants on both corpora. The large runs are
+# too slow for pull requests; CI runs them on pushes to main:
 #   bazel test //differential/diff:mutations_large_test //differential/diff:heldout_mutations_large_test
 [go_test(
     name = name,
-    size = "enormous",
+    size = size,
     srcs = DIFF_TEST_SRCS,
-    args = [
-        "-manifest=$(rlocationpath %s)" % corpus,
-        "-test.run=^TestMutations$$",
-        "-mutants=%d" % mutants,
-        "-mutant_seed=2",
-    ],
+    args = ["-manifest=$(rlocationpath %s)" % corpus] + args,
     data = [corpus],
     embed = [":diff"],
-    tags = ["manual"],
+    tags = tags,
     deps = DIFF_TEST_DEPS,
-) for name, corpus, mutants in [
-    ("mutations_large_test", "//differential:corpus", 20000),
-    ("heldout_mutations_large_test", "//differential:heldout", 10000),
+) for name, corpus, size, tags, args in [
+    ("heldout_test", "//differential:heldout", "medium", [], [
+        "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestMutations)$$",
+    ]),
+    ("mutations_large_test", "//differential:corpus", "enormous", ["manual"], [
+        "-test.run=^TestMutations$$",
+        "-mutants=20000",
+        "-mutant_seed=2",
+    ]),
+    ("heldout_mutations_large_test", "//differential:heldout", "enormous", ["manual"], [
+        "-test.run=^TestMutations$$",
+        "-mutants=10000",
+        "-mutant_seed=2",
+    ]),
 ]]

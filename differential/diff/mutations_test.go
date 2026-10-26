@@ -54,6 +54,25 @@ func TestMutations(t *testing.T) {
 		}
 	}
 	galop := gala.Parsers()["galop"]
+	flavors := []struct {
+		name  string
+		parse func(src string) (string, error)
+	}{
+		{"native", func(src string) (string, error) {
+			root, err := nativegala.Parse(src)
+			if err != nil {
+				return "", err
+			}
+			return root.ToStringTree(), nil
+		}},
+		{"antlr flavor", func(src string) (string, error) {
+			ctx, err := galop(gala.GalopTokens(src))
+			if err != nil {
+				return "", err
+			}
+			return gala.TreeString(ctx), nil
+		}},
+	}
 	r := rand.New(rand.NewSource(*mutantSeed))
 	accepted, differ := 0, 0
 	for i := 0; i < *mutants; i++ {
@@ -62,23 +81,16 @@ func TestMutations(t *testing.T) {
 		if wantOK {
 			accepted++
 		}
-		root, err := nativegala.Parse(src)
-		switch {
-		case wantOK != (err == nil):
-			differ++
-			t.Errorf("mutant %d: ANTLR accepts=%v, native error=%v\n%s", i, wantOK, err, src)
-		case wantOK && root.ToStringTree() != want:
-			differ++
-			t.Errorf("mutant %d: native tree differs\n%s", i, firstDifference(want, root.ToStringTree()))
-		}
-		ctx, gerr := galop(gala.GalopTokens(src))
-		switch {
-		case wantOK != (gerr == nil):
-			differ++
-			t.Errorf("mutant %d: ANTLR accepts=%v, antlr flavor error=%v\n%s", i, wantOK, gerr, src)
-		case wantOK && gala.TreeString(ctx) != want:
-			differ++
-			t.Errorf("mutant %d: antlr flavor tree differs\n%s", i, firstDifference(want, gala.TreeString(ctx)))
+		for _, f := range flavors {
+			got, err := f.parse(src)
+			switch {
+			case wantOK != (err == nil):
+				differ++
+				t.Errorf("mutant %d: ANTLR accepts=%v, %s error=%v\n%s", i, wantOK, f.name, err, src)
+			case wantOK && got != want:
+				differ++
+				t.Errorf("mutant %d: %s tree differs\n%s", i, f.name, firstDifference(want, got))
+			}
 		}
 	}
 	t.Logf("%d mutants, %d accepted by ANTLR, %d differences", *mutants, accepted, differ)
@@ -86,12 +98,12 @@ func TestMutations(t *testing.T) {
 
 // mutate changes src at a random token or line.
 func mutate(r *rand.Rand, src string) string {
-	toks := nativegala.Tokens(src).Tokens
 	if r.Intn(3) == 0 {
 		if s, ok := addStatement(r, src); ok {
 			return s
 		}
 	}
+	toks := nativegala.Tokens(src).Tokens
 	tok := toks[r.Intn(len(toks))]
 	off, end := int(tok.Start), int(tok.End)
 	switch r.Intn(3) {

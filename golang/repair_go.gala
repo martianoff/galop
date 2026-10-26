@@ -1,20 +1,33 @@
 package golang
 
-// conflictSource settles SLL conflicts. Every place where the SLL pass would
-// take the lowest conflicting alternative calls onConflict, so the repair
-// sees every conflict. PFX is the per-grammar prefix, PARSER the parser type.
-val conflictSource = `
+// repairSource settles SLL conflicts and, when the SLL pass fails, finds the
+// parse ANTLR's LL stage gives: by the witness-based repair, or by rerunning
+// the whole parse in LL mode. Every place where the SLL pass would take the
+// lowest conflicting alternative calls onConflict, so the repair sees every
+// conflict. PFX is the per-grammar prefix, PARSER the parser type, @ROOT@
+// what attempt returns besides the error, @ZERO@ its value on failure,
+// @RULE@ the rule function type and @SYNTAXERROR@ the syntax error type.
+//
+// The repair is exact only when no semantic predicate takes part in
+// prediction and no rule is left-recursive; the Go target rejects both.
+val repairSource = `
 // onConflict settles an SLL conflict whose lowest conflicting alternative is
-// sllAlt: the SLL pass takes sllAlt, LL mode runs full-context prediction,
-// and a repair pass records the conflict or replays a recorded one.
+// sllAlt. The SLL pass takes sllAlt; this stays small enough to inline.
 func (p *PARSER) onConflict(d int, sllAlt int) int {
+	if p.ll || p.repair.on {
+		return p.onConflictSlow(d, sllAlt)
+	}
+	return sllAlt
+}
+
+// onConflictSlow is onConflict outside the SLL pass: LL mode runs
+// full-context prediction, and a repair pass replays a recorded conflict or
+// records a new one.
+func (p *PARSER) onConflictSlow(d int, sllAlt int) int {
 	if p.ll {
 		return p.predictLL(d)
 	}
 	r := &p.repair
-	if !r.on {
-		return sllAlt
-	}
 	i := r.seq
 	r.seq++
 	if i < len(r.recs) {
@@ -35,30 +48,27 @@ func (p *PARSER) onConflict(d int, sllAlt int) int {
 // call stack at that point (r.stacks[stackFrom:stackTo]), and its LL answer
 // once known (0: not checked, -1: no alternative is viable, err says why).
 type PFXConflict struct {
-	d, pos, alt, known  int32
-	stackFrom, stackTo  int32
-	err                 error
+	d, pos, alt, known int32
+	stackFrom, stackTo int32
+	err                error
 }
 
-// PFXRepair is the state of a repair (see repairParse).
+// PFXRepair is the state of a repair (see llParse).
 type PFXRepair struct {
 	on     bool
 	seq    int
 	recs   []PFXConflict
 	stacks []int32
 }
-`
 
-// repairSource is the witness-based repair. @ROOT@ is what attempt returns
-// besides the error, @ZERO@ its value on failure, @RULE@ the rule function
-// type and @SYNTAXERROR@ the syntax error type.
-val repairSource = `
 // PFXRepairPasses bounds the passes of one repair; past it the parse falls
 // back to running LL prediction over the whole input.
 const PFXRepairPasses = 256
 
-// repairParse finds the parse ANTLR's LL prediction gives, after the SLL
-// pass failed, without full-context prediction at every conflict.
+// llParse returns the parse ANTLR's LL prediction gives, after the SLL pass
+// failed. With repair it repairs the failed parse instead of running
+// full-context prediction at every conflict; repair needs an entry rule that
+// ends with EOF.
 //
 // At an SLL conflict, ANTLR's LL prediction is the lowest alternative that
 // can still complete the parse: configurations with the same state and stack
@@ -66,51 +76,58 @@ const PFXRepairPasses = 256
 // parse that reaches EOF proves its choice at every conflict where it took the
 // lowest alternative, and only where it takes another one does it need LL
 // prediction, which then decides. Each pass replays the parse with the
-// choices so far. After a syntax error the pass's conflicts are checked from
-// the error backwards, and the latest whose LL answer differs is switched to
-// it. When none differs, LL fails too: at the earliest conflict where no
+// choices so far; after a syntax error, switchLatest changes one. When it
+// finds nothing to change, LL fails too: at the earliest conflict where no
 // alternative is viable, or where this pass failed.
-//
-// The entry rule must end by matching EOF, and prediction must involve no
-// semantic predicates; the generator calls this only then.
-func (p *PARSER) repairParse(rule @RULE@) (@ROOT@, error) {
-	r := &p.repair
-	r.on = true
-	r.recs, r.stacks = r.recs[:0], r.stacks[:0]
-	defer func() { r.on = false }()
-	for range PFXRepairPasses {
-		r.seq = 0
-		root, err := p.attempt(rule)
-		if err == nil {
-			return root, nil
-		}
-		var dead *PFXConflict
-		switched := false
-		for i := r.seq - 1; i >= 0 && !switched; i-- {
-			c := &r.recs[i]
-			if c.known == 0 {
-				p.checkConflict(c)
+func (p *PARSER) llParse(rule @RULE@, repair bool) (@ROOT@, error) {
+	if repair {
+		r := &p.repair
+		r.on = true
+		defer func() { r.on = false }()
+		r.recs, r.stacks = r.recs[:0], r.stacks[:0]
+		for range PFXRepairPasses {
+			r.seq = 0
+			root, err := p.attempt(rule)
+			if err == nil {
+				return root, nil
 			}
+			switched, dead := p.switchLatest()
 			switch {
-			case c.known < 0:
-				dead = c
-			case c.known != c.alt:
-				c.alt = c.known
-				r.recs, r.stacks = r.recs[:i+1], r.stacks[:c.stackTo]
-				switched = true
-			}
-		}
-		if !switched {
-			if dead != nil {
+			case switched:
+			case dead != nil:
 				return @ZERO@, dead.err
+			default:
+				return root, err
 			}
-			return root, err
 		}
+		r.on = false
 	}
-	r.on = false
 	p.ll = true
 	defer func() { p.ll = false }()
 	return p.attempt(rule)
+}
+
+// switchLatest checks the conflicts of the pass that just failed, from the
+// failure backwards, and switches the latest one whose LL answer differs from
+// the alternative taken. Otherwise it returns the earliest conflict where no
+// alternative is viable, if any.
+func (p *PARSER) switchLatest() (switched bool, dead *PFXConflict) {
+	r := &p.repair
+	for i := r.seq - 1; i >= 0; i-- {
+		c := &r.recs[i]
+		if c.known == 0 {
+			p.checkConflict(c)
+		}
+		switch {
+		case c.known < 0:
+			dead = c
+		case c.known != c.alt:
+			c.alt = c.known
+			r.recs, r.stacks = r.recs[:i+1], r.stacks[:c.stackTo]
+			return true, nil
+		}
+	}
+	return false, dead
 }
 
 // checkConflict computes c's LL answer with the parser at c's token and stack.
@@ -131,26 +148,86 @@ func (p *PARSER) checkConflict(c *PFXConflict) {
 }
 `
 
-// fullCacheSource caches full-context prediction across parses.
+// fullCacheSource is full-context prediction, cached across parses.
 val fullCacheSource = `
+// startLL fills cur with the closure of decision d's alternatives, with the
+// call stack stack as the outer context (ANTLR's start state of full-context
+// prediction).
+func (pr *PFXPredictor) startLL(d int, stack []int32, cur *PFXConfigSet) {
+	cp := &pr.pool
+	outer := int32(0)
+	for _, ret := range stack {
+		outer = cp.singleton(outer, ret)
+	}
+	cur.reset()
+	pr.busy.reset()
+	s := PFXDecisionState[d]
+	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
+		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, outer}, cur, false)
+	}
+}
+
+// stepLL moves full-context prediction from cur past token t into next and
+// applies ANTLR's stopping rule: the alternative it picks, -1 when no
+// alternative is viable, or 0 to read another token.
+func (pr *PFXPredictor) stepLL(cur *PFXConfigSet, t int32, intermediate, next *PFXConfigSet) int32 {
+	if alt := pr.reach(cur, t, intermediate, next); alt != 0 {
+		return alt
+	}
+	if len(next.list) == 0 {
+		return -1
+	}
+	if alt := PFXUniqueAlt(next.list); alt != 0 {
+		return alt
+	}
+	alt, _ := pr.subsets(next)
+	return alt
+}
+
+// predictLLUncached runs ANTLR's full-context prediction of decision d from
+// the current token, with the parser's call stack as the outer context.
+func (p *PARSER) predictLLUncached(d int) int {
+	pr := &p.pred
+	pr.full = true
+	pr.pool.reset(false)
+	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
+	pr.startLL(d, p.stack, cur)
+	for offset := 0; ; {
+		t := p.la(offset + 1)
+		switch alt := pr.stepLL(cur, t, intermediate, next); {
+		case alt < 0:
+			p.noViableAlt(d)
+		case alt > 0:
+			return int(alt)
+		}
+		cur, next = next, cur
+		if t != -1 {
+			offset++
+		}
+	}
+}
+
 // PFXFull caches full-context prediction. For a decision and a call stack,
 // ANTLR's full-context prediction depends only on the tokens ahead, so it is
 // cached like the SLL DFA, as a DFA per (decision, stack): states are
 // configuration sets whose contexts live in one pool that is never reset, so
-// cached contexts keep their meaning. Walking cached edges takes no lock; new
-// states are computed under mu. Past PFXFullMaxStates states the cache stops
-// growing and prediction runs uncached.
+// cached contexts keep their meaning. Finding a cached start state takes a
+// read lock and walking cached edges no lock; new states are computed under
+// the write lock. Past PFXFullMaxStates states or PFXFullMaxContexts contexts
+// the cache stops growing and prediction runs uncached.
 var PFXFull struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	starts map[string]*PFXDFAState
 	states map[string]*PFXDFAState
 	pr     PFXPredictor
-	key    []byte // scratch for start keys
-	skey   []byte // scratch for state keys
+	key    []byte // scratch for state keys
 }
 
-// PFXFullMaxStates bounds the full-context cache.
-const PFXFullMaxStates = 1 << 15
+// PFXFullMaxStates and PFXFullMaxContexts bound the full-context cache.
+const (
+	PFXFullMaxStates   = 1 << 15
+	PFXFullMaxContexts = 1 << 20
+)
 
 func init() {
 	PFXFull.starts = map[string]*PFXDFAState{}
@@ -159,36 +236,32 @@ func init() {
 	PFXFull.pr.full = true
 }
 
+// PFXFullIsFull says whether the cache has stopped growing; call it under mu.
+func PFXFullIsFull() bool {
+	return len(PFXFull.states) >= PFXFullMaxStates || len(PFXFull.pr.pool.kind) >= PFXFullMaxContexts
+}
+
 // PFXFullStart returns the start state of decision d under the call stack
-// stack, or nil when it is not cached and the cache is full.
-func PFXFullStart(d int, stack []int32) *PFXDFAState {
+// whose key (the decision, then the stack) is key, or nil when it is not
+// cached and the cache is full.
+func PFXFullStart(d int, stack []int32, key []byte) *PFXDFAState {
+	PFXFull.mu.RLock()
+	st, ok := PFXFull.starts[string(key)]
+	PFXFull.mu.RUnlock()
+	if ok {
+		return st
+	}
 	PFXFull.mu.Lock()
 	defer PFXFull.mu.Unlock()
-	key := binary.LittleEndian.AppendUint32(PFXFull.key[:0], uint32(d))
-	for _, ret := range stack {
-		key = binary.LittleEndian.AppendUint32(key, uint32(ret))
-	}
-	PFXFull.key = key
 	if st, ok := PFXFull.starts[string(key)]; ok {
 		return st
 	}
-	if len(PFXFull.states) >= PFXFullMaxStates {
+	if PFXFullIsFull() {
 		return nil
 	}
 	pr := &PFXFull.pr
-	cp := &pr.pool
-	outer := int32(0)
-	for _, ret := range stack {
-		outer = cp.singleton(outer, ret)
-	}
-	cur := &pr.sets[0]
-	cur.reset()
-	pr.busy.reset()
-	s := PFXDecisionState[d]
-	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
-		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, outer}, cur, false)
-	}
-	st := PFXFullIntern(cur)
+	pr.startLL(d, stack, &pr.sets[0])
+	st = PFXFullIntern(&pr.sets[0])
 	PFXFull.starts[string(key)] = st
 	return st
 }
@@ -204,13 +277,13 @@ func PFXFullIntern(set *PFXConfigSet) *PFXDFAState {
 		}
 		return int(a.alt - b.alt)
 	})
-	key := PFXFull.skey[:0]
+	key := PFXFull.key[:0]
 	for _, c := range s {
 		key = binary.LittleEndian.AppendUint32(key, uint32(c.state))
 		key = binary.LittleEndian.AppendUint32(key, uint32(c.alt))
 		key = binary.LittleEndian.AppendUint32(key, uint32(c.ctx))
 	}
-	PFXFull.skey = key
+	PFXFull.key = key
 	if st, ok := PFXFull.states[string(key)]; ok {
 		return st
 	}
@@ -219,15 +292,15 @@ func PFXFullIntern(set *PFXConfigSet) *PFXDFAState {
 	return st
 }
 
-// PFXFullNext computes and caches the edge of from on token t, with
-// predictLLUncached's stopping rule; nil when the cache is full.
+// PFXFullNext computes and caches the edge of from on token t; nil when the
+// cache is full.
 func PFXFullNext(from *PFXDFAState, t int32) *PFXDFAState {
 	PFXFull.mu.Lock()
 	defer PFXFull.mu.Unlock()
 	if st := from.edges[t+1].Load(); st != nil {
 		return st
 	}
-	if len(PFXFull.states) >= PFXFullMaxStates {
+	if PFXFullIsFull() {
 		return nil
 	}
 	pr := &PFXFull.pr
@@ -237,15 +310,12 @@ func PFXFullNext(from *PFXDFAState, t int32) *PFXDFAState {
 		cur.add(c, &pr.pool)
 	}
 	var st *PFXDFAState
-	if alt := pr.reach(cur, t, intermediate, next); alt != 0 {
-		st = &PFXDFAState{alt: alt}
-	} else if len(next.list) == 0 {
+	switch alt := pr.stepLL(cur, t, intermediate, next); {
+	case alt < 0:
 		st = PFXDFAError
-	} else if alt := PFXUniqueAlt(next.list); alt != 0 {
+	case alt > 0:
 		st = &PFXDFAState{alt: alt}
-	} else if alt, _ := pr.subsets(next); alt != 0 {
-		st = &PFXDFAState{alt: alt}
-	} else {
+	default:
 		st = PFXFullIntern(next)
 	}
 	from.edges[t+1].Store(st)
@@ -256,7 +326,12 @@ func PFXFullNext(from *PFXDFAState, t int32) *PFXDFAState {
 // current token, with the parser's call stack as the outer context, through
 // the cache when it can.
 func (p *PARSER) predictLL(d int) int {
-	st := PFXFullStart(d, p.stack)
+	key := binary.LittleEndian.AppendUint32(p.fullKey[:0], uint32(d))
+	for _, ret := range p.stack {
+		key = binary.LittleEndian.AppendUint32(key, uint32(ret))
+	}
+	p.fullKey = key
+	st := PFXFullStart(d, p.stack, key)
 	for i := 1; st != nil; i++ {
 		t := p.la(i)
 		if t < -1 || int(t)+1 >= len(st.edges) {

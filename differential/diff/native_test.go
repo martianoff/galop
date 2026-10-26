@@ -233,7 +233,7 @@ func firstDifference(want, got string) string {
 		i++
 	}
 	lo := max(0, i-120)
-	return fmt.Sprintf("  ANTLR:  %s\n  native: %s", want[lo:min(len(want), i+80)], got[lo:min(len(got), i+80)])
+	return fmt.Sprintf("  ANTLR: %s\n  galop: %s", want[lo:min(len(want), i+80)], got[lo:min(len(got), i+80)])
 }
 
 // TestNativeMutations runs the native flavor and ANTLR on prefixes of corpus
