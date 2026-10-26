@@ -6,3 +6,14 @@ corpus_manifest(
     srcs = ["@gala_corpus//:gala_files"],
     visibility = ["//differential:__subpackages__"],
 )
+
+# The held-out corpus (see MODULE.bazel): GALA code galop was not tuned on.
+corpus_manifest(
+    name = "heldout",
+    srcs = [
+        "@heldout_gala_server//:gala_files",
+        "@heldout_gala_team//:gala_files",
+        "@heldout_gala_tui//:gala_files",
+    ],
+    visibility = ["//differential:__subpackages__"],
+)

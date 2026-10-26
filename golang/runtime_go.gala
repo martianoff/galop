@@ -646,9 +646,9 @@ func PFXAllInStop(list []PFXConfig) bool {
 	return true
 }
 
-// predictLL runs ANTLR's full-context prediction of decision d from the
-// current token, with the parser's call stack as the outer context.
-func (p *PARSER) predictLL(d int) int {
+// predictLLUncached runs ANTLR's full-context prediction of decision d from
+// the current token, with the parser's call stack as the outer context.
+func (p *PARSER) predictLLUncached(d int) int {
 	pr := &p.pred
 	pr.full = true
 	pr.pool.reset(false)
@@ -800,7 +800,7 @@ func PFXDFANext(d int, from *PFXDFAState, t int32) *PFXDFAState {
 
 // adaptivePredict predicts decision d as ANTLR does: SLL prediction over the
 // cached DFA and, on an SLL conflict, the lowest conflicting alternative in SLL
-// mode or full-context prediction in LL mode.
+// mode or full-context prediction in LL mode (see onConflict).
 func (p *PARSER) adaptivePredict(d int) int {
 	st := PFXDFA.starts[d].Load()
 	if st == nil {
@@ -821,21 +821,14 @@ func (p *PARSER) adaptivePredict(d int) int {
 		case next.alt > 0:
 			return int(next.alt)
 		case next.conflict > 0:
-			if p.ll {
-				return p.predictLL(d)
-			}
-			return int(next.conflict)
+			return p.onConflict(d, int(next.conflict))
 		}
 		st = next
 	}
 }
 
-// conflictPredict settles an SLL conflict the static automaton found: SLL mode
-// takes ANTLR's SLL answer, LL mode runs full-context prediction.
+// conflictPredict settles an SLL conflict the static automaton found.
 func (p *PARSER) conflictPredict(d int, sllAlt int) int {
-	if !p.ll {
-		return sllAlt
-	}
-	return p.predictLL(d)
+	return p.onConflict(d, sllAlt)
 }
 `

@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# galop's native flavor for Repair.g4, generated at build time.
+genrule(
+    name = "galop_native_go",
+    srcs = [
+        "//cmd/galop",
+        "//differential/repair:Repair.g4",
+    ],
+    outs = [
+        "repair_lexer.go",
+        "repair_parser.go",
+    ],
+    cmd = "$(location //cmd/galop) -package native -Xexact-output-dir -o $(RULEDIR) $(location //differential/repair:Repair.g4)",
+)
+
+go_library(
+    name = "native",
+    srcs = [":galop_native_go"],
+    importpath = "github.com/martianoff/galop/differential/repair/native",
+    visibility = ["//differential/repair:__pkg__"],
+)

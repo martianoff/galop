@@ -1,0 +1,114 @@
+package golang
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/go_builtins"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+)
+
+// adaptiveGrammar needs runtime prediction (nesting deepens the contexts past
+// the automaton's bound) and has an entry rule with EOF (s) and one without (r).
+val adaptiveGrammar = `grammar A;
+s : (a | b) EOF ;
+r : a | b ;
+a : '(' a ')' | X ;
+b : '(' b ')' | Y ;
+X : 'x' ; Y : 'y' ;
+`
+
+// compiled reads, compiles and analyzes a valid test grammar.
+func compiled(src string) Tuple[atn.Compiled, analysis.Analysis] = g4.Parse(src) match {
+    case Right(g) => atn.Compile(g) match {
+        case Right(c) => c.Parser match {
+            case Some(p) => (c, analysis.Analyze(p, analysis.MaxK))
+            case None() => go_builtins.Panic("no parser rules")
+        }
+        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+}
+
+func leftRecursive(src string) Array[string] {
+    val (c, an) = compiled(src)
+    LeftRecursiveRules(c.Rules, an.Nullable)
+}
+
+func TestLeftRecursiveRules(t T) T = RunCases(t, (sub, src, want) => Eq(sub, leftRecursive(src), want),
+    Case[string, Array[string]](Name = "direct", Input = "grammar L;\ns : e EOF ;\ne : e '+' e | X ;\nX : 'x' ;\n", Expected = ArrayOf("e")),
+    Case[string, Array[string]](Name = "indirect", Input = "grammar L;\na : b 'x' | 'y' ;\nb : a 'z' ;\n", Expected = ArrayOf("a", "b")),
+    Case[string, Array[string]](Name = "after a nullable prefix", Input = "grammar L;\na : b? c* a 'x' | 'y' ;\nb : 'b' ;\nc : 'c' ;\n", Expected = ArrayOf("a")),
+    Case[string, Array[string]](Name = "after an empty rule", Input = "grammar L;\na : n a 'x' | 'y' ;\nn : ;\n", Expected = ArrayOf("a")),
+    Case[string, Array[string]](Name = "right recursion", Input = "grammar L;\ne : X ('+' e)* ;\nX : 'x' ;\n", Expected = EmptyArray[string]()),
+    Case[string, Array[string]](Name = "a token first", Input = "grammar L;\na : 'x' a | 'y' ;\n", Expected = EmptyArray[string]()),
+    Case[string, Array[string]](Name = "a + loop is not skippable", Input = "grammar L;\na : b+ a | 'y' ;\nb : 'b' ;\n", Expected = EmptyArray[string]()),
+)
+
+func TestGoTargetRejectsLeftRecursion(t T) T =
+    generate("grammar L;\ns : e EOF ;\ne : e '+' e | X ;\nX : 'x' ;\n", EmptyArray[g4.OptionEntry]()) match {
+        case Left(errs) => Eq(t, errs, ArrayOf("Go target: left-recursive rules are not supported yet: e"))
+        case Right(_) => t.Error("expected an error")
+    }
+
+func endsWithEOF(src string, rule string) bool {
+    val (c, _) = compiled(src)
+    c.Rules.Find((r) => r.Name == rule).Exists((r) => EndsWithEOF(r))
+}
+
+func TestEndsWithEOF(t T) T = RunCases(t, (sub, src, want) => Eq(sub, endsWithEOF(src, "s"), want),
+    Case[string, bool](Name = "EOF last", Input = "grammar E;\ns : X+ EOF ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "every alternative", Input = "grammar E;\ns : X EOF | Y EOF ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
+    Case[string, bool](Name = "a block of EOF endings", Input = "grammar E;\ns : X (Y EOF | EOF) ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
+    Case[string, bool](Name = "an action after EOF", Input = "grammar E;\ns : X EOF {} ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "no EOF", Input = "grammar E;\ns : X ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "one alternative without", Input = "grammar E;\ns : X EOF | Y ;\nX : 'x' ; Y : 'y' ;\n", Expected = false),
+    Case[string, bool](Name = "optional EOF", Input = "grammar E;\ns : X EOF? ;\nX : 'x' ;\n", Expected = false),
+)
+
+func TestRepairInANTLRFlavor(t T) T {
+    val code = parserOf(generate(adaptiveGrammar, antlrDefines))
+    val expected = ArrayOf(
+        // Entry rules ending with EOF may repair; others rerun in LL mode.
+        "ctx, err := p.parse(p.ruleS, true)",
+        "ctx, err := p.parse(p.ruleR, false)",
+        "func (p *AGalopParser) repairParse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext) (antlr.ParserRuleContext, error)",
+        "return nil, dead.err",
+        "se, ok := e.(*AGalopSyntaxError)",
+        // Every SLL conflict goes through onConflict, and LL prediction through the cache.
+        "return p.onConflict(d, sllAlt)",
+        "return p.onConflict(d, int(next.conflict))",
+        "var AGalopFull struct",
+        "return p.predictLLUncached(d)",
+        "\trepair AGalopRepair",
+    )
+    val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
+    IsFalse(t1, strings.Contains(code, "@"))
+}
+
+func TestRepairInNativeFlavor(t T) T {
+    val code = nativeFiles(adaptiveGrammar).Get("a_parser.go").GetOrElse("")
+    val expected = ArrayOf(
+        "t, root, err := AGalopParse(ts, (*AGalopParser).ruleS, true)",
+        "t, root, err := AGalopParse(ts, (*AGalopParser).ruleR, false)",
+        "func AGalopParse(ts *ATokens, rule func(*AGalopParser) int32, repair bool)",
+        "root, err = p.repairParse(rule)",
+        "func (p *AGalopParser) repairParse(rule func(*AGalopParser) int32) (int32, error)",
+        "return -1, dead.err",
+        "se, ok := e.(*ASyntaxError)",
+        "var AGalopFull struct",
+    )
+    val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
+    IsFalse(t1, strings.Contains(code, "@"))
+}
+
+func TestStaticGrammarHasNoRepair(t T) T {
+    // Without runtime prediction there are no conflicts to repair.
+    val code = parserFile(t)
+    val t1 = IsFalse(t, strings.Contains(code, ") repairParse("))
+    IsFalse(t1, strings.Contains(code, "Full struct"))
+}

@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+exports_files(["Repair.g4"])
+
+# galop's parsers for Repair.g4, in both flavors, against ANTLR's on inputs
+# where SLL prediction fails and LL prediction gives the parse.
+go_test(
+    name = "repair_test",
+    size = "small",
+    srcs = ["repair_test.go"],
+    deps = [
+        "//differential/repair/antlr",
+        "//differential/repair/native",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)

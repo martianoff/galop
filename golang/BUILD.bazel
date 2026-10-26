@@ -6,6 +6,8 @@ gala_library(
         "names.gala",
         "native_emit.gala",
         "parser_emit.gala",
+        "repair.gala",
+        "repair_go.gala",
         "runtime_go.gala",
         "tables.gala",
         "target.gala",
@@ -26,7 +28,10 @@ gala_library(
 
 gala_test(
     name = "golang_test",
-    srcs = ["golang_test.gala"],
+    srcs = [
+        "golang_test.gala",
+        "repair_test.gala",
+    ],
     importpath = "github.com/martianoff/galop/golang",
     lib_srcs = [
         "names.gala",
@@ -35,6 +40,8 @@ gala_test(
         "runtime_go.gala",
         "tables.gala",
         "target.gala",
+        "repair.gala",
+        "repair_go.gala",
     ],
     pkg = "golang",
     deps = [

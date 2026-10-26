@@ -114,6 +114,12 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
     }
     (compiled.Parser, in.Analysis) match {
         case (Some(parser), Some(an)) => {
+            // ANTLR rewrites left-recursive rules into precedence loops; parsed
+            // as written, they would call themselves forever.
+            val leftRecursive = LeftRecursiveRules(compiled.Rules, an.Nullable)
+            if leftRecursive.NonEmpty() {
+                return Left(ArrayOf(s"Go target: left-recursive rules are not supported yet: ${leftRecursive.MkString(", ")}"))
+            }
             val grammar = in.Grammar.Name
             val base = baseName(in.Grammar)
             val e = env(
@@ -127,6 +133,9 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 adaptive = an.Plans.Exists((p) => hasAdaptive(p.Lookahead)),
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
+                // The repair needs no predicates and no left recursion, both
+                // ruled out above.
+                repair = !predicates && leftRecursive.IsEmpty(),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"

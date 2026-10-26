@@ -24,6 +24,10 @@ struct env(
     flavor Flavor = ANTLRFlavor(),
     // tokenLabels says whether some rule labels a token (`op=('+'|'-')`).
     tokenLabels bool = false,
+    // repair says whether a failed SLL parse is repaired (repair_go.gala) instead
+    // of rerun in LL mode: the grammar has no predicates and no left recursion.
+    // An entry rule uses it only if it ends with EOF.
+    repair bool = false,
 )
 
 // Flavor is the output style of the Go target (see GoFlavors).
@@ -76,7 +80,23 @@ func antlrParser(e env, pkg string, version string, grammarFile string) string {
 
 // predictor is the runtime predictor's Go code for e's parser, without the
 // template's leading newline (the parts of a file are joined with one).
-func predictor(e env) string = strings.TrimPrefix(fill(predictorSource, "PARSER", e.parserType, "PFX", e.pfx), "\n")
+func predictor(e env) string {
+    val repair = if (e.repair) repairSource else ""
+    val (root, zero, syntaxError) = e.flavor match {
+        case NativeFlavor(x) => ("int32", "-1", x + "SyntaxError")
+        case ANTLRFlavor() => ("antlr.ParserRuleContext", "nil", e.pfx + "SyntaxError")
+    }
+    val code = fill(predictorSource + conflictSource + fullCacheSource + repair,
+        "@RULE@", ruleFuncType(e), "@ROOT@", root, "@ZERO@", zero, "@SYNTAXERROR@", syntaxError,
+        "PARSER", e.parserType, "PFX", e.pfx)
+    strings.TrimPrefix(code, "\n")
+}
+
+// ruleFuncType is the Go type of a rule function as attempt takes it.
+func ruleFuncType(e env) string = e.flavor match {
+    case NativeFlavor(_) => s"func(*${e.parserType}) int32"
+    case ANTLRFlavor() => "func(antlr.ParserRuleContext, int) antlr.ParserRuleContext"
+}
 
 // tokenAssertions makes the generated file fail to compile when galop's token
 // numbering and ANTLR's disagree.
@@ -88,14 +108,27 @@ func tokenAssertions(e env) string {
     "// galop numbers tokens the way ANTLR does; these constants fail to compile if the two disagree.\nconst (\n" + lines.MkString("\n") + "\n)\n"
 }
 
+// predictorFields are the parser's fields for runtime prediction.
+func predictorFields(e env) string =
+    if (e.adaptive) s"\n\tstack  []int32\n\tll     bool\n\tpred   ${e.pfx}Predictor\n\trepair ${e.pfx}Repair" else ""
+
+// retryCode handles a failed SLL parse, whose result is in variable root.
+// With runtime prediction the parse runs in SLL mode first, as GALA does with
+// ANTLR; on a syntax error ANTLR reruns it in LL mode, which the repair
+// replaces where it applies (an entry passes repair).
+func retryCode(e env, root string) string {
+    val rerun = s"p.ll = true\n\t\t$root, err = p.attempt(rule)\n\t\tp.ll = false"
+    if (!e.adaptive) ""
+    else if (!e.repair) s"\n\tif err != nil {\n\t\t$rerun\n\t}"
+    else s"\n\tif err != nil {\n\t\tif repair {\n\t\t\t$root, err = p.repairParse(rule)\n\t\t} else {\n\t\t\t${strings.ReplaceAll(rerun, "\n", "\n\t")}\n\t\t}\n\t}"
+}
+
 // parserCore is the parser struct and the helpers every rule uses.
 func parserCore(e env) string {
     val p = e.parserType
     val x = e.pfx
-    val predictor = if (e.adaptive) s"\n\tstack []int32\n\tll    bool\n\tpred  ${x}Predictor" else ""
-    // With runtime prediction the parse runs in SLL mode first and is retried in
-    // full LL mode only on a syntax error, as GALA does with ANTLR.
-    val retry = if (e.adaptive) "\n\tif err != nil {\n\t\tp.ll = true\n\t\tctx, err = p.attempt(rule)\n\t\tp.ll = false\n\t}" else ""
+    val predictor = predictorFields(e)
+    val retry = retryCode(e, "ctx")
     val resetStack = if (e.adaptive) "\n\tp.stack = p.stack[:0]" else ""
     fill(`// PARSER parses GRAMMAR input with decisions galop made at generation time.
 // It builds the same context objects as ANTLRPARSER. Each instance is
@@ -148,8 +181,9 @@ func PFXTokenText(t antlr.Token) string {
 }
 
 // parse runs a rule function as an entry point and leaves the token stream just
-// after the input it consumed.
-func (p *PARSER) parse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext) (antlr.ParserRuleContext, error) {
+// after the input it consumed. repair says whether a failed SLL parse may be
+// repaired rather than rerun in LL mode (see repairParse).
+func (p *PARSER) parse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext, repair bool) (antlr.ParserRuleContext, error) {
 	ctx, err := p.attempt(rule)RETRY
 	p.input.Seek(p.toks[p.pos].GetTokenIndex())
 	return ctx, err
@@ -227,13 +261,14 @@ func entryMethod(e env, r atn.RuleIR) string {
     fill(`// METHOD parses the input as RULE. On a syntax error it returns the error
 // and no tree.
 func (p *PARSER) METHOD() (IFACE, error) {
-	ctx, err := p.parse(p.RULEFUNC)
+	ctx, err := p.parse(p.RULEFUNC, REPAIR)
 	if err != nil {
 		return nil, err
 	}
 	return ctx.(IFACE), nil
 }
-`, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name)
+`, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
+        "REPAIR", s"${e.repair && EndsWithEOF(r)}")
 }
 
 // emitRule emits the antlr flavor's function that parses one rule.
