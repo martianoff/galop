@@ -5,6 +5,7 @@ import (
 
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/brackets"
+    "github.com/martianoff/galop/repair"
 )
 
 // The analysis decides, at generation time, how generated code picks an
@@ -78,8 +79,11 @@ struct Analysis(
     First Array[atn.IntervalSet],
     Follow Array[atn.IntervalSet],
     Nullable Array[bool],
-    // Brackets are the bracket families runtime prediction may treat as one symbol.
+    // Brackets are the bracket families runtime prediction may treat as one
+    // symbol, as Repair allows.
     Brackets brackets.Brackets,
+    // Repair is where the grammar's parsers may repair a failed SLL parse.
+    Repair repair.Plan,
 )
 
 // MaxK is the deepest static lookahead the analysis tries by default.

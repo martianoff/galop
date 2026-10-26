@@ -4,13 +4,9 @@ import (
     "strings"
 
     . "martianoff/gala/collection_immutable"
-    "martianoff/gala/go_builtins"
     . "martianoff/gala/test"
 
-    "github.com/martianoff/galop/analysis"
-    "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/g4"
-    "github.com/martianoff/galop/leftrec"
 )
 
 // adaptiveGrammar needs runtime prediction (nesting deepens the contexts past
@@ -23,40 +19,11 @@ b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;
 `
 
-// compiled reads, compiles and analyzes a valid test grammar.
-func compiled(src string) Tuple[atn.Compiled, analysis.Analysis] = g4.Parse(src) match {
-    case Right(g) => atn.Compile(g) match {
-        case Right(c) => c.Parser match {
-            case Some(p) => (c, analysis.Analyze(p, analysis.MaxK))
-            case None() => go_builtins.Panic("no parser rules")
-        }
-        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
-    }
-    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
-}
-
 func TestGoTargetRejectsLeftRecursion(t T) T =
     generate("grammar L;\ns : e EOF ;\ne : e '+' e | X ;\nX : 'x' ;\n", EmptyArray[g4.OptionEntry]()) match {
         case Left(errs) => Eq(t, errs, ArrayOf("Go target: left-recursive rules are not supported yet: e"))
         case Right(_) => t.Error("expected an error")
     }
-
-func endsWithEOF(src string, rule string) bool {
-    val (c, _) = compiled(src)
-    c.Rules.Find((r) => r.Name == rule).Exists((r) => EndsWithEOF(c.Rules, r))
-}
-
-func TestEndsWithEOF(t T) T = RunCases(t, (sub, src, want) => Eq(sub, endsWithEOF(src, "s"), want),
-    Case[string, bool](Name = "EOF last", Input = "grammar E;\ns : X+ EOF ;\nX : 'x' ;\n", Expected = true),
-    Case[string, bool](Name = "every alternative", Input = "grammar E;\ns : X EOF | Y EOF ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
-    Case[string, bool](Name = "a block of EOF endings", Input = "grammar E;\ns : X (Y EOF | EOF) ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
-    Case[string, bool](Name = "an action after EOF", Input = "grammar E;\ns : X EOF {} ;\nX : 'x' ;\n", Expected = true),
-    Case[string, bool](Name = "through the rule called last", Input = "grammar E;\ns : X b ;\nb : X EOF ;\nX : 'x' ;\n", Expected = true),
-    Case[string, bool](Name = "a recursive call last", Input = "grammar E;\ns : X s | X ;\nX : 'x' ;\n", Expected = false),
-    Case[string, bool](Name = "no EOF", Input = "grammar E;\ns : X ;\nX : 'x' ;\n", Expected = false),
-    Case[string, bool](Name = "one alternative without", Input = "grammar E;\ns : X EOF | Y ;\nX : 'x' ; Y : 'y' ;\n", Expected = false),
-    Case[string, bool](Name = "optional EOF", Input = "grammar E;\ns : X EOF? ;\nX : 'x' ;\n", Expected = false),
-)
 
 func TestRepairInANTLRFlavor(t T) T {
     val code = parserOf(generate(adaptiveGrammar, antlrDefines))
@@ -103,18 +70,6 @@ func TestStaticGrammarHasNoRepair(t T) T {
     IsFalse(t1, strings.Contains(code, "FullCache struct"))
 }
 
-func repairable(src string) bool {
-    val (c, _) = compiled(src)
-    c.Rules.Find((r) => r.Name == "s").Exists((r) => Repairable(c.Rules, r))
-}
-
-func TestRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, repairable(src), want),
-    Case[string, bool](Name = "recursion below the entry rule", Input = "grammar R;\ns : e EOF ;\ne : '(' e ')' | X ;\nX : 'x' ;\n", Expected = true),
-    Case[string, bool](Name = "an entry rule that calls itself", Input = "grammar R;\ns : '(' s ')' EOF | X EOF ;\nX : 'x' ;\n", Expected = false),
-    Case[string, bool](Name = "through another rule", Input = "grammar R;\ns : e EOF ;\ne : '(' s ')' | X ;\nX : 'x' ;\n", Expected = false),
-    Case[string, bool](Name = "no EOF", Input = "grammar R;\ns : e ;\ne : X ;\nX : 'x' ;\n", Expected = false),
-)
-
 func TestGoTargetRejectsMutualLeftRecursion(t T) T =
     generate("grammar L;\ns : a EOF ;\na : b 'x' | 'y' ;\nb : a 'z' ;\n", EmptyArray[g4.OptionEntry]()) match {
         case Left(errs) => Eq(t, errs, ArrayOf("Go target: left-recursive rules are not supported yet: a, b"))
@@ -133,19 +88,3 @@ X : 'x' ; Y : 'y' ;
     val t1 = IsTrue(t, strings.Contains(code, "ctx, err := p.parse(p.ruleS, false)"))
     IsTrue(t1, strings.Contains(code, "ctx, err = p.llParse(rule, repair, err)"))
 }
-
-func grammarRepairable(src string) bool = g4.Parse(src) match {
-    case Right(g) => {
-        val (c, _) = compiled(src)
-        GrammarRepairable(c.Rules, leftrec.FindLeftRecursion(g, c))
-    }
-    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
-}
-
-func TestGrammarRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, grammarRepairable(src), want),
-    Case[string, bool](Name = "plain", Input = adaptiveGrammar, Expected = true),
-    Case[string, bool](Name = "an action", Input = "grammar G;\ns : X {} EOF ;\nX : 'x' ;\n", Expected = false),
-    Case[string, bool](Name = "a nested action", Input = "grammar G;\ns : (X {} | Y)* EOF ;\nX : 'x' ; Y : 'y' ;\n", Expected = false),
-    Case[string, bool](Name = "a predicate", Input = "grammar G;\ns : {true}? X EOF ;\nX : 'x' ;\n", Expected = false),
-    Case[string, bool](Name = "left recursion", Input = "grammar G;\ns : e EOF ;\ne : e X | X ;\nX : 'x' ;\n", Expected = false),
-)

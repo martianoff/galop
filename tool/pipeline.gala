@@ -12,6 +12,7 @@ import (
     "github.com/martianoff/galop/diag"
     "github.com/martianoff/galop/g4"
     "github.com/martianoff/galop/leftrec"
+    "github.com/martianoff/galop/repair"
 )
 
 // Toolkit is what a run needs from outside the tool: the code generators,
@@ -126,16 +127,20 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
     }
     val rest = atn.Compile(g) match {
         case Left(ds) => done(problemsOnly(ds))
-        case Right(c) => leftRecursionProblem(g, c, path) match {
-            case Some(d) => done(problemsOnly(ArrayOf(d)))
-            case None() => stage.Action match {
-                case Validate(roundTrip) => done(validated(path, g, roundTrip))
-                case PrintReport() => done(report(path, c, !stage.NoBrackets))
-                // -depend only needs the file names, which come from the compiled grammar.
-                case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
-                case _ => {
-                    val plans = c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK, !stage.NoBrackets))
-                    FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
+        case Right(c) => {
+            // Worked out once, for the checks, -report and code generation.
+            val plan = repair.PlanFor(g, c)
+            leftRecursionProblem(plan.LeftRecursion, c, path) match {
+                case Some(d) => done(problemsOnly(ArrayOf(d)))
+                case None() => stage.Action match {
+                    case Validate(roundTrip) => done(validated(path, g, roundTrip))
+                    case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
+                    // -depend only needs the file names, which come from the compiled grammar.
+                    case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
+                    case _ => {
+                        val plans = c.Parser.Map((p) => analysis.Analyze(p, plan, stage.NoBrackets))
+                        FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
+                    }
                 }
             }
         }
@@ -148,8 +153,8 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
 // left-recursive rules, if any, with ANTLR's text and, like ANTLR's, no
 // position. A rule with an alternative that starts with a call of itself is
 // not one: ANTLR rewrites it (galop's Go target does not yet).
-func leftRecursionProblem(g g4.Grammar, c atn.Compiled, path string) Option[diag.Diagnostic] =
-    leftrec.FindLeftRecursion(g, c).Cycles match {
+func leftRecursionProblem(lr leftrec.LeftRecursion, c atn.Compiled, path string) Option[diag.Diagnostic] =
+    lr.Cycles match {
         case Array() => None()
         case cycles => {
             val sets = cycles.Map((cycle) => "[" + cycle.Map((i) => c.Rules.Get(i).Name).MkString(", ") + "]")
@@ -184,8 +189,8 @@ func validated(path string, g g4.Grammar, roundTrip bool) FileResult {
 }
 
 // report is -report: the decision report of the parser network, if any.
-func report(path string, c atn.Compiled, brackets bool) FileResult = c.Parser match {
-    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, analysis.MaxK, brackets)))
+func report(path string, c atn.Compiled, plan repair.Plan, noBrackets bool) FileResult = c.Parser match {
+    case Some(p) => printed(analysis.Report(p, analysis.Analyze(p, plan, noBrackets)))
     case None() => printed(s"$path: no parser rules, so no decisions\n")
 }
 

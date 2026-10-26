@@ -7,16 +7,16 @@ import (
 
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/brackets"
-    "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/grammartest"
+    "github.com/martianoff/galop/repair"
 )
 
-// parserATN compiles a test grammar that must be valid; a problem panics.
-func parserATN(src string) atn.ATN = g4.Parse(src) match {
-    case Right(g) => atn.Compile(g) match {
-        case Right(c) => c.Parser.Get()
-        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
-    }
-    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+// analyzed compiles src and analyzes its parser network the way -report and
+// code generation do, repair plan included.
+func analyzed(src string, maxK int = MaxK) Tuple[atn.ATN, Analysis] {
+    val (g, c) = grammartest.Compile(src)
+    val a = c.Parser.Get()
+    (a, Analyze(a, repair.PlanFor(g, c), false, maxK))
 }
 
 // tokens names a token set: `EOF X Y`.
@@ -47,8 +47,8 @@ func planFor(a atn.ATN, an Analysis, rule string, text string) DecisionPlan =
 
 // decision analyzes src and describes one decision as `class tree`.
 func decision(src string, rule string, text string, maxK int = MaxK) string {
-    val a = parserATN(src)
-    val p = planFor(a, Analyze(a, maxK), rule, text)
+    val (a, an) = analyzed(src, maxK)
+    val p = planFor(a, an, rule, text)
     s"${className(p.Class)} ${show(a, treeOf(a, p.Decision, maxK))}"
 }
 
@@ -64,13 +64,12 @@ X : 'x' ; Y : 'y' ; Z : 'z' ; W : 'w' ; Q : 'q' ;
 `
 
 func TestFirstFollowNullable(t T) T {
-    val a = parserATN(`grammar F;
+    val (a, an) = analyzed(`grammar F;
 s : a b EOF ;
 a : X | ;
 b : Y a Z | c ;
 c : W? ;
 ` + tokensXYZ)
-    val an = Analyze(a)
     val rule = (name string) => a.RuleIndex(name).Get()
     val first = (name string) => tokens(a, an.First.Get(rule(name)))
     val follow = (name string) => tokens(a, an.Follow.Get(rule(name)))
@@ -189,10 +188,9 @@ q : X (Y X)* ;
 }
 
 func TestPredicatesMakeADecisionAdaptive(t T) T {
-    val a = parserATN(`grammar P;
+    val (a, an) = analyzed(`grammar P;
 s : {p()}? X | X Y ;
 ` + tokensXYZ)
-    val an = Analyze(a)
     val p = an.Plans.Head()
     val t1 = Eq(t, s"${className(p.Class)} ${show(a, p.Lookahead)}", "adaptive ?1,2")
     Eq(t1, Report(a, an), `1 decisions: 0 LL(1), 0 LL(2), 0 LL(3), 1 adaptive
@@ -201,7 +199,7 @@ Adaptive decisions:
 decision 0 in rule s (block): s : {p()}? X | X Y
   alts 1,2: predicates are evaluated before the first token
 
-Bracket abstraction: none
+Bracket abstraction: skipped (the grammar has actions, predicates or left recursion, so it is never repaired)
 `)
 }
 
@@ -213,12 +211,12 @@ s : X Y Z Q | X Y Z W ;
 }
 
 func TestReport(t T) T {
-    val a = parserATN(`grammar Rep;
+    val (a, an) = analyzed(`grammar Rep;
 s : (X Y)* X Z t u EOF ;
 t : Q W Q Y | Q W Q Z ;
 u : X | Y ;
 ` + tokensXYZ)
-    Eq(t, Report(a, Analyze(a)), `3 decisions: 1 LL(1), 1 LL(2), 0 LL(3), 1 adaptive
+    Eq(t, Report(a, an), `3 decisions: 1 LL(1), 1 LL(2), 0 LL(3), 1 adaptive
 
 Decisions that need more than one token:
   LL(2) decision 0 in rule s (star): (X Y)*
@@ -242,8 +240,7 @@ val galaAdaptive = ArrayOf(
 )
 
 func TestGalaGrammar(t T) T {
-    val a = parserATN(galaGrammar)
-    val an = Analyze(a)
+    val (a, an) = analyzed(grammartest.GalaGrammar)
     val report = Report(a, an)
     val adaptive = an.Plans.Filter((p) => p.Class match {
         case NeedsAdaptive() => true
@@ -256,9 +253,9 @@ func TestGalaGrammar(t T) T {
 // builtAutomaton builds the SLL automaton of one decision of src: None when
 // it cannot settle every input.
 func builtAutomaton(src string, rule string, text string) Tuple[atn.ATN, Option[Lookahead]] {
-    val a = parserATN(src)
+    val (a, an) = analyzed(src)
     val sites = callSites(a)
-    val dec = planFor(a, Analyze(a), rule, text).Decision
+    val dec = planFor(a, an, rule, text).Decision
     (a, newGrammarInfo(a, sites, startRules(a, sites)).buildAutomaton(dec))
 }
 
@@ -335,14 +332,13 @@ func TestOnlyAutomataThatSettleStay(t T) T {
     // The automaton of s loops over X and settles every input, so it stays.
     // Nesting in e makes the automaton of r give up, so r keeps its static
     // tree, whose unsettled leaves are left to runtime prediction.
-    val a = parserATN(`grammar C;
+    val (a, an) = analyzed(`grammar C;
 s : a | b ;
 a : X* Y ;
 b : X* Z ;
 r : e Y | e Z ;
 e : '(' e ')' | X ;
 ` + tokensXYZ)
-    val an = Analyze(a)
     val t1 = HasPrefix(t, render(planFor(a, an, "s", "s : a | b").Lookahead), "automaton(")
     // The static tree stays; its unsettled leaves ask the runtime, and so does
     // a token past the first that no case expects.
@@ -351,18 +347,8 @@ e : '(' e ')' | X ;
     Contains(t2, r, "X:{Y:1 Z:2 :?}")
 }
 
-// The bracket families of gala.g4, and somewhere to go after every closer.
-func TestGalaGrammarBrackets(t T) T {
-    val a = parserATN(galaGrammar)
-    val b = brackets.Analyze(a)
-    val families = b.Families.Map((f) => f.Openers.Values().Map((tok) => a.Vocab.Display(tok)).MkString(" ") + " " + a.Vocab.Display(f.Closer))
-        .Sorted().MkString("; ")
-    val t1 = Eq(t, families, "'(' NL_LPAREN ')'; '[' ']'; '{' '}'")
-    IsTrue(t1, b.Sites.NonEmpty() && b.Sites.ForAll(_.After.NonEmpty()))
-}
-
 func TestOpenerSitesJumpPastTheCloser(t T) T {
-    val a = parserATN(`grammar P;
+    val a = grammartest.ParserATN(`grammar P;
 e : f '(' ID? ')' ID ;
 f : ID ;
 ID : [a-z]+ ;`)

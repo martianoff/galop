@@ -1,0 +1,124 @@
+// Package repair decides where a failed SLL parse may be repaired instead of
+// rerun in LL mode, as the generated parsers do (golang/repair_go.gala): only
+// where that gives exactly ANTLR's result and behaviour, per grammar
+// (GrammarRepairable) and per entry rule. A Plan holds the decision for one
+// grammar; reading bracketed groups as one symbol depends on it too
+// (Plan.BracketsOff).
+package repair
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/leftrec"
+)
+
+// Plan is where the parsers of one grammar may repair a failed SLL parse.
+// LeftRecursion is the grammar's left recursion; RepairableGrammar says
+// whether any parse may repair (GrammarRepairable); RepairableEntries are the
+// rules (by index) that end with EOF and that no rule they call can call
+// again: a call of the entry rule inside itself is where full-context merges
+// can drop the empty context ANTLR's LL prediction ends with.
+struct Plan(
+    LeftRecursion leftrec.LeftRecursion,
+    RepairableGrammar bool,
+    RepairableEntries HashSet[int],
+)
+
+// PlanFor works out the plan of grammar g compiled to c, once: its left
+// recursion, whether it may repair, and its repairable entry rules, over one
+// call graph of the rules.
+func PlanFor(g g4.Grammar, c atn.Compiled) Plan {
+    val rules = c.Rules
+    val lr = leftrec.FindLeftRecursion(g, c)
+    val calls = rules.Map((rule) =>
+        rule.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(callees(a.Steps))))
+    // The cheap check first: most rules do not end with EOF.
+    val entries = rules.FoldLeft(EmptyHashSet[int](), (acc, r) =>
+        if (EndsWithEOF(rules, r) && !reaches(calls, calls.Get(r.Index), r.Index, EmptyHashSet[int]())) acc.Add(r.Index)
+        else acc)
+    Plan(lr, GrammarRepairable(rules, lr), entries)
+}
+
+// Repairs says whether a parse that starts at rule may repair a failed SLL
+// parse.
+func (p Plan) Repairs(rule int) bool = p.RepairableGrammar && p.RepairableEntries.Contains(rule)
+
+// BracketsOff says why runtime prediction must read tokens only, never a
+// bracketed group as one symbol, if it must: -Xno-brackets (noBrackets), or no
+// repair. A first pass over groups may fail where one over tokens would not,
+// and only a repair settles that the way ANTLR would, so groups need a
+// repairable grammar and at least one repairable entry rule.
+func (p Plan) BracketsOff(noBrackets bool) Option[string] =
+    if (noBrackets) Some("disabled by -Xno-brackets")
+    else if (!p.RepairableGrammar) Some("the grammar has actions, predicates or left recursion, so it is never repaired")
+    else if (p.RepairableEntries.IsEmpty()) Some("no entry rule may be repaired: none ends with EOF without calling itself")
+    else None()
+
+// GrammarRepairable says whether a grammar's parsers may repair a failed SLL
+// parse: no semantic predicate takes part in prediction, no rule is
+// left-recursive, and no embedded action runs while parsing (a repair replays
+// the parse, which would run an action more often than ANTLR's two passes do).
+// rules: the parser rules, indexed by rule number.
+// lr: the grammar's left recursion.
+func GrammarRepairable(rules Array[atn.RuleIR], lr leftrec.LeftRecursion) bool =
+    lr.IsEmpty() && !runsCode(rules)
+
+// runsCode says whether parsing with rules runs grammar code: an embedded
+// action or a semantic predicate.
+func runsCode(rules Array[atn.RuleIR]) bool =
+    rules.Exists((r) => r.Alts.Exists((a) => atn.HasStep(a.Steps, (s) => s match {
+        case atn.RunAction(_) => true
+        case atn.CheckPredicate(_) => true
+        case _ => false
+    })))
+
+// callees are the rules steps call anywhere.
+func callees(steps Array[atn.Step]) HashSet[int] = steps.FoldLeft(EmptyHashSet[int](), (acc, s) => s match {
+    case atn.CallRule(rule, _, _) => acc.Add(rule)
+    case atn.Choose(_, alts, _) => alts.FoldLeft(acc, (inner, a) => inner.Union(callees(a)))
+    case atn.Loop(_, _, _, body) => acc.Union(callees(body))
+    case _ => acc
+})
+
+// reaches says whether target is reachable from the rules in frontier along
+// edges, skipping rules already seen.
+func reaches(edges Array[HashSet[int]], frontier HashSet[int], target int, seen HashSet[int]) bool {
+    if frontier.Contains(target) {
+        return true
+    }
+    val fresh = frontier.Filter((r) => !seen.Contains(r))
+    if fresh.IsEmpty() {
+        return false
+    }
+    val next = fresh.ToArray().FoldLeft(EmptyHashSet[int](), (acc, r) => acc.Union(edges.Get(r)))
+    reaches(edges, next, target, seen.Union(fresh))
+}
+
+// EndsWithEOF says whether every way through rule r ends by matching EOF,
+// directly or as the last thing of a rule it calls last (actions after it
+// aside). For such an entry rule a parse that succeeds consumed the whole
+// input, which the repair's correctness argument needs.
+// rules: the parser rules, indexed by rule number.
+// r: the entry rule.
+func EndsWithEOF(rules Array[atn.RuleIR], r atn.RuleIR) bool = ruleEndsWithEOF(rules, r, HashSetOf(r.Index))
+
+// ruleEndsWithEOF is EndsWithEOF, not following calls into the rules in seen.
+func ruleEndsWithEOF(rules Array[atn.RuleIR], r atn.RuleIR, seen HashSet[int]) bool =
+    r.Alts.ForAll((a) => stepsEndWithEOF(rules, a.Steps, seen))
+
+func stepsEndWithEOF(rules Array[atn.RuleIR], steps Array[atn.Step], seen HashSet[int]) bool {
+    val tail = steps.Filter((s) => s match {
+        case atn.RunAction(_) => false
+        case _ => true
+    })
+    tail.LastOption() match {
+        case Some(atn.MatchToken(t, _)) => t == atn.TokenEOF
+        case Some(atn.Choose(_, alts, None())) => alts.ForAll((a) => stepsEndWithEOF(rules, a, seen))
+        case Some(atn.CallRule(rule, _, _)) =>
+            !seen.Contains(rule) && ruleEndsWithEOF(rules, rules.Get(rule), seen.Add(rule))
+        case _ => false
+    }
+}
+

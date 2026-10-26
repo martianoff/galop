@@ -19,8 +19,7 @@ gala_test(
     pkg = "brackets",
     deps = [
         "//atn",
-        "//g4",
+        "//grammartest",
         "@gala//collection_immutable",
-        "@gala//go_builtins",
     ],
 )

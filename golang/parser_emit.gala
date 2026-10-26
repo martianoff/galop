@@ -10,6 +10,7 @@ import (
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/brackets"
     "github.com/martianoff/galop/lexgen"
+    "github.com/martianoff/galop/repair"
 )
 
 // env is what emitting one grammar's parser needs.
@@ -22,14 +23,14 @@ struct env(
     rules Array[atn.RuleIR],
     plans Array[analysis.DecisionPlan],
     adaptive bool,
+    // repairPlan is where a failed SLL parse may be repaired (repair_go.gala)
+    // rather than rerun in LL mode.
+    repairPlan repair.Plan,
     // brackets are the families adaptive prediction reads as one symbol.
     brackets brackets.Brackets = brackets.NoBrackets(),
     flavor Flavor = ANTLRFlavor(),
     // tokenLabels says whether some rule labels a token (`op=('+'|'-')`).
     tokenLabels bool = false,
-    // repair says whether a failed SLL parse may be repaired (repair_go.gala)
-    // rather than rerun in LL mode; see GrammarRepairable and Repairable.
-    repair bool = false,
 )
 
 // Flavor is the output style of the Go target (see GoFlavors).
@@ -131,7 +132,6 @@ func parserCore(e env) string {
     val p = e.parserType
     val x = e.pfx
     val predictor = predictorFields(e)
-    val absMatch = bracketMatchLine(e)
     val retry = retryCode(e, "ctx")
     val resetStack = if (e.adaptive) "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0" else ""
     fill(`// PARSER parses GRAMMAR input with decisions galop made at generation time.
@@ -162,7 +162,7 @@ func NewPARSER(input antlr.TokenStream) *PARSER {
 			break
 		}
 		input.Consume()
-	}ABSMATCH
+	}
 	return p
 }
 
@@ -255,7 +255,7 @@ func (p *PARSER) matchIf(ctx antlr.ParserRuleContext, ok bool) antlr.Token {
 func (p *PARSER) noViableAlt(decision int) {
 	panic(&PFXSyntaxError{p.toks[p.pos], "no viable alternative at input " + PFXTokenText(p.toks[p.pos])})
 }
-`, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "ABSMATCH", absMatch, "GROUPON", groupsOn(e), "RETRY", retry, "RESETSTACK", resetStack)
+`, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "GROUPON", groupsOn(e), "RETRY", retry, "RESETSTACK", resetStack)
 }
 
 // entryMethod is the public method that parses input as one rule.
@@ -272,7 +272,7 @@ func (p *PARSER) METHOD() (IFACE, error) {
 	return ctx.(IFACE), nil
 }
 `, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
-        "REPAIR", s"${e.repair && Repairable(e.rules, r)}")
+        "REPAIR", s"${e.repairPlan.Repairs(r.Index)}")
 }
 
 // emitRule emits the antlr flavor's function that parses one rule.
@@ -443,13 +443,14 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
     }))
 }
 
-// bracketMatchLine pairs the brackets of the input once its token types are
-// known (see PFXBracketMatch).
-func bracketMatchLine(e env) string =
-    if (e.adaptive) s"\n\tp.pairs = ${e.pfx}BracketMatch(p.types, p.pairs)" else ""
-
 // groupsOn lets a parse read bracketed groups when its first pass can only
 // succeed on the whole input: when it may be repaired, its entry rule ends
 // with EOF and the grammar runs no actions while parsing. A pass that stops
-// before EOF, or actions run once more, would not be what ANTLR does.
-func groupsOn(e env) string = if (e.adaptive) s"\n\tp.group = repair && ${e.pfx}OpenerCount > 0" else ""
+// before EOF, or actions run once more, would not be what ANTLR does. Only
+// then are the input's brackets paired (see PFXBracketMatch). Without
+// bracket families (none inferred, or none allowed: see repair.Plan) a parse
+// never reads groups and nothing is emitted.
+func groupsOn(e env) string =
+    if (e.adaptive && e.brackets.Families.NonEmpty())
+        s"\n\tp.group = repair\n\tif p.group {\n\t\tp.pairs = ${e.pfx}BracketMatch(p.types, p.pairs)\n\t}"
+    else ""

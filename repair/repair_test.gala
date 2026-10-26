@@ -1,0 +1,62 @@
+package repair
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/grammartest"
+)
+
+func endsWithEOF(src string, rule string) bool {
+    val (_, c) = grammartest.Compile(src)
+    c.Rules.Find((r) => r.Name == rule).Exists((r) => EndsWithEOF(c.Rules, r))
+}
+
+func TestEndsWithEOF(t T) T = RunCases(t, (sub, src, want) => Eq(sub, endsWithEOF(src, "s"), want),
+    Case[string, bool](Name = "EOF last", Input = "grammar E;\ns : X+ EOF ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "every alternative", Input = "grammar E;\ns : X EOF | Y EOF ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
+    Case[string, bool](Name = "a block of EOF endings", Input = "grammar E;\ns : X (Y EOF | EOF) ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
+    Case[string, bool](Name = "an action after EOF", Input = "grammar E;\ns : X EOF {} ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "through the rule called last", Input = "grammar E;\ns : X b ;\nb : X EOF ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "a recursive call last", Input = "grammar E;\ns : X s | X ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "no EOF", Input = "grammar E;\ns : X ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "one alternative without", Input = "grammar E;\ns : X EOF | Y ;\nX : 'x' ; Y : 'y' ;\n", Expected = false),
+    Case[string, bool](Name = "optional EOF", Input = "grammar E;\ns : X EOF? ;\nX : 'x' ;\n", Expected = false),
+)
+
+func repairable(src string) bool {
+    val (g, c) = grammartest.Compile(src)
+    c.Rules.Find((r) => r.Name == "s").Exists((r) => PlanFor(g, c).RepairableEntries.Contains(r.Index))
+}
+
+func TestRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, repairable(src), want),
+    Case[string, bool](Name = "recursion below the entry rule", Input = "grammar R;\ns : e EOF ;\ne : '(' e ')' | X ;\nX : 'x' ;\n", Expected = true),
+    Case[string, bool](Name = "an entry rule that calls itself", Input = "grammar R;\ns : '(' s ')' EOF | X EOF ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "through another rule", Input = "grammar R;\ns : e EOF ;\ne : '(' s ')' | X ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "no EOF", Input = "grammar R;\ns : e ;\ne : X ;\nX : 'x' ;\n", Expected = false),
+)
+
+func grammarRepairable(src string) bool {
+    val (g, c) = grammartest.Compile(src)
+    PlanFor(g, c).RepairableGrammar
+}
+
+func TestGrammarRepairable(t T) T = RunCases(t, (sub, src, want) => Eq(sub, grammarRepairable(src), want),
+    Case[string, bool](Name = "plain", Input = "grammar G;\ns : (a | b) EOF ;\na : '(' a ')' | X ;\nb : '(' b ')' | Y ;\nX : 'x' ; Y : 'y' ;\n", Expected = true),
+    Case[string, bool](Name = "an action", Input = "grammar G;\ns : X {} EOF ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "a nested action", Input = "grammar G;\ns : (X {} | Y)* EOF ;\nX : 'x' ; Y : 'y' ;\n", Expected = false),
+    Case[string, bool](Name = "a predicate", Input = "grammar G;\ns : {true}? X EOF ;\nX : 'x' ;\n", Expected = false),
+    Case[string, bool](Name = "left recursion", Input = "grammar G;\ns : e EOF ;\ne : e X | X ;\nX : 'x' ;\n", Expected = false),
+)
+
+func bracketsOff(src string) string {
+    val (g, c) = grammartest.Compile(src)
+    PlanFor(g, c).BracketsOff(false).GetOrElse("on")
+}
+
+func TestBracketsOff(t T) T = RunCases(t, (sub, src, want) => Eq(sub, bracketsOff(src), want),
+    Case[string, string](Name = "a repairable entry", Input = "grammar B;\ns : '(' s ')' | X ;\nt : s EOF ;\nX : 'x' ;\n", Expected = "on"),
+    Case[string, string](Name = "an action", Input = "grammar B;\ns : X {} EOF ;\nX : 'x' ;\n", Expected = "the grammar has actions, predicates or left recursion, so it is never repaired"),
+    Case[string, string](Name = "left recursion", Input = "grammar B;\ns : e EOF ;\ne : e X | X ;\nX : 'x' ;\n", Expected = "the grammar has actions, predicates or left recursion, so it is never repaired"),
+    Case[string, string](Name = "no entry ends with EOF", Input = "grammar B;\ns : '(' s ')' | X ;\nX : 'x' ;\n", Expected = "no entry rule may be repaired: none ends with EOF without calling itself"),
+)

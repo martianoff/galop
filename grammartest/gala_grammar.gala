@@ -1,9 +1,9 @@
-package analysis
+package grammartest
 
-// galaGrammar is testdata/grammars/gala.g4, verbatim, as a string: `gala test`
+// GalaGrammar is testdata/grammars/gala.g4, verbatim, as a string: `gala test`
 // runs in a generated directory and cannot read testdata. Regenerate it when
 // the corpus copy changes.
-val galaGrammar = "" +
+val GalaGrammar = "" +
     "grammar gala;\n" +
     "\n" +
     "// NL_LPAREN is a '(' that starts a line after a token that can end an\n" +

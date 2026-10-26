@@ -89,17 +89,9 @@ func TestMutations(t *testing.T) {
 			if rerun {
 				parse = nativegala.ParseByRerun
 			}
-			root, err := parse(src)
-			if err != nil {
-				return "", err.Error(), err
-			}
-			return root.ToStringTree(), "", nil
+			return nativeResult(parse(src))
 		}, func(src string) (string, string, error) {
-			root, err := nativetokens.Parse(src)
-			if err != nil {
-				return "", err.Error(), err
-			}
-			return root.ToStringTree(), "", nil
+			return nativeResult(nativetokens.Parse(src))
 		}},
 		{"antlr flavor", func(src string, rerun bool) (string, string, error) {
 			if rerun {
@@ -122,11 +114,13 @@ func TestMutations(t *testing.T) {
 		}
 		for _, f := range flavors {
 			got, where, err := f.parse(src, false)
+			// The error must match here; where each parse stopped is checked
+			// against the LL rerun's below.
 			ref, refWhere, refErr := f.tokens(src)
 			switch {
-			case (err == nil) != (refErr == nil) || where != refWhere:
+			case (err == nil) != (refErr == nil) || err != nil && err.Error() != refErr.Error():
 				differ++
-				t.Errorf("mutant %d: %s with brackets error=%s, without error=%s\n%s", i, f.name, where, refWhere, src)
+				t.Errorf("mutant %d: %s with brackets error=%v, without error=%v\n%s", i, f.name, err, refErr, src)
 			case err == nil && got != ref:
 				differ++
 				t.Errorf("mutant %d: %s trees differ with and without brackets\n%s", i, f.name, firstDifference(ref, got))
@@ -140,15 +134,28 @@ func TestMutations(t *testing.T) {
 				t.Errorf("mutant %d: %s tree differs\n%s", i, f.name, firstDifference(want, got))
 			case !wantOK:
 				// Rejected: the error and where the parse stopped must be the
-				// rerun's, not just the verdict.
-				if _, rerunWhere, _ := f.parse(src, true); where != rerunWhere {
+				// rerun's, not just the verdict, with brackets and without.
+				_, rerunWhere, _ := f.parse(src, true)
+				if where != rerunWhere {
 					differ++
 					t.Errorf("mutant %d: %s error differs from the LL rerun's:\n repair: %s\n rerun:  %s", i, f.name, where, rerunWhere)
+				}
+				if refWhere != rerunWhere {
+					differ++
+					t.Errorf("mutant %d: %s -Xno-brackets error differs from the LL rerun's:\n repair: %s\n rerun:  %s", i, f.name, refWhere, rerunWhere)
 				}
 			}
 		}
 	}
 	t.Logf("%d mutants, %d accepted by ANTLR, %d differences", *mutants, accepted, differ)
+}
+
+// nativeResult is a native parse's tree, or its error text, for comparing.
+func nativeResult[N interface{ ToStringTree() string }](root N, err error) (tree, where string, _ error) {
+	if err != nil {
+		return "", err.Error(), err
+	}
+	return root.ToStringTree(), "", nil
 }
 
 // mutate changes src at a random token or line.
