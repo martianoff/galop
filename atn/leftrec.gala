@@ -67,7 +67,9 @@ func FindLeftRecursion(rules Array[RuleIR]) LeftRecursion {
     val reach = rules.Map((r) => reachable(edges, edges.Get(r.Index), EmptyHashSet[int]()))
     val recursive = rules.Filter((r) => reach.Get(r.Index).Contains(r.Index))
     // A rule's cycle: the rules it reaches that reach it back.
-    val cycleOf = (r RuleIR) => recursive.Filter((s) => reach.Get(r.Index).Contains(s.Index) && reach.Get(s.Index).Contains(r.Index)).Map(_.Index)
+    val cycleOf = (r RuleIR) => recursive
+        .Filter((s) => reach.Get(r.Index).Contains(s.Index) && reach.Get(s.Index).Contains(r.Index))
+        .Map(_.Index)
     val direct = recursive.Filter((r) => cycleOf(r).Size() == 1 && rewritable(r, nullable))
     val cycles = recursive
         .Filter((r) => !direct.Exists((d) => d.Index == r.Index))
@@ -87,5 +89,8 @@ func rewritable(r RuleIR, nullable Array[bool]) bool = r.Alts.ForAll((a) => a.St
 func reachable(edges Array[HashSet[int]], frontier HashSet[int], seen HashSet[int]) HashSet[int] {
     val fresh = frontier.Filter((r) => !seen.Contains(r))
     if (fresh.IsEmpty()) seen
-    else reachable(edges, fresh.ToArray().FoldLeft(EmptyHashSet[int](), (acc, r) => acc.Union(edges.Get(r))), seen.Union(fresh))
+    else {
+        val next = fresh.ToArray().FoldLeft(EmptyHashSet[int](), (acc, r) => acc.Union(edges.Get(r)))
+        reachable(edges, next, seen.Union(fresh))
+    }
 }

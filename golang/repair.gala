@@ -40,7 +40,8 @@ func hasStep(steps Array[atn.Step], p func(atn.Step) bool) bool = steps.Exists((
 // rules: the parser rules, indexed by rule number.
 // r: the entry rule.
 func Repairable(rules Array[atn.RuleIR], r atn.RuleIR) bool {
-    val calls = rules.Map((rule) => rule.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(callees(a.Steps))))
+    val calls = rules.Map((rule) =>
+        rule.Alts.FoldLeft(EmptyHashSet[int](), (acc, a) => acc.Union(callees(a.Steps))))
     EndsWithEOF(rules, r) && !reaches(calls, calls.Get(r.Index), r.Index, EmptyHashSet[int]())
 }
 
