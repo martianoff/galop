@@ -48,7 +48,8 @@ jobs:
       # Bazel's disk cache. setup-bazel's own disk cache keeps the first copy of
       # a key forever, so it went stale; this one gets a fresh key per run,
       # restores the newest copy, and is saved even when the job fails or times
-      # out. Bazel trims it to 2 GB.
+      # out. Bazel trims it to 2 GB. Only pushes to main save it: pull requests
+      # can read only main's caches, and saving 3 GB took minutes of their limit.
       - uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-disk
@@ -69,7 +70,7 @@ jobs:
           git diff --exit-code -- '*.bazel'
 
       - uses: actions/cache/save@v4
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         with:
           path: ~/.cache/bazel-disk
           key: bazel-disk-${{ github.run_id }}
@@ -166,7 +167,7 @@ jobs:
           "./$bin" -check -roundtrip testdata/grammars/*.g4
 
       - uses: actions/cache/save@v4
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         with:
           path: ${{ steps.gocache.outputs.dir }}
           key: gobuild-${{ matrix.os }}-${{ github.run_id }}
