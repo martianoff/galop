@@ -398,9 +398,11 @@ The replay runs only on input with a syntax error, and costs about one more
 pass over the tokens up to the error. Conflicts the repair already checked
 take their recorded LL answer, matched by decision, token and call stack,
 instead of full-context prediction again. On 1,000 rejected mutants, a broken
-file now takes 0.067 ms at the median on the GALA corpus (0.020 ms before the
-replay) and 0.41 ms on the held-out corpus (0.18 ms). Valid input costs the
-same.
+file now takes 0.063 ms at the median on the GALA corpus (0.020 ms before the
+replay) and 0.40 ms on the held-out corpus (0.17 ms). Valid input costs the
+same, also for grammars without runtime prediction: only runtime prediction
+reads the call stack during a parse, so only those grammars keep one, and the
+replay builds its own.
 
 One known exception: ANTLR 4.13.1's Go runtime computes the complement of a
 `~` set wrongly when one of the set's ranges starts at the first token type
