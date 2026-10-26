@@ -23,10 +23,7 @@ gala_library(
 
 gala_test(
     name = "analysis_test",
-    srcs = [
-        "analysis_test.gala",
-        "gala_grammar_test.gala",
-    ],
+    srcs = ["analysis_test.gala"],
     importpath = "github.com/martianoff/galop/analysis",
     lib_srcs = [
         "analysis.gala",
@@ -40,7 +37,7 @@ gala_test(
     deps = [
         "//atn",
         "//brackets",
-        "//g4",
+        "//grammartest",
         "@gala//collection_immutable",
         "@gala//collection_mutable",
         "@gala//concurrent",

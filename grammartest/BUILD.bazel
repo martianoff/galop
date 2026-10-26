@@ -1,0 +1,16 @@
+load("@rules_gala//gala:defs.bzl", "gala_library")
+
+gala_library(
+    name = "grammartest",
+    srcs = [
+        "gala_grammar.gala",
+        "grammartest.gala",
+    ],
+    importpath = "github.com/martianoff/galop/grammartest",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//atn",
+        "//g4",
+        "@gala//go_builtins",
+    ],
+)

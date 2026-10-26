@@ -300,15 +300,21 @@ func BenchmarkParseNativeParallel(b *testing.B) {
 }
 
 // TestNativeTokensWithoutEOF parses token slices a caller cut short of EOF:
-// each gives an error, never a panic, even inside a bracketed group.
+// each gives an error at the last token (or 1:0 when empty), never a panic,
+// even inside a bracketed group.
 func TestNativeTokensWithoutEOF(t *testing.T) {
 	for _, src := range []string{"", "package main\n", "package main\nval x = f((a, b), [c]\n"} {
 		ts := nativegala.Tokens(src)
 		for cut := 0; cut < len(ts.Tokens); cut++ {
 			short := *ts
 			short.Tokens = ts.Tokens[:cut]
-			if _, err := nativegala.ParseSourceFile(&short); err == nil {
-				t.Errorf("%q cut to %d tokens: no error", src, cut)
+			want := "line 1:0 the tokens do not end with EOF"
+			if cut > 0 {
+				last := ts.Tokens[cut-1]
+				want = fmt.Sprintf("line %d:%d the tokens do not end with EOF", last.Line, last.Column)
+			}
+			if _, err := nativegala.ParseSourceFile(&short); err == nil || err.Error() != want {
+				t.Errorf("%q cut to %d tokens: error %v, want %q", src, cut, err, want)
 			}
 		}
 	}

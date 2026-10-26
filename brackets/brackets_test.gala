@@ -2,25 +2,15 @@ package brackets
 
 import (
     . "martianoff/gala/collection_immutable"
-    "martianoff/gala/go_builtins"
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/atn"
-    "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/grammartest"
 )
-
-// parserATN compiles a test grammar that must be valid; a problem panics.
-func parserATN(src string) atn.ATN = g4.Parse(src) match {
-    case Right(g) => atn.Compile(g) match {
-        case Right(c) => c.Parser.Get()
-        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
-    }
-    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
-}
 
 // families renders the bracket families of src: `'(' LP ')'; '[' ']'`.
 func families(src string) string {
-    val a = parserATN(src)
+    val a = grammartest.ParserATN(src)
     renderFamilies(a, Analyze(a).Families)
 }
 
@@ -30,10 +20,18 @@ func renderFamilies(a atn.ATN, fs Array[BracketFamily]) string =
 
 // rejections renders why candidate pairs were left out: `'(' ')': reason`.
 func rejections(src string) string {
-    val a = parserATN(src)
+    val a = grammartest.ParserATN(src)
     Analyze(a).Rejected
         .Map((r) => s"${a.Vocab.Display(r.Opener)} ${a.Vocab.Display(r.Closer)}: ${r.Reason}")
         .Sorted().MkString(" | ")
+}
+
+// The bracket families of gala.g4, and somewhere to go after every closer.
+func TestGalaGrammarBrackets(t T) T {
+    val a = grammartest.ParserATN(grammartest.GalaGrammar)
+    val b = Analyze(a)
+    val t1 = Eq(t, renderFamilies(a, b.Families), "'(' NL_LPAREN ')'; '[' ']'; '{' '}'")
+    IsTrue(t1, b.Sites.NonEmpty() && b.Sites.ForAll(_.After.NonEmpty()))
 }
 
 func TestBracketFamilies(t T) T = RunCases[string, string](t,

@@ -826,11 +826,8 @@ const PFXEdges = PFXMaxTokenType + 2 + PFXOpenerCount
 // PFXBracketMatch pairs the brackets of types into m: m[i] is the index of
 // the closer of the opener at i, or -1. An opener with no well-nested closer
 // (the input is not in the language) is left at -1, and prediction reads it
-// as a token. Without brackets in the grammar m is not read and stays as is.
+// as a token. A parse pairs brackets only when it reads groups (p.group).
 func PFXBracketMatch(types []int32, m []int32) []int32 {
-	if PFXOpenerCount == 0 {
-		return m
-	}
 	m = slices.Grow(m[:0], len(types))[:len(types)]
 	var open []int32
 	for i, t := range types {

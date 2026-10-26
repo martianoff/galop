@@ -12,10 +12,11 @@ import (
 // plan for every decision of the parser ATN a. Decisions are independent and
 // are analyzed concurrently; the plans come back in decision order.
 // a: a parser ATN from atn.Compile.
-// maxK: the deepest static lookahead to try before a decision is left to adaptive prediction.
 // bracketsOff: why runtime prediction must not read bracketed groups as one
-// symbol, if it must not (see BracketsOff).
-func Analyze(a atn.ATN, maxK int = MaxK, bracketsOff Option[string] = None[string]()) Analysis {
+// symbol, if it must not (repair.BracketsOff decides). It is required, so a
+// caller cannot forget it: the code generated from the analysis relies on it.
+// maxK: the deepest static lookahead to try before a decision is left to adaptive prediction.
+func Analyze(a atn.ATN, bracketsOff Option[string], maxK int = MaxK) Analysis {
     val sites = callSites(a)
     val starts = startRules(a, sites)
     val (first, nullable) = firstSets(a)
@@ -31,13 +32,3 @@ func Analyze(a atn.ATN, maxK int = MaxK, bracketsOff Option[string] = None[strin
     }
     Analysis(plans, first, follow, nullable, bracketing)
 }
-
-// BracketsOff says why the parser of rules must predict over tokens only, if
-// it must: -Xno-brackets (noBrackets), or grammar code. A first pass over
-// bracketed groups that fails is repaired over tokens, and a grammar with
-// actions or predicates is never repaired: a failed pass would run its actions
-// once more than ANTLR does.
-func BracketsOff(rules Array[atn.RuleIR], noBrackets bool) Option[string] =
-    if (noBrackets) Some("disabled by -Xno-brackets")
-    else if (atn.RunsCode(rules)) Some("the grammar has actions or predicates, so a failed first pass is not repaired")
-    else None()

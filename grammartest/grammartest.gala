@@ -1,0 +1,28 @@
+// Package grammartest holds what the packages' tests share: compiling a test
+// grammar, and gala.g4 itself.
+package grammartest
+
+import (
+    "martianoff/gala/go_builtins"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+)
+
+// Compile reads and compiles a test grammar that must be valid; a problem
+// panics.
+// src: the grammar's text.
+func Compile(src string) Tuple[g4.Grammar, atn.Compiled] = g4.Parse(src) match {
+    case Right(g) => atn.Compile(g) match {
+        case Right(c) => (g, c)
+        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+}
+
+// ParserATN is the parser ATN of a valid test grammar with parser rules.
+// src: the grammar's text.
+func ParserATN(src string) atn.ATN = Compile(src).V2.Parser match {
+    case Some(p) => p
+    case None() => go_builtins.Panic("no parser rules")
+}

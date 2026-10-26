@@ -11,6 +11,7 @@ import (
     "github.com/martianoff/galop/g4"
     "github.com/martianoff/galop/leftrec"
     "github.com/martianoff/galop/lexgen"
+    "github.com/martianoff/galop/repair"
 )
 
 // goTarget generates Go; Version is stamped into generated files.
@@ -138,7 +139,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 brackets = an.Brackets,
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
-                repair = GrammarRepairable(compiled.Rules, lr),
+                repair = repair.GrammarRepairable(compiled.Rules, lr),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"

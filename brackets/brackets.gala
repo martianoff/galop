@@ -68,10 +68,13 @@ func Analyze(a atn.ATN) Brackets {
     val candidates = (c int) => byCloser.Get(c).GetOrElse(EmptyArray[int]())
     val first = closers.Map((c) => g.largestBalanced(c, candidates(c)))
     val (owner, shared) = g.ownCloser(first.Collect((r) => r.V1))
-    // A family that lost an opener to another closer is checked again.
+    // A family that lost an opener to another closer is checked again. The
+    // openers a closer owns are some of its first family's, so it lost one
+    // exactly when it owns fewer.
     val second = closers.ZipWithIndex().Map((p) => {
         val owned = candidates(p.V1).Filter((o) => owner.Get(o).Exists(_ == p.V1))
-        if (owned.Size() == candidates(p.V1).Size()) first.Get(p.V2) else g.largestBalanced(p.V1, owned)
+        val had = first.Get(p.V2).V1.Map(_.Openers.Values().Size()).GetOrElse(0)
+        if (owned.Size() == had) first.Get(p.V2) else g.largestBalanced(p.V1, owned)
     })
     val (kept, dropped) = g.keepBalanced(second.Collect((r) => r.V1))
     val droppedRejections = dropped.FlatMap((d) =>

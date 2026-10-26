@@ -41,8 +41,11 @@ genrule(
 )
 
 # The same parser generated with -Xno-brackets, so prediction reads tokens
-# only, with its names renamed from galaGalop to galaGalopTok to live next to
-# it. The mutation tests compare the two on trees and first errors.
+# only. The mutation tests compare the two on trees and first errors. It must
+# live in this package, next to the ANTLR context types it builds, so its names
+# are renamed from galaGalop to galaGalopTok: galop has no option for the name
+# prefix (it derives it from the grammar name, which also names ANTLR's types),
+# and every top-level name in the generated parser starts with that prefix.
 genrule(
     name = "galop_tokens_go",
     srcs = [

@@ -11,6 +11,9 @@ import (
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/grammartest"
+    "github.com/martianoff/galop/leftrec"
+    "github.com/martianoff/galop/repair"
 )
 
 val exprGrammar = `grammar Expr;
@@ -26,15 +29,12 @@ WS : [ \t\r\n]+ -> skip ;
 `
 
 // generate runs the Go target on a test grammar that must be valid.
-func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], Array[codegen.OutputFile]] = g4.Parse(src) match {
-    case Right(g) => atn.Compile(g) match {
-        case Right(c) => Target("test").Generate(
-            codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, analysis.MaxK, analysis.BracketsOff(c.Rules, false)))),
-            codegen.Options(Package = "expr", Defines = defines),
-        )
-        case Left(errs) => go_builtins.Panic(s"compile: ${errs.MkString("; ")}")
-    }
-    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], Array[codegen.OutputFile]] {
+    val (g, c) = grammartest.Compile(src)
+    Target("test").Generate(
+        codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, repair.BracketsOff(c.Rules, leftrec.FindLeftRecursion(g, c), false)))),
+        codegen.Options(Package = "expr", Defines = defines),
+    )
 }
 
 // antlrDefines selects the antlr flavor; tests without it get the default, native.
@@ -288,7 +288,7 @@ func TestBracketsAreAbstracted(t T) T {
     // Telling a from b needs the whole nest of parentheses: the runtime
     // predicts it over the brackets read as one symbol.
     val code = parserOf(generate(`grammar A;
-s : a | b ;
+s : (a | b) EOF ;
 a : '(' a ')' | X ;
 b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;
@@ -304,7 +304,7 @@ X : 'x' ; Y : 'y' ;
 
 func TestNativeFlavorMatchesBrackets(t T) T {
     val code = parserOf(generate(`grammar A;
-s : a | b ;
+s : (a | b) EOF ;
 a : '(' a ')' | X ;
 b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;
@@ -316,7 +316,7 @@ func TestTokenTypesAboveTheVocabularyAreRejected(t T) T {
     // A token stream from another lexer can carry types past this grammar's;
     // prediction and bracket pairing must not index their tables with them.
     val code = parserOf(generate(`grammar A;
-s : a | b ;
+s : (a | b) EOF ;
 a : '(' a ')' | X ;
 b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;

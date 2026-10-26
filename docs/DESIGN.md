@@ -23,6 +23,7 @@ flowchart LR
 | `atn` | Token numbering (ANTLR-compatible), the ATN, the parser rule IR |
 | `analysis` | FIRST/FOLLOW, static LL(k) per decision, adaptive decisions, conflict report |
 | `brackets` | Bracket pairs runtime prediction may read as one symbol (see [Bracket abstraction](#bracket-abstraction)) |
+| `repair` | Where a failed SLL parse may be repaired, and so where groups may be read |
 | `lexgen` | Lexer ATN → DFA with ANTLR's lexer semantics |
 | `codegen` | The `Target` interface; `cmd/galop` lists the targets a binary ships |
 | `golang` | The Go target |
@@ -142,8 +143,9 @@ the whole argument list, and every nesting deepens the SLL contexts, so the SLL
 DFA has no end and a corpus builds tens of thousands of states. Runtime
 prediction therefore reads the input with every bracketed group as one symbol:
 a configuration about to consume an opening bracket jumps straight to the state
-after the matching closing bracket in the same rule alternative. Brackets are
-paired once per parse, by a stack over the token types (`PFXBracketMatch`);
+after the matching closing bracket in the same rule alternative. A parse that
+reads groups pairs the brackets once, by a stack over the token types
+(`PFXBracketMatch`);
 an opener without a well-nested closer, which only input outside the language
 has, is read as a plain token.
 
@@ -210,8 +212,10 @@ parse reads bracketed groups only where it may be repaired: its entry rule ends
 with EOF (a rule that can stop early could take a smaller alternative that
 ends it sooner), and the grammar has no predicates, no left recursion and no
 actions run while parsing (an extra pass would run an action once more than
-ANTLR does). Other entries predict over tokens, as without brackets; a grammar
-that is never repaired gets no bracket tables at all.
+ANTLR does). Other entries predict over tokens, as without brackets, and pair
+no brackets. A grammar that is never repaired, or none of whose entry rules
+is, gets no bracket tables at all: `repair.BracketsOff` decides that once, and
+`-report` and code generation both follow it.
 
 ### SLL automata
 

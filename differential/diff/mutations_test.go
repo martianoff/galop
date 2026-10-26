@@ -82,7 +82,7 @@ func TestMutations(t *testing.T) {
 		name  string
 		parse func(src string, rerun bool) (tree, where string, err error)
 		// tokens parses with the parser generated with -Xno-brackets.
-		tokens func(src string) (tree, where string, err error)
+		tokens func(src string) (tree string, err error)
 	}{
 		{"native", func(src string, rerun bool) (string, string, error) {
 			parse := nativegala.Parse
@@ -90,8 +90,9 @@ func TestMutations(t *testing.T) {
 				parse = nativegala.ParseByRerun
 			}
 			return nativeResult(parse(src))
-		}, func(src string) (string, string, error) {
-			return nativeResult(nativetokens.Parse(src))
+		}, func(src string) (string, error) {
+			tree, _, err := nativeResult(nativetokens.Parse(src))
+			return tree, err
 		}},
 		{"antlr flavor", func(src string, rerun bool) (string, string, error) {
 			if rerun {
@@ -100,8 +101,9 @@ func TestMutations(t *testing.T) {
 			return antlrFlavor(src, func(s antlr.TokenStream) (antlr.ParserRuleContext, error) {
 				return antlrgala.NewgalaGalopParser(s).SourceFile()
 			})
-		}, func(src string) (string, string, error) {
-			return antlrFlavor(src, antlrgala.ParseGalopTokens)
+		}, func(src string) (string, error) {
+			tree, _, err := antlrFlavor(src, antlrgala.ParseGalopTokens)
+			return tree, err
 		}},
 	}
 	r := rand.New(rand.NewSource(*mutantSeed))
@@ -114,11 +116,13 @@ func TestMutations(t *testing.T) {
 		}
 		for _, f := range flavors {
 			got, where, err := f.parse(src, false)
-			ref, refWhere, refErr := f.tokens(src)
+			// The error must match. Where the antlr flavor leaves its token stream
+			// need not: it depends on which passes ran before the error.
+			ref, refErr := f.tokens(src)
 			switch {
-			case (err == nil) != (refErr == nil) || where != refWhere:
+			case (err == nil) != (refErr == nil) || err != nil && err.Error() != refErr.Error():
 				differ++
-				t.Errorf("mutant %d: %s with brackets error=%s, without error=%s\n%s", i, f.name, where, refWhere, src)
+				t.Errorf("mutant %d: %s with brackets error=%v, without error=%v\n%s", i, f.name, err, refErr, src)
 			case err == nil && got != ref:
 				differ++
 				t.Errorf("mutant %d: %s trees differ with and without brackets\n%s", i, f.name, firstDifference(ref, got))

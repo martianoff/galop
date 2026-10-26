@@ -18,7 +18,7 @@ struct Input(
     Grammar g4.Grammar,
     Compiled atn.Compiled,
     // Analysis is None for a grammar without parser rules. It reads brackets
-    // only as analysis.BracketsOff allows, which targets rely on.
+    // only as repair.BracketsOff allows, which targets rely on.
     Analysis Option[analysis.Analysis],
 )
 

@@ -382,7 +382,7 @@ func TestReportSkipsBracketsWithActions(t T) T {
     // reading groups: the report says so, as the generated parser does.
     val m = newMemory(("A.g4", "grammar A;\ns : a EOF | b EOF ;\na : '(' a ')' | X {count++} ;\nb : '(' b ')' | Y ;\nX : 'x' ; Y : 'y' ;\n"))
     val out = run(m, ArrayOf(fakeGo), "-report A.g4").Stdout
-    Contains(t, out, "Bracket abstraction: skipped (the grammar has actions or predicates, so a failed first pass is not repaired)")
+    Contains(t, out, "Bracket abstraction: skipped (the grammar has actions, predicates or left recursion, so it is never repaired)")
 }
 
 func TestCannotWriteFile(t T) T {

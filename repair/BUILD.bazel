@@ -1,0 +1,27 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "repair",
+    srcs = ["repair.gala"],
+    importpath = "github.com/martianoff/galop/repair",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//atn",
+        "//leftrec",
+        "@gala//collection_immutable",
+    ],
+)
+
+gala_test(
+    name = "repair_test",
+    srcs = ["repair_test.gala"],
+    importpath = "github.com/martianoff/galop/repair",
+    lib_srcs = ["repair.gala"],
+    pkg = "repair",
+    deps = [
+        "//atn",
+        "//grammartest",
+        "//leftrec",
+        "@gala//collection_immutable",
+    ],
+)
