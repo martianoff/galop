@@ -119,7 +119,7 @@ func tokenAssertions(e env) string {
 // predictorFields are the parser's fields for runtime prediction: pairs are
 // the input's bracket pairs, and group says prediction reads bracketed groups.
 func predictorFields(e env) string =
-    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllRun int"
+    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool"
 
 // retryCode handles a failed SLL parse, whose result is in variable root.
 // With runtime prediction the parse runs in SLL mode first, as GALA does with

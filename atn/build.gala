@@ -249,7 +249,7 @@ func (b Ptr[builder]) compileElement(rule int, e g4.Element, label Option[LabelR
         case None() => b.empty(rule, diag.ImplicitStringDefinition.New(s"'$v'"))
     }
     case g4.Block(alts) => b.setOf(e) match {
-        case Some(set) => b.matchSet(rule, set, label, true)
+        case Some(set) => b.matchSet(rule, set, label, true, alts.Size() > 1)
         case None() if label.IsDefined() => b.empty(rule, diag.LabelBlockNotASet.New(label.Get().Name))
         case None() => b.block(rule, alts)
     }
@@ -391,21 +391,21 @@ func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Pi
     Piece(Frag(from, follow), ArrayOf(CallRule(target, follow, label)))
 }
 
-// matchSet compiles a one-symbol match; a one-member set becomes an atom,
-// except a parser's `~` set or wildcard (see below).
-// listed says whether the set lists its members as alternatives, `(A | B)`,
-// rather than `~A` or `.`.
-func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef], listed bool) Piece {
+// matchSet compiles a one-symbol match. listed says whether the set lists its
+// members as alternatives, `(A | B)`, rather than `~A` or `.`; alternatives says
+// the element had two or more of them. A one-member set becomes an atom unless
+// ANTLR's generated code matches it as a set: in a parser, a `~` set, a
+// wildcard, or a block of several alternatives that name one token. A set
+// match is followed by no error check there, which the error replay follows.
+func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef], listed bool, alternatives bool = false) Piece {
     if set.IsEmpty() {
         return b.empty(rule, b.emptySetProblem())
     }
     val from = b.state(rule, BasicState())
     val to = b.state(rule, BasicState())
-    val single = set.Size() == 1
-    // In a parser, a `~` set or a wildcard stays a set even with one member: ANTLR's
-    // generated code matches it as a set, which the error replay follows.
-    if (single && (listed || b.lexer)) b.edge(from, Atom(to, set.Min().Get())) else b.edge(from, SetMatch(to, set))
-    val step = if (single) MatchToken(set.Min().Get(), label) else MatchSet(set, label, listed)
+    val atom = set.Size() == 1 && (b.lexer || (listed && !alternatives))
+    if (atom) b.edge(from, Atom(to, set.Min().Get())) else b.edge(from, SetMatch(to, set))
+    val step = if (atom) MatchToken(set.Min().Get(), label) else MatchSet(set, label, listed)
     Piece(Frag(from, to), ArrayOf(step))
 }
 

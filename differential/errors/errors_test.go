@@ -25,6 +25,7 @@ fn main(a: int, b: list[int]) {
 	pair a + 1 - b + ;
 	each x (y) do { }
 	skip a, b, until c;
+	mark end z;
 }
 type point { x int; y *int; }
 type alias = list[*point]
@@ -39,7 +40,7 @@ fn g(x: t) { loop ; end ; g(x); }`,
 // insertions are text the test puts between tokens.
 var insertions = []string{
 	"let", "fn", "type", "=", ";", "(", ")", "{", "}", "[", "]", ",", ":", "*", "-", "!", "#",
-	"return", "if", "else", "loop", "end", "pair", "each", "do", "skip", "until",
+	"return", "if", "else", "loop", "end", "pair", "each", "do", "skip", "until", "mark",
 	"x", "1", `"s"`, "true", "==", "// c\n",
 }
 
@@ -160,15 +161,26 @@ func TestEntryRuleWithoutEOF(t *testing.T) {
 }
 
 // TestTokenTypeOutsideTheVocabulary feeds the native parser token types no
-// rule matches, which a program may set before parsing: the error replay
-// reports a syntax error at that token instead of failing.
+// rule matches, which a program may set before parsing. The error replay
+// reports ANTLR's mismatch at that token, and an empty token shows its type
+// as ANTLR's GetTokenErrorDisplay does.
 func TestTokenTypeOutsideTheVocabulary(t *testing.T) {
-	for _, typ := range []int32{99, -5, 0} {
+	for _, c := range []struct {
+		typ   int32
+		empty bool
+		want  string
+	}{
+		{99, false, `line 1:6 mismatched input '=' expecting {'=', ';'}`},
+		{-5, false, `line 1:6 mismatched input '=' expecting {'=', ';'}`},
+		{99, true, `line 1:6 mismatched input '<99>' expecting {'=', ';'}`},
+	} {
 		ts := en.ErrorsLex("let x = 1;")
-		ts.Tokens[2].Type = typ
-		_, err := en.ParseProg(ts)
-		if err == nil || !strings.HasPrefix(err.Error(), "line 1:6 ") {
-			t.Errorf("token type %d: got %v, want a syntax error at 1:6", typ, err)
+		ts.Tokens[2].Type = c.typ
+		if c.empty {
+			ts.Tokens[2].End = ts.Tokens[2].Start
+		}
+		if _, err := en.ParseProg(ts); text(err) != c.want {
+			t.Errorf("token type %d (empty %v):\n got  %s\n want %s", c.typ, c.empty, text(err), c.want)
 		}
 	}
 }

@@ -1,9 +1,10 @@
 // A grammar whose decisions galop settles without runtime prediction, with
 // the constructs ANTLR's error strategy treats differently: rule-level token
 // sets, set matches, optional blocks, `*` and `+` loops with one or several
-// alternatives or a block first, non-greedy loops, nullable rules, labels,
-// wildcards and comments on a hidden channel. errors_test.go checks galop's
-// syntax errors against ANTLR's on mutations of a few programs.
+// alternatives or a block first, non-greedy loops, a block of alternatives that
+// name one token, nullable rules, labels, wildcards and comments on a hidden
+// channel. errors_test.go checks galop's syntax errors against ANTLR's on
+// mutations of a few programs.
 grammar Errors;
 
 prog : decl* EOF ;
@@ -26,6 +27,7 @@ stmt : 'return' expr? ';'
      | 'pair' ((name | INT) ('+' | '-'))+ ';'
      | 'each' (name | '(' expr ')')+? 'do' block
      | 'skip' (name ',')*? 'until' name ';'
+     | 'mark' ('end' | 'end') name ';'
      | ';'
      ;
 expr : unary (op unary)* ;

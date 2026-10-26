@@ -99,11 +99,7 @@ func (p *PARSER) antlrError(start int32, err error) error {
 	p.ll, p.group = true, false
 	// Conflicts the repair checked need no full-context prediction again.
 	if len(p.rp.recs) > 0 {
-		p.rp.byPos = make(map[uint64][]int32, len(p.rp.recs))
-		for i, c := range p.rp.recs {
-			k := uint64(c.pos)<<32 | uint64(c.d)
-			p.rp.byPos[k] = append(p.rp.byPos[k], int32(i))
-		}
+		p.rp.indexRecs()
 		defer func() { p.rp.byPos = nil }()
 	}
 	e := PFXEmu{p: p}
@@ -286,6 +282,13 @@ func (e *PFXEmu) run(s int32) *PFXEmuError {
 func (e *PFXEmu) decide(d int, s int32, fromBack bool) (int, *PFXEmuError) {
 	pos := e.p.pos
 	ll1 := PFXDecisionLL1[d]
+	// A token an alternative accepts passes Sync too: an LL(1) answer with no
+	// error pending needs no Sync.
+	if ll1 && e.pending == nil {
+		if alt := e.ll1Alt(d); alt > 0 {
+			return alt, nil
+		}
+	}
 	var err *PFXEmuError
 	switch PFXDecisionKind[d] {
 	case PFXDecisionAlt:
@@ -321,7 +324,8 @@ func (e *PFXEmu) decide(d int, s int32, fromBack bool) (int, *PFXEmuError) {
 // error.
 func (e *PFXEmu) predict(d int) (int, *PFXEmuError) {
 	p := e.p
-	pos, before := p.pos, p.llRun
+	pos := p.pos
+	p.llBad = false
 	alt, ok := func() (alt int, ok bool) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -337,7 +341,7 @@ func (e *PFXEmu) predict(d int) (int, *PFXEmuError) {
 	if !ok {
 		// A failed full-context stage rewinds the input before ANTLR builds
 		// its error, so the error is at the decision's first token.
-		if p.llRun != before {
+		if p.llBad {
 			return 0, e.noViable(pos, pos)
 		}
 		off, fallback := e.sllFailure(d)

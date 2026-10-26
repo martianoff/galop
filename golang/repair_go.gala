@@ -70,6 +70,15 @@ type PFXRepair struct {
 	byPos map[uint64][]int32
 }
 
+// indexRecs indexes recs by decision and token for knownAt.
+func (r *PFXRepair) indexRecs() {
+	r.byPos = make(map[uint64][]int32, len(r.recs))
+	for i, c := range r.recs {
+		k := uint64(c.pos)<<32 | uint64(c.d)
+		r.byPos[k] = append(r.byPos[k], int32(i))
+	}
+}
+
 // knownAt is the LL answer a repair recorded for decision d at token pos with
 // call stack stack, or 0.
 func (r *PFXRepair) knownAt(d, pos int, stack []int32) int {
@@ -274,6 +283,7 @@ func (p *PARSER) predictLLUncached(d int) int {
 		t := p.la(offset + 1)
 		switch alt := pr.stepLL(cur, t, intermediate, next); {
 		case alt < 0:
+			p.llBad = true
 			p.noViableAlt(d)
 		case alt > 0:
 			return int(alt)
@@ -389,7 +399,6 @@ func (g *PFXFullCache) next(from *PFXDFAState, t int32) *PFXDFAState {
 // current token, with the parser's call stack as the outer context, through
 // the cache when it can.
 func (p *PARSER) predictLL(d int) int {
-	p.llRun++
 	key := binary.LittleEndian.AppendUint32(p.llKey[:0], uint32(d))
 	for _, ret := range p.stack {
 		key = binary.LittleEndian.AppendUint32(key, uint32(ret))
@@ -409,6 +418,7 @@ func (p *PARSER) predictLL(d int) int {
 		}
 		switch {
 		case next == PFXDFAError:
+			p.llBad = true
 			p.noViableAlt(d)
 		case next.alt > 0:
 			return int(next.alt)

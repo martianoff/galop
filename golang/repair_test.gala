@@ -103,7 +103,7 @@ func TestErrorReplayInBothFlavors(t T) T {
         "var AGalopDecisionLL1 = []bool{",
         "var AGalopTokenDisplay = []string{",
         "\"<INVALID>\", \"'('\", \"')'\", \"'x'\", \"'y'\",",
-        "\tllRun int",
+        "\tllBad bool",
     )
     val t1 = shared.FoldLeft(t, (acc, s) => IsTrue(IsTrue(acc, strings.Contains(native, s)), strings.Contains(antlr, s)))
     val t2 = IsTrue(t1, strings.Contains(native, "return &ASyntaxError{Line: int(t.Line), Column: int(t.Column), Msg: msg}"))
