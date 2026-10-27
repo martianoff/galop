@@ -39,7 +39,7 @@ jobs:
   bazel:
     name: bazel test
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 30 }}
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 45 }}
     steps:
       - uses: actions/checkout@v5
 
@@ -61,13 +61,15 @@ jobs:
           restore-keys: bazel-disk-
 
       - name: Build and test
-        timeout-minutes: ${{ github.event_name == 'pull_request' && 8 || 25 }}
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 8 || 38 }}
         run: |
           echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
-          # Go compiles of galop packages peak at 7-9 GB at the default GOGC
-          # (gala#872), and two at once can exhaust the runner. GOGC=25, as in
-          # the gala test lane, keeps each compile near 4 GB.
-          bazel test //... --jobs=2 --action_env=GOGC=25
+          # Go compiles of the largest packages (analysis, golang) peak at 7-9 GB
+          # each (gala#872), and two at once exhaust the runner, which then kills
+          # Bazel. rules_go doesn't pass --action_env or GOGC to its compiles,
+          # so build those packages and their tests one action at a time first.
+          bazel build //analysis:all //golang:all --jobs=1
+          bazel test //... --jobs=2
 
       # BUILD files are generated; a stale one means someone added or removed a
       # .gala file without running gazelle.
