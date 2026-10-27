@@ -300,7 +300,7 @@ prediction, by ruling alternatives out and guessing the smallest left:
 
 Both kinds of automaton are built ahead of time by an abstract simulation of
 the ATN: each bracketed group is one symbol, as runtime prediction reads it,
-and the call stack keeps its top 3 return states (1 for a scan); a rule end
+and the call stack keeps up to 64 return states (1 for a scan); a rule end
 with the frames below dropped continues after every call of the rule. Every
 path of the parser has a path in the simulation, so what an automaton rules out
 is ruled out for the parser, and the guesses stay exact. The tables are static
@@ -327,8 +327,8 @@ more than the first; a file it does not settle costs at most about 5 passes
 more than before (the search and the first pass again), then what it cost
 before. An early wrong guess behind more than 16 later guess points is
 therefore not reached by the search, but by what follows it. On the GALA corpus
-the search settles 28 of the 33 valid files whose first pass fails, and on the
-held-out corpus all 8; on invalid single-token mutants of both corpora, a
+the search settles 30 of the 35 valid files whose first pass fails, and on the
+held-out corpus all 9; on invalid single-token mutants of both corpora, a
 broken file takes on average 0.1 to 0.3 ms and at most about 2.6 ms longer than
 without the search.
 

@@ -62,10 +62,13 @@ val scanStateLimit = 2048
 val guessStateLimit = 16
 
 // scanStackDepth and guessStackDepth are how many return states the engine
-// keeps (see engine): deeper stacks are more precise, and cost states.
+// keeps (see engine): deeper stacks are more precise, and cost states. A
+// decision's automaton keeps as many as the analysis's SLL automata do: an
+// expression in a grammar like GALA's is a chain of a dozen rules, and a
+// shallower stack forgets, inside one expression, the statement it is in.
 val scanStackDepth = 1
 
-val guessStackDepth = 3
+val guessStackDepth = 64
 
 // PlanFor plans the runtime decisions of parser a (rule IR rules, analysis
 // plans, bracket families b): go-on-or-stop decisions guess (GoOn); the
