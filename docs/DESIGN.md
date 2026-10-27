@@ -393,8 +393,10 @@ is, gets no bracket families at all: its `repair.Plan` decides that once, and
 
 ### Reporting syntax errors as ANTLR does
 
-A failed parse reports the first syntax error ANTLR 4.13.1's Go runtime
-reports for the same tokens: the same message and the same position. That error
+A failed parse reports the same first syntax error as ANTLR 4.13.1's Go runtime
+parsing the same tokens in a fresh process: the same message and the same
+position. (ANTLR's error text can depend on what the same process parsed
+earlier, because its prediction cache is shared; see below.) That error
 depends on more than the token where the input stops making sense:
 
 - **The shape ANTLR generates for each decision.** Where the alternatives'
@@ -436,7 +438,20 @@ on its own context pool. As in ANTLR, "has left the rule" is a flag on a
 configuration, not on one of its paths: two configurations with the same state
 and alternative merge, and so do their flags, so a configuration that only got
 back into the rule through a later statement can mark the one that never
-left it, and what that one reaches. The generator emits the
+left it, and what that one reaches. The flags also depend on what ANTLR's DFA
+already holds. ANTLR keeps each state SLL prediction builds and reuses it for any
+later set with the same configurations in the same order. That equality ignores
+the flags, so the reused state keeps the flags it was built with, and so does
+everything reached from it. The simulation therefore first rebuilds the states
+that earlier predictions of the same decision in this parse built, in order,
+and gives a set equal to one of them that state's flags. Equality depends on the
+order of the configurations, so the simulation builds each set in ANTLR's order.
+It merges what a token reaches before the closure, follows a context's return
+states last first, and sets `dipsIntoOuterContext` as ANTLR's `Add` does.
+galop's ATN is not ANTLR's state for state, though, so now and then two sets
+that ANTLR keeps apart look equal to the simulation. Compared with ANTLR's own
+DFA on 2,500 rejected mutants, 1,907 of the 1,910 predictions the simulation
+rebuilt built and reused the same states as ANTLR. The generator emits the
 sets the replay reads: each state's next tokens within its rule, and ANTLR's
 lookahead per decision alternative (`analysis.NextTokens`,
 `analysis.DecisionLookahead`). It also emits the kinds of states and decisions,
@@ -449,12 +464,24 @@ grammars with runtime prediction parse again after a failed SLL pass.
 The replay runs only on input with a syntax error, and costs about one more
 pass over the tokens up to the error. Conflicts the repair already checked
 take their recorded LL answer, matched by decision, token and call stack,
-instead of full-context prediction again. On 1,000 rejected mutants, a broken
-file now takes 0.063 ms at the median on the GALA corpus (0.020 ms before the
-replay) and 0.40 ms on the held-out corpus (0.17 ms). Valid input costs the
+instead of full-context prediction again. A failed prediction also rebuilds
+the DFA states of the decision's earlier predictions. Like ANTLR's DFA, the
+rebuilt states keep their edges, so a walk computes only edges it has not
+seen. On 1,500 rejected mutants of the GALA corpus, a broken file takes
+0.10 ms at the median and 6 ms at most; on 1,000 of the held-out corpus,
+0.70 ms and 17 ms (warm). Without the rebuild it was 0.08 and 3.5 ms, and 0.55
+and 9 ms. Valid input costs the
 same, also for grammars without runtime prediction: only runtime prediction
 reads the call stack during a parse, so only those grammars keep one, and the
 replay builds its own.
+
+ANTLR's DFA also outlives a parse, so after earlier parses in the same process
+its first error for the same input can differ. No parser can reproduce that from
+the input alone. galop matches ANTLR in a fresh process, whose DFA is empty when
+the parse starts, and the differential tests compare against that
+(`gala.FirstSyntaxError`). The replay also assumes that ANTLR's SLL pass
+predicted what the replay predicts before the error. That holds unless the SLL
+pass took another alternative at a conflict before the error.
 
 One known exception: ANTLR 4.13.1's Go runtime computes the complement of a
 `~` set wrongly when one of the set's ranges starts at the first token type
@@ -561,7 +588,8 @@ tool rejects any other with error 508 before generating. The Go target has two
 Both flavors run the same decision functions and runtime predictor (SLL first,
 LL from the start on a syntax error), so they choose the same alternatives.
 Neither recovers from a syntax error yet: a parse stops at the first one and
-reports the error ANTLR reports first, with its message, line and column (see
+reports the same first error as ANTLR in a fresh process, with its message,
+line and column (see
 "Reporting syntax errors as ANTLR does"). The replay reads the tokens alone,
 so bracket abstraction does not change the error.
 

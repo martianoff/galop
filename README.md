@@ -46,8 +46,10 @@ large files where its fast pass fails and it parses the whole file again in its
 slow mode; galop fixes such a pass in place (see [design](docs/DESIGN.md#runtime-prediction)).
 
 On more than 60,000 broken files from both corpora, galop's first syntax error
-matches ANTLR's message, line and column every time; ANTLR's own `~set` bug is
-the one known exception (see [design](docs/DESIGN.md#reporting-syntax-errors-as-antlr-does)).
+has the same message, line and column as ANTLR's when ANTLR parses that input in
+a fresh process. (ANTLR's error text can depend on what the same process parsed
+earlier, because its prediction cache is shared.) ANTLR's own `~set` bug is the
+one known exception (see [design](docs/DESIGN.md#reporting-syntax-errors-as-antlr-does)).
 
 ## Why
 
@@ -200,8 +202,10 @@ for _, st := range prog.AllStat() {  // ANTLR's accessors, on typed handles
 ```
 
 Both flavors decide exactly as ANTLR does and give the same tokens and trees.
-On input with a syntax error, both report the error ANTLR reports first, with
-the same message, line and column. Neither recovers from syntax errors yet: a
+On input with a syntax error, both report the same first error as ANTLR
+parsing that input in a fresh process, with the same message, line and column.
+(ANTLR's error text can depend on what the same process parsed earlier, because
+its prediction cache is shared.) Neither recovers from syntax errors yet: a
 parse stops at that first error.
 
 ### Bazel

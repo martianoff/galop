@@ -67,8 +67,8 @@ contexts ports by changing imports.
 
 **Lexer.** Generated (regex → DFA, longest match, rule priority).
 
-**Errors.** A failed parse reports the first syntax error ANTLR reports, with the same
-message and position; the expected-token sets come out of the analysis. Until generated
+**Errors.** A failed parse reports the same first syntax error as ANTLR parsing that
+input in a fresh process, with the same message and position; the expected-token sets come out of the analysis. Until generated
 error recovery is good enough for editor use, a consumer that needs every error can fall
 back to ANTLR on a syntax error.
 

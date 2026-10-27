@@ -605,12 +605,12 @@ func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, group bool, interm
 	return 0
 }
 
-// subsets computes ANTLR's conflicting alternative subsets of set (its
-// configurations grouped by state and context). It returns the lowest
+// subsets computes ANTLR's conflicting alternative subsets of list, a set's
+// configurations (grouped by state and context). It returns the lowest
 // alternative common to all subsets' minimums (0 if they differ), sets
 // pr.multi when some subset has more than one alternative, and reports
 // whether some state is associated with exactly one alternative.
-func (pr *PFXPredictor) subsets(set *PFXConfigSet) (single int32, stateWithOneAlt bool) {
+func (pr *PFXPredictor) subsets(list []PFXConfig) (single int32, stateWithOneAlt bool) {
 	// A configuration set holds one configuration per (state, alt), so two
 	// configurations in the same (state, ctx) group always differ in alt.
 	pr.groups.reset()
@@ -619,7 +619,7 @@ func (pr *PFXPredictor) subsets(set *PFXConfigSet) (single int32, stateWithOneAl
 	pr.stateAlt = pr.stateAlt[:0]
 	pr.stateMulti = pr.stateMulti[:0]
 	pr.multi = false
-	for _, c := range set.list {
+	for _, c := range list {
 		g, isNew := pr.groups.put(uint64(uint32(c.state))<<32|uint64(uint32(c.ctx)), int32(len(pr.groupMin)))
 		if isNew {
 			pr.groupMin = append(pr.groupMin, c.alt)
@@ -649,6 +649,14 @@ func (pr *PFXPredictor) subsets(set *PFXConfigSet) (single int32, stateWithOneAl
 		}
 	}
 	return single, stateWithOneAlt
+}
+
+// conflict reports whether SLL prediction stops at list, a set with more than
+// one alternative: every configuration is at a rule's end, or the
+// alternatives conflict (ANTLR's hasSLLConflictTerminatingPrediction).
+func (pr *PFXPredictor) conflict(list []PFXConfig) bool {
+	_, oneAlt := pr.subsets(list)
+	return PFXAllInStop(list) || (pr.multi && !oneAlt)
 }
 
 func PFXAllInStop(list []PFXConfig) bool {
@@ -772,7 +780,7 @@ func PFXDFANext(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAS
 		st = PFXDFAError
 	} else if alt := PFXUniqueAlt(next.list); alt != 0 {
 		st = &PFXDFAState{alt: alt}
-	} else if _, oneAlt := pr.subsets(next); PFXAllInStop(next.list) || (pr.multi && !oneAlt) {
+	} else if pr.conflict(next.list) {
 		// An SLL conflict: ANTLR's SLL answer is the lowest conflicting alternative.
 		low := next.list[0].alt
 		var alts uint64

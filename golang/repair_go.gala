@@ -276,7 +276,7 @@ func (pr *PFXPredictor) stepLL(cur *PFXConfigSet, t int32, intermediate, next *P
 	if alt := PFXUniqueAlt(next.list); alt != 0 {
 		return alt
 	}
-	alt, _ := pr.subsets(next)
+	alt, _ := pr.subsets(next.list)
 	return alt
 }
 

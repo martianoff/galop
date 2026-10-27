@@ -13,6 +13,22 @@ import (
 
 var errorMutants = flag.Int("error_mutants", 200, "TestSyntaxErrors: how many rejected mutants to check")
 
+// flavors are galop's parsers, each returning its first syntax error for src
+// as compilerStyle renders it.
+var flavors = []struct {
+	name  string
+	parse func(src string) string
+}{
+	{"native", func(src string) string {
+		_, err := nativegala.ParseSourceFile(nativegala.Tokens(src))
+		return compilerStyle(err)
+	}},
+	{"antlr flavor", func(src string) string {
+		_, err := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).SourceFile()
+		return compilerStyle(err)
+	}},
+}
+
 // TestSyntaxErrors compares the first syntax error of galop's parsers with
 // ANTLR's on mutated corpus files that ANTLR rejects: the same position and
 // the same message, as the GALA compiler reports them. Files with lexical
@@ -23,19 +39,6 @@ func TestSyntaxErrors(t *testing.T) {
 		if len(f.Src) < 20000 {
 			srcs = append(srcs, gala.StripBOM(f.Src))
 		}
-	}
-	flavors := []struct {
-		name  string
-		parse func(src string) string
-	}{
-		{"native", func(src string) string {
-			_, err := nativegala.ParseSourceFile(nativegala.Tokens(src))
-			return compilerStyle(err)
-		}},
-		{"antlr flavor", func(src string) string {
-			_, err := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).SourceFile()
-			return compilerStyle(err)
-		}},
 	}
 	r := rand.New(rand.NewSource(*mutantSeed))
 	checked := 0
@@ -67,6 +70,32 @@ func TestSyntaxErrors(t *testing.T) {
 	for i, f := range flavors {
 		t.Logf("%s: %d rejected mutants, same position %d (%.0f%%), same error %d (%.0f%%)", f.name, checked,
 			samePos[i], 100*float64(samePos[i])/float64(checked), same[i], 100*float64(same[i])/float64(checked))
+	}
+}
+
+// TestSyntaxErrorCases checks galop's first syntax error on inputs where it
+// once differed from ANTLR's. Each case states the error ANTLR reports in a
+// fresh process, so galop is checked against a fixed answer; the reference,
+// gala.FirstSyntaxError, is checked against the same answer separately.
+func TestSyntaxErrorCases(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{
+			// The prediction in pattern at `if` fails at EOF. After the second
+			// `^` ANTLR reuses the DFA state built after the first, with its
+			// flags, so it finds no alternative to fall back on.
+			"reused DFA state keeps its flags",
+			`package _n val _n map [ default ] default = ( func ( ) , Z map [ Z ] Z = { case if ( D_v ) "!\+" else { } ^ ( ) => { } >> { case default => map [ _M6 ] map [ Z ] default { } } ^ ( ) match`,
+			`1:187: no viable alternative at input 'if(D_v)"!\+"else{}^()=>{}>>{casedefault=>map[_M6]map[Z]default{}}^()match'`,
+		},
+	} {
+		for _, f := range flavors {
+			if got := f.parse(tc.src); got != tc.want {
+				t.Errorf("%s, %s:\n want: %s\n  got: %s", tc.name, f.name, tc.want, got)
+			}
+		}
+		if got, _ := gala.FirstSyntaxError(tc.src); got != tc.want {
+			t.Errorf("%s, ANTLR:\n want: %s\n  got: %s", tc.name, tc.want, got)
+		}
 	}
 }
 
