@@ -462,9 +462,13 @@ grammars with runtime prediction parse again after a failed SLL pass.
 The replay runs only on input with a syntax error, and costs about one more
 pass over the tokens up to the error. Conflicts the repair already checked
 take their recorded LL answer, matched by decision, token and call stack,
-instead of full-context prediction again. On 1,000 rejected mutants, a broken
-file now takes 0.063 ms at the median on the GALA corpus (0.020 ms before the
-replay) and 0.40 ms on the held-out corpus (0.17 ms). Valid input costs the
+instead of full-context prediction again. A failed prediction also rebuilds
+the DFA states of the decision's earlier predictions. Like ANTLR's DFA, the
+rebuilt states keep their edges, so a walk computes only edges it has not
+seen. On 1,500 rejected mutants of the GALA corpus, a broken file takes
+0.10 ms at the median and 6 ms at most; on 1,000 of the held-out corpus,
+0.70 ms and 17 ms (warm). Without the rebuild it was 0.08 and 3.5 ms, and 0.55
+and 9 ms. Valid input costs the
 same, also for grammars without runtime prediction: only runtime prediction
 reads the call stack during a parse, so only those grammars keep one, and the
 replay builds its own.
