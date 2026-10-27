@@ -5,6 +5,7 @@ import (
 
     . "martianoff/gala/collection_immutable"
 
+    "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
 )
 
@@ -23,7 +24,8 @@ import (
 // tried in increasing lexicographic order, so the first pass that reaches EOF
 // is the leftmost-choice derivation again. The search needs no prediction.
 // Past its budget, or when no sequence is left (the input is not in the
-// language), the parse goes on as without it: repair or the LL rerun, which
+// language), the first pass runs again without guessing, and the parse goes
+// on from there exactly as without the search: repair or the LL rerun, which
 // also give ANTLR's syntax error. PFX is the per-grammar prefix, PARSER the
 // parser type, @RULE@ the rule function type, @ROOT@ what attempt returns
 // besides the error and @ZERO@ its value on failure.
@@ -45,39 +47,42 @@ type PFXGuesses struct {
 	wide   bool
 }
 
-// PFXGuessReplays and PFXGuessTokens bound the search: at most PFXGuessReplays
-// replays, reading at most PFXGuessTokens times the input's tokens in all.
+// The search stops after PFXGuessReplays replays, or once its replays have
+// read PFXGuessTokens times the input's tokens: a replay rereads the input
+// from its start, so k wrong guesses far into a large input cost k passes,
+// and the search is cut off when that is about to cost more than a few passes.
 const (
 	PFXGuessReplays = 16
-	PFXGuessTokens  = 16
+	PFXGuessTokens  = 4
 )
 
-// guess takes the smallest alternative in alts, recording a guess point when
-// alts has more than one, or replays the choice the search forces there.
+// guess takes the smallest alternative in alts, through guessPoint when alts
+// has more than one. It stays small enough to inline.
 func (p *PARSER) guess(alts uint64) int {
-	p.rp.seen++
-	low := bits.TrailingZeros64(alts)
 	if alts&(alts-1) == 0 {
-		return low
+		return bits.TrailingZeros64(alts)
 	}
+	return p.guessPoint(alts)
+}
+
+// guessPoint records a guess point and takes its smallest alternative, or
+// replays the choice the search forces there.
+func (p *PARSER) guessPoint(alts uint64) int {
 	g := &p.gs
 	i := g.seq
 	g.seq++
 	if i < g.forced {
 		return int(g.pts[i].cur)
 	}
+	low := bits.TrailingZeros64(alts)
 	g.pts = append(g.pts[:i], PFXGuess{alts: alts, cur: uint8(low)})
 	return low
 }
 
-// guessOr guesses decision d among alts in the first pass and its search,
-// and predicts it otherwise (in a repair or LL pass, or reporting an error:
-// the first pass is over by then).
-func (p *PARSER) guessOr(d int, alts uint64) int {
-	if p.first {
-		return p.guess(alts)
-	}
-	return p.adaptivePredict(d)
+// guessed says the first pass made a guess, so it may have taken another
+// path than SLL prediction would.
+func (g *PFXGuesses) guessed() bool {
+	return len(g.pts) > 0 || g.wide
 }
 
 // next makes the latest guess point with an untried alternative take the
@@ -101,33 +106,51 @@ func (p *PARSER) search(rule @RULE@) (root @ROOT@, ok bool) {
 	g := &p.gs
 	defer func() { g.forced, g.pts = 0, g.pts[:0] }()
 	budget := PFXGuessTokens * len(p.types)
-	for replays := 0; replays < PFXGuessReplays && budget > 0 && !g.wide; replays++ {
-		if !g.next() {
-			break
-		}
+	for replays := 0; replays < PFXGuessReplays && !g.wide && g.next(); replays++ {
 		root, err := p.attempt(rule)
 		if err == nil {
 			return root, true
 		}
-		budget -= p.pos + 1
+		if budget -= p.pos + 1; budget <= 0 {
+			break
+		}
 	}
 	return @ZERO@, false
 }
 `
 
-// guessDecisions are the decisions the first pass guesses without runtime
-// prediction: greedy loops and greedy single-alternative optional blocks,
-// where the choice is to go on or to stop, and whose block does not start
-// with a rule call and end with a token. In a grammar without separators
-// between statements, going on is almost always the leftmost choice, while a
-// block like `(simpleStatement ';')?` is decided by the token after a long
-// prefix, which guessing would get wrong as often as not. Which decisions
-// guess affects only speed: any guess is exact (see guessSource).
-func guessDecisions(rules Array[atn.RuleIR], parser atn.ATN) HashSet[int] =
-    rules.FlatMap((r) => r.Alts.FlatMap((a) => goOnOrStop(a.Steps)))
-        .FoldLeft(EmptyHashSet[int](), (s, d) => if (parser.Decisions.Get(d).Greedy) s.Add(d) else s)
+// guessOrSource is the helper of the decisions that guess (see
+// guessDecisions), emitted only when some do.
+val guessOrSource = `
+// guessOr guesses decision d among alts in the first pass and its search,
+// and predicts it otherwise (in a repair or LL pass, or reporting an error:
+// the first pass is over by then).
+func (p *PARSER) guessOr(d int, alts uint64) int {
+	if p.first {
+		return p.guess(alts)
+	}
+	return p.adaptivePredict(d)
+}
+`
 
-// goOnOrStop lists the go-on-or-stop decisions in steps, nested ones included.
+// guessDecisions are the decisions the first pass guesses without runtime
+// prediction: loops and single-alternative optional blocks left to runtime,
+// greedy ones, where the choice is to go on or to stop (alternative 1 goes
+// on), and whose block does not start with a rule call and end with a token.
+// In a grammar without separators between statements, going on is almost
+// always the leftmost choice, while a block like `(simpleStatement ';')?` is
+// decided by the token after a long prefix, which guessing would get wrong as
+// often as not. Which decisions guess affects only speed: any guess is exact
+// (see guessSource).
+func guessDecisions(rules Array[atn.RuleIR], plans Array[analysis.DecisionPlan]) HashSet[int] {
+    val runtime = plans.FoldLeft(EmptyHashSet[int](), (s, p) => if (analysis.NeedsRuntime(p.Lookahead)) s.Add(p.Decision.Id) else s)
+    rules.FlatMap((r) => r.Alts.FlatMap((a) => goOnOrStop(a.Steps)))
+        .FoldLeft(EmptyHashSet[int](), (s, d) => if (runtime.Contains(d)) s.Add(d) else s)
+}
+
+// goOnOrStop lists the greedy go-on-or-stop decisions in steps, nested ones
+// included: a loop whose alternative 1 repeats, and an optional block of one
+// alternative whose exit is alternative 2 (a non-greedy one exits with 1).
 func goOnOrStop(steps Array[atn.Step]) Array[int] = steps.FlatMap((s) => s match {
     case atn.Loop(_, d, 1, body) => {
         val own = if (separatorTerminated(body)) EmptyArray[int]() else ArrayOf(d)

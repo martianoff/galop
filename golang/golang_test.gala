@@ -75,25 +75,25 @@ func TestANTLRFlavorUsesANTLRNames(t T) T {
 
 func TestStaticGrammarDecidesStatically(t T) T {
     // Every decision of this grammar is LL(1), so no decision calls the runtime
-    // predictor: the two calls are error reporting's and guessOr's, outside
-    // the first pass.
+    // predictor (error reporting still can).
     val code = parserFile(t)
-    val t1 = Eq(t, strings.Count(code, "p.adaptivePredict("), 2)
-    IsTrue(t1, strings.Contains(code, "func (p *ExprGalopParser) decide0() int"))
+    val t1 = Eq(t, strings.Count(code, "p.adaptivePredict("), 1)
+    val t2 = IsFalse(t1, strings.Contains(code, "p.guessOr("))
+    IsTrue(t2, strings.Contains(code, "func (p *ExprGalopParser) decide0() int"))
 }
 
 func TestAutomatonSettlesLoopWithoutPredictor(t T) T {
     // Telling a from b needs any number of X, but the SLL automaton loops over
-    // them and decides on the token after: no runtime predictor is needed (the
-    // two calls are error reporting's and guessOr's).
+    // them and decides on the token after: no runtime predictor is needed.
     val code = parserOf(generate(`grammar A;
 s : a | b ;
 a : X* Y ;
 b : X* Z ;
 X : 'x' ; Y : 'y' ; Z : 'z' ;
 `, antlrDefines))
-    val t1 = Eq(t, strings.Count(code, "p.adaptivePredict("), 2)
-    IsTrue(t1, strings.Contains(code, "goto s0"))
+    val t1 = Eq(t, strings.Count(code, "p.adaptivePredict("), 1)
+    val t2 = IsFalse(t1, strings.Contains(code, "p.guessOr("))
+    IsTrue(t2, strings.Contains(code, "goto s0"))
 }
 
 func TestAdaptiveGrammarEmitsPredictor(t T) T {

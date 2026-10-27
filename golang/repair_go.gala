@@ -13,26 +13,27 @@ package golang
 val repairSource = `
 // onConflict settles an SLL conflict whose lowest conflicting alternative is
 // sllAlt and whose alternatives are alts (0 when one is past 63). The SLL
-// pass takes sllAlt; a guessing first pass records it as a guess point (see
-// guessSource). This stays small enough to inline.
+// pass takes sllAlt; this stays small enough to inline.
 func (p *PARSER) onConflict(d int, sllAlt int, alts uint64) int {
-	if p.ll || p.rp.on {
-		return p.onConflictSlow(d, sllAlt)
-	}
-	if p.first {
-		if alts != 0 {
-			return p.guess(alts)
-		}
-		p.gs.wide = true
+	if p.ll || p.rp.on || p.first {
+		return p.onConflictSlow(d, sllAlt, alts)
 	}
 	p.rp.seen++
 	return sllAlt
 }
 
-// onConflictSlow is onConflict outside the SLL pass: LL mode runs
+// onConflictSlow is onConflict outside the SLL pass: a guessing first pass
+// records the conflict as a guess point (see guessSource), LL mode runs
 // full-context prediction, and a repair pass replays a recorded conflict or
 // records a new one.
-func (p *PARSER) onConflictSlow(d int, sllAlt int) int {
+func (p *PARSER) onConflictSlow(d int, sllAlt int, alts uint64) int {
+	if p.first {
+		if alts == 0 {
+			p.gs.wide = true
+			return sllAlt
+		}
+		return p.guess(alts)
+	}
 	if p.ll {
 		if alt := p.rp.knownAt(d, p.pos, p.stack); alt > 0 {
 			return alt

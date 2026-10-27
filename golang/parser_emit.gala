@@ -96,7 +96,7 @@ func predictor(e env) string {
         case NativeFlavor(x) => (nativeErrorHelpers, x + "EOF")
         case ANTLRFlavor() => (antlrErrorHelpers, "antlr.TokenEOF")
     }
-    val code = fill(predictorSource + repairSource + guessSource + fullCacheSource + errorsSource + helpers,
+    val code = fill(predictorSource + repairSource + guessSource + (if (e.guessed.IsEmpty()) "" else guessOrSource) + fullCacheSource + errorsSource + helpers,
         "@RULE@", ruleFuncType(e), "@ROOT@", root, "@ZERO@", zero, "@SYNTAXERROR@", syntaxError, "@EOF@", eof,
         "PARSER", e.parserType, "PFX", e.pfx)
     strings.TrimPrefix(code, "\n")
@@ -133,9 +133,10 @@ func predictorFields(e env) string =
 // with a pass over the tokens; only when the first pass met no conflict, where
 // llParse would keep that pass's error, does the pass over tokens run first.
 // Before all that, a first pass that guessed is searched (see guessSource);
-// the search leaves the first pass's guess count for what follows.
+// when the search finds no parse, the first pass runs again without guessing,
+// and what follows is exactly what follows a first pass without the search.
 func retryCode(e env, root string) string =
-    if (e.adaptive) s"\n\tif err != nil && p.first && p.rp.seen > 0 {\n\t\tseen := p.rp.seen\n\t\tif r, ok := p.search(rule); ok {\n\t\t\t$root, err = r, nil\n\t\t}\n\t\tp.rp.seen = seen\n\t}\n\tp.first = false\n\tif err != nil {\n\t\tgrouped := p.group\n\t\tp.group = false\n\t\tif grouped && p.rp.seen == 0 {\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t\tif err != nil {\n\t\t\t$root, err = p.llParse(rule, repair, err)\n\t\t}\n\t}" else ""
+    if (e.adaptive) s"\n\tif err != nil && p.first && p.gs.guessed() {\n\t\tr, ok := p.search(rule)\n\t\tp.first = false\n\t\tif ok {\n\t\t\t$root, err = r, nil\n\t\t} else {\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t}\n\tp.first = false\n\tif err != nil {\n\t\tgrouped := p.group\n\t\tp.group = false\n\t\tif grouped && p.rp.seen == 0 {\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t\tif err != nil {\n\t\t\t$root, err = p.llParse(rule, repair, err)\n\t\t}\n\t}" else ""
 
 // errorsHook replaces the final parse's syntax error with the one ANTLR
 // reports (see errorsSource); start is the entry rule's start state.

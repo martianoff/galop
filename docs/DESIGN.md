@@ -143,8 +143,8 @@ example lookahead. It is the grammar lint the roadmap describes.
 
 Static lookahead settles most decisions (86 of `gala.g4`'s 107). The rest are
 predicted while the parser runs, by ANTLR's own algorithm over tables compiled
-into the generated file, so every answer is ANTLR's. Four additions keep those
-answers and cut what they cost:
+into the generated file, or guessed and checked, so every answer is ANTLR's.
+Five additions keep those answers and cut what they cost:
 
 ```mermaid
 flowchart TD
@@ -152,10 +152,17 @@ flowchart TD
   k -- yes --> sw["switch on the tokens"]
   k -- no --> a{"Its SLL automaton settles<br/>every input?"}
   a -- yes --> au["precomputed automaton"]
-  a -- no --> p["SLL prediction at runtime,<br/>bracketed groups read as one symbol"]
-  p --> ok{"The first pass<br/>parses the input?"}
+  a -- no --> g{"Go on or stop?"}
+  g -- yes --> gu["first pass guesses: go on"]
+  g -- no --> p["SLL prediction at runtime,<br/>bracketed groups read as one symbol"]
+  gu --> ok{"The first pass<br/>parses the input?"}
+  p --> ok
   ok -- yes --> tree["ANTLR's tree"]
-  ok -- no --> r["Repair: replay, checking conflicts<br/>with cached full-context prediction"]
+  ok -- no --> s["Search: replay with the next guesses,<br/>in alternative order"]
+  s -- "a replay parses" --> tree
+  s -- "budget spent or<br/>no guess left" --> f["First pass again, predicting"]
+  f -- parses --> tree
+  f -- fails --> r["Repair: replay, checking conflicts<br/>with cached full-context prediction"]
   r --> res["ANTLR's tree, or ANTLR's error"]
 ```
 
@@ -163,6 +170,7 @@ flowchart TD
 |---|---|---|
 | [SLL automata](#sll-automata) | decide a decision without runtime prediction | always tried, and kept only when the automaton settles every input (none in `gala.g4`) |
 | [Bracket abstraction](#bracket-abstraction) | reads each bracketed group as one symbol, so prediction stops scanning operands | `-Xno-brackets`; the grammar has actions, predicates or left recursion, or no entry rule may be repaired (the grammar's `repair.Plan`: no bracket families are generated); an entry rule that may not be repaired; after a failed first pass |
+| [Guessing first pass](#guessing-first-pass-and-search) | guesses go-on-or-stop decisions without predicting, and searches a failed first pass by replaying it with other guesses | whenever repair is off (below), and after the search |
 | [Repair](#repairing-a-failed-sll-parse) | settles a failed first pass with a few full-context predictions instead of ANTLR's whole-input LL rerun | the grammar has actions, predicates or left recursion, or the entry rule does not end with EOF or can be called again from inside itself: then the parser reruns in LL mode, as ANTLR does; also after 8 passes, or once its replays would cover more tokens than the input holds |
 | [Full-context cache](#full-context-cache) | caches full-context prediction per decision and call stack | never; it stops growing past 32,768 states or 2^20 contexts |
 
@@ -242,6 +250,50 @@ On the GALA corpus the abstract DFA has about 1,000 states where the SLL DFA
 had 13,500 (30,000 on the held-out code of gala_team, gala_tui and
 gala-server, against about 1,100), so a fresh process builds a tenth of the
 cache.
+
+### Guessing first pass and search
+
+Many runtime decisions are only "go on or stop": a loop of binary operators or
+postfix suffixes, an optional type. In a grammar without separators between
+statements, like GALA's, the next token can usually start the next statement
+too, so SLL prediction reads ahead to a conflict and takes the lowest
+alternative, going on, almost every time. In an entry rule that may be repaired
+(the same conditions as for repair, below), the first pass skips that work: at
+such a decision it guesses going on, without predicting.
+
+**Why it is exact.** On input ANTLR accepts, its tree is the leftmost-choice
+derivation: at every decision, the smallest alternative that still lets the
+whole input parse (see [Why the first pass is exact](#why-the-first-pass-is-exact)).
+A guess takes the smallest alternative no test ruled out, as an SLL conflict
+does, so a first pass that reaches EOF has built ANTLR's tree, and a wrong guess
+can only make the pass fail. Which decisions guess affects speed, not results:
+the generator picks greedy loops and greedy optional blocks of one alternative,
+except a block that starts with a rule call and ends with a token, such as
+`(simpleStatement ';')?`, which the token after a long prefix decides.
+
+**How.** Every guess point of the first pass, the guesses and the SLL
+conflicts, goes through one function that records the alternatives not ruled
+out (a conflict's are its conflicting alternatives). When the pass fails, the
+search replays the parse, changing the latest guess point with an untried
+alternative to its next alternative and keeping the choices before it. This
+tries choice sequences in increasing lexicographic order, so the first replay
+that reaches EOF is the leftmost-choice derivation, ANTLR's tree, found without
+runtime prediction. When the search stops without a parse, the first pass runs
+again without guessing, and the parse goes on exactly as it would have without
+the search: the pass over tokens, repair or the LL rerun, and ANTLR's syntax
+error if the input is not in the language.
+
+**Cost bound.** A replay reads the input from its start, so the search stops
+after 16 replays or once its replays have read 4 times the input's tokens,
+whichever comes first. A file the search settles costs at most about 4 passes
+more than the first; a file it does not settle costs at most about 5 passes
+more than before (the search and the first pass again), then what it cost
+before. An early wrong guess behind more than 16 later guess points is
+therefore not reached by the search, but by what follows it. On the GALA corpus
+the search settles 28 of the 33 valid files whose first pass fails, and on the
+held-out corpus all 8; on invalid single-token mutants of both corpora, a
+broken file takes on average 0.1 to 0.3 ms and at most about 2.6 ms longer than
+without the search.
 
 ### Repairing a failed SLL parse
 
