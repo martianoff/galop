@@ -121,6 +121,7 @@ for both flavors.
 | `replayed-files` | files that needed more than one pass (repair, rerun over tokens) |
 | `replays-median`, `replays-max` | extra passes per such file; the maximum is the worst file, so a rise there fails even when the median holds |
 | `sll-states`, `full-context-states` | states the prediction caches built: the warm-up |
+| `sll-peak-states`, `sll-resets` | the most states the bounded SLL cache held, and how many times it started over (0 below its bound) |
 | `allocs-per-pass` | allocations of a warm pass |
 | `files`, `accepted` | the input's size and how much of it parses (reported, not judged: the parity tests check acceptance) |
 

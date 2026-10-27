@@ -11,8 +11,8 @@ package golang
 //
 //   - SLL: the calling context is a wildcard (a rule's end continues at every
 //     caller) and an SLL conflict is settled by the lowest conflicting
-//     alternative. SLL results are cached in a per-decision DFA for the life of
-//     the process, as ANTLR caches them.
+//     alternative. SLL results are cached in a per-decision DFA across parses,
+//     as ANTLR caches them, up to a bound (see PFXDFA).
 //   - LL: the parser's real call stack is the context, and prediction runs until
 //     ANTLR's stopping rule picks an alternative.
 //
@@ -676,9 +676,9 @@ func PFXAllInStop(list []PFXConfig) bool {
 	return true
 }
 
-// PFXDFAState is a state of a decision's SLL lookahead DFA, cached for the
-// life of the process as ANTLR caches its DFA. Walking existing edges takes
-// no lock; new states are computed under PFXDFA.mu.
+// PFXDFAState is a state of a decision's SLL lookahead DFA, cached across
+// parses as ANTLR caches its DFA. Walking existing edges takes no lock; new
+// states are computed under PFXDFA.mu.
 type PFXDFAState struct {
 	configs  []PFXConfig
 	alt      int32
@@ -689,28 +689,109 @@ type PFXDFAState struct {
 	edges []atomic.Pointer[PFXDFAState]
 }
 
-// PFXDFA holds every decision's cached SLL DFA. Its context pool is never
-// reset, so cached configurations keep meaning the same contexts.
-var PFXDFA struct {
-	mu     sync.Mutex
+// PFXDFAGen is one generation of the SLL DFA cache: every decision's start
+// state, the states by configurations, and the predictor whose context pool
+// gives the configurations' contexts their meaning. Its pool is never reset,
+// so cached configurations keep meaning the same contexts; the cache starts
+// over by replacing the whole generation.
+type PFXDFAGen struct {
 	starts []atomic.Pointer[PFXDFAState]
 	states map[string]*PFXDFAState
 	pr     PFXPredictor
 	key    []byte
 }
 
+// PFXDFA is the process's SLL DFA cache. Only the current generation grows.
+// Once it holds PFXDFAMaxStates states or PFXDFAMaxContexts contexts, it is
+// replaced by an empty one, and from then on it only serves the predictions
+// already walking it: one that needs a state it lacks finishes uncached
+// (predictSLLUncached). So no generation passes the bound (its contexts by at
+// most one step's worth), and since the cache only saves work, no answer
+// changes. peak is the most states a replaced generation held, and resets
+// counts replacements.
+//
+// The full-context cache (PFXFullCache) stops growing instead of starting
+// over: full-context predictions are rare, and an uncached one costs about
+// what building its states does. SLL predictions are what every runtime
+// decision makes, and a cache that stops growing leaves a long-lived process
+// predicting uncached for whatever its first inputs did not reach. On a
+// stream of 27,700 parses of distinct GALA code on one goroutine, stopping
+// cost 1.25 times the time of an unbounded cache (3.3 times over tokens
+// alone), starting over 1.02 times (1.8 times); both halve the peak memory or
+// better. On eight goroutines, where new states wait for one lock, stopping
+// was the faster (0.7 and 0.5 times, against 1.1 and 2.2).
+var PFXDFA struct {
+	mu     sync.Mutex
+	gen    atomic.Pointer[PFXDFAGen]
+	peak   int
+	resets int
+}
+
+// PFXDFAMaxStates and PFXDFAMaxContexts bound each generation of the SLL DFA
+// cache. They are read under PFXDFA.mu; set them before parsing starts, if at
+// all. The defaults are three to four times what parsing the GALA compiler's
+// sources and other GALA code over tokens alone (-Xno-brackets) leaves in the
+// cache: about 16,000 states and 740,000 contexts, some 100 MB.
+var (
+	PFXDFAMaxStates   = 1 << 16
+	PFXDFAMaxContexts = 1 << 21
+)
+
 // PFXDFAError marks an edge on which no alternative is viable.
 var PFXDFAError = &PFXDFAState{}
 
-func init() {
-	PFXDFA.starts = make([]atomic.Pointer[PFXDFAState], len(PFXDecisionState))
-	PFXDFA.states = map[string]*PFXDFAState{}
-	PFXDFA.pr.pool.reset(true)
+// PFXNewDFAGen returns an empty generation of the SLL DFA cache.
+func PFXNewDFAGen() *PFXDFAGen {
+	g := &PFXDFAGen{starts: make([]atomic.Pointer[PFXDFAState], len(PFXDecisionState)), states: map[string]*PFXDFAState{}}
+	g.pr.pool.reset(true)
+	return g
 }
 
-// PFXDFAIntern returns decision d's cached state for the configurations in set.
-func PFXDFAIntern(d int, set *PFXConfigSet) *PFXDFAState {
-	return PFXInternState(PFXDFA.states, &PFXDFA.pr, &PFXDFA.key, d, set, PFXEdges)
+func init() {
+	PFXDFA.gen.Store(PFXNewDFAGen())
+}
+
+// PFXDFAStats reports the SLL DFA cache: the states of the current
+// generation, the most states any generation held, and how many times the
+// cache started over.
+func PFXDFAStats() (states, peak, resets int) {
+	PFXDFA.mu.Lock()
+	defer PFXDFA.mu.Unlock()
+	states = len(PFXDFA.gen.Load().states)
+	return states, max(PFXDFA.peak, states), PFXDFA.resets
+}
+
+// grows reports whether g may add to itself: it is the current generation
+// and below its bound. Call it under PFXDFA.mu.
+func (g *PFXDFAGen) grows() bool {
+	return g == PFXDFA.gen.Load() && len(g.states) < PFXDFAMaxStates && len(g.pr.pool.kind) < PFXDFAMaxContexts
+}
+
+// checkFull replaces g, the current generation, with an empty one once it
+// has reached its bound. Call it under PFXDFA.mu.
+func (g *PFXDFAGen) checkFull() {
+	if g != PFXDFA.gen.Load() || g.grows() {
+		return
+	}
+	PFXDFA.peak = max(PFXDFA.peak, len(g.states))
+	PFXDFA.resets++
+	PFXDFA.gen.Store(PFXNewDFAGen())
+}
+
+// intern returns decision d's state in g for the configurations in set.
+func (g *PFXDFAGen) intern(d int, set *PFXConfigSet) *PFXDFAState {
+	return PFXInternState(g.states, &g.pr, &g.key, d, set, PFXEdges)
+}
+
+// PFXSortConfigs sorts configurations by state, then alternative: the order
+// a cached state keeps them in.
+func PFXSortConfigs(s []PFXConfig) {
+	slices.SortFunc(s, func(a, b PFXConfig) int {
+		if a.state != b.state {
+			return int(a.state - b.state)
+		}
+		return int(a.alt - b.alt)
+	})
 }
 
 // PFXInternState returns the state in states for the configurations in set,
@@ -720,12 +801,7 @@ func PFXDFAIntern(d int, set *PFXConfigSet) *PFXDFAState {
 func PFXInternState(states map[string]*PFXDFAState, pr *PFXPredictor, key *[]byte, d int, set *PFXConfigSet, edges int) *PFXDFAState {
 	s := append(pr.sorted[:0], set.list...)
 	pr.sorted = s
-	slices.SortFunc(s, func(a, b PFXConfig) int {
-		if a.state != b.state {
-			return int(a.state - b.state)
-		}
-		return int(a.alt - b.alt)
-	})
+	PFXSortConfigs(s)
 	k := (*key)[:0]
 	if d >= 0 {
 		k = binary.LittleEndian.AppendUint32(k, uint32(d))
@@ -744,116 +820,192 @@ func PFXInternState(states map[string]*PFXDFAState, pr *PFXPredictor, key *[]byt
 	return st
 }
 
-// PFXDFAStart returns decision d's start state, computing it once.
-func PFXDFAStart(d int) *PFXDFAState {
-	PFXDFA.mu.Lock()
-	defer PFXDFA.mu.Unlock()
-	if st := PFXDFA.starts[d].Load(); st != nil {
-		return st
-	}
-	pr := &PFXDFA.pr
+// startSLL puts the start configurations of decision d into cur (ANTLR's
+// computeStartState in SLL mode).
+func (pr *PFXPredictor) startSLL(d int, cur *PFXConfigSet) {
 	pr.full = false
-	cur := &pr.sets[0]
 	cur.reset()
 	pr.busy.reset()
 	s := PFXDecisionState[d]
 	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
 		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, 0}, cur, false)
 	}
-	st := PFXDFAIntern(d, cur)
-	PFXDFA.starts[d].Store(st)
+}
+
+// stepSLL moves the configurations in cur over token t, or with group set
+// over the bracketed group t opens (ANTLR's computeTargetState in SLL mode).
+// It returns the state that ends the prediction (an alternative, an SLL
+// conflict or PFXDFAError), or nil when the prediction goes on from the
+// configurations in next.
+func (pr *PFXPredictor) stepSLL(cur *PFXConfigSet, t int32, group bool, intermediate, next *PFXConfigSet) *PFXDFAState {
+	if alt := pr.reach(cur, t, group, intermediate, next); alt != 0 {
+		return &PFXDFAState{alt: alt}
+	}
+	if len(next.list) == 0 {
+		return PFXDFAError
+	}
+	if alt := PFXUniqueAlt(next.list); alt != 0 {
+		return &PFXDFAState{alt: alt}
+	}
+	if !pr.conflict(next.list) {
+		return nil
+	}
+	// An SLL conflict: ANTLR's SLL answer is the lowest conflicting alternative.
+	low := next.list[0].alt
+	var alts uint64
+	wide := false
+	for _, c := range next.list {
+		low = min(low, c.alt)
+		if c.alt > 63 {
+			wide = true
+		} else {
+			alts |= 1 << c.alt
+		}
+	}
+	if wide {
+		alts = 0
+	}
+	return &PFXDFAState{conflict: low, alts: alts}
+}
+
+// start returns decision d's start state in g, computing it once; nil when
+// it is not cached and g may not grow.
+func (g *PFXDFAGen) start(d int) *PFXDFAState {
+	PFXDFA.mu.Lock()
+	defer PFXDFA.mu.Unlock()
+	if st := g.starts[d].Load(); st != nil {
+		return st
+	}
+	if !g.grows() {
+		return nil
+	}
+	cur := &g.pr.sets[0]
+	g.pr.startSLL(d, cur)
+	st := g.intern(d, cur)
+	g.starts[d].Store(st)
+	g.checkFull()
 	return st
 }
 
-// PFXDFANext computes and caches the edge of from on symbol sym (ANTLR's
-// computeTargetState in SLL mode): token t, or with group set the bracketed
-// group t opens.
-func PFXDFANext(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAState {
+// next computes and caches the edge of from, a state of g, on symbol sym:
+// token t, or with group set the bracketed group t opens. It returns nil
+// when the edge is not cached and g may not grow.
+func (g *PFXDFAGen) next(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAState {
 	PFXDFA.mu.Lock()
 	defer PFXDFA.mu.Unlock()
 	if st := from.edges[sym].Load(); st != nil {
 		return st
 	}
-	pr := &PFXDFA.pr
+	if !g.grows() {
+		return nil
+	}
+	pr := &g.pr
 	pr.full = false
 	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
 	cur.reset()
 	for _, c := range from.configs {
 		cur.add(c, &pr.pool)
 	}
-	var st *PFXDFAState
-	if alt := pr.reach(cur, t, group, intermediate, next); alt != 0 {
-		st = &PFXDFAState{alt: alt}
-	} else if len(next.list) == 0 {
-		st = PFXDFAError
-	} else if alt := PFXUniqueAlt(next.list); alt != 0 {
-		st = &PFXDFAState{alt: alt}
-	} else if pr.conflict(next.list) {
-		// An SLL conflict: ANTLR's SLL answer is the lowest conflicting alternative.
-		low := next.list[0].alt
-		var alts uint64
-		wide := false
-		for _, c := range next.list {
-			low = min(low, c.alt)
-			if c.alt > 63 {
-				wide = true
-			} else {
-				alts |= 1 << c.alt
-			}
-		}
-		if wide {
-			alts = 0
-		}
-		st = &PFXDFAState{conflict: low, alts: alts}
-	} else {
-		st = PFXDFAIntern(d, next)
+	st := pr.stepSLL(cur, t, group, intermediate, next)
+	if st == nil {
+		st = g.intern(d, next)
 	}
 	from.edges[sym].Store(st)
+	g.checkFull()
 	return st
 }
 
-// adaptivePredict predicts decision d as ANTLR's SLL prediction does, over
-// the cached DFA, reading each bracketed group as one symbol (PFXBracketMatch
-// paired them) unless p.group is off. That over-approximates SLL: every path
-// over the tokens has a path over the groups, so an alternative ruled out here
-// is ruled out in SLL and in LL, and a unique answer is ANTLR's. A conflict
-// goes to onConflict with its smallest alternative: a first pass that
-// succeeds with such choices is ANTLR's LL parse, and a wrong one is repaired.
-func (p *PARSER) adaptivePredict(d int) int {
-	p.stats.Predictions++
-	st := PFXDFA.starts[d].Load()
-	if st == nil {
-		st = PFXDFAStart(d)
-	}
+// symbolAt reads the input at i for a prediction of decision d: the token t,
+// its DFA symbol, whether that symbol is the bracketed group an opener at i
+// starts (with p.group, as PFXBracketMatch paired them), and where the input
+// after it starts.
+func (p *PARSER) symbolAt(d, i int) (t int32, sym int, isGroup bool, after int) {
 	// The tokens end with EOF: the native flavor's run rejects a slice without
 	// it, and the antlr flavor's NewPARSER reads its stream up to EOF. EOF never
 	// advances i, and a group jump lands just past its closer, on EOF at the
 	// latest, so i stays in range.
+	t = p.types[i]
+	if t < -1 || int(t) > PFXMaxTokenType {
+		p.noViableAlt(d)
+	}
+	if og := PFXOpenerSym[t+1]; p.group && og >= 0 && p.pairs[i] >= 0 {
+		return t, PFXMaxTokenType + 2 + int(og), true, int(p.pairs[i]) + 1
+	}
+	if t != -1 {
+		i++
+	}
+	return t, int(t) + 1, false, i
+}
+
+// adaptivePredict predicts decision d as ANTLR's SLL prediction does, over
+// the cached DFA, reading each bracketed group as one symbol unless p.group
+// is off. That over-approximates SLL: every path over the tokens has a path
+// over the groups, so an alternative ruled out here is ruled out in SLL and
+// in LL, and a unique answer is ANTLR's. A conflict goes to onConflict with
+// its smallest alternative: a first pass that succeeds with such choices is
+// ANTLR's LL parse, and a wrong one is repaired. Where the cache may not grow
+// (see PFXDFA), the prediction finishes uncached.
+func (p *PARSER) adaptivePredict(d int) int {
+	p.stats.Predictions++
+	g := PFXDFA.gen.Load()
+	st := g.starts[d].Load()
+	if st == nil {
+		if st = g.start(d); st == nil {
+			return p.predictSLLUncached(d)
+		}
+	}
 	for i := p.pos; ; {
-		t := p.types[i]
-		if t < -1 || int(t) > PFXMaxTokenType {
-			p.noViableAlt(d)
-		}
-		sym, isGroup := int(t)+1, false
-		if g := PFXOpenerSym[t+1]; p.group && g >= 0 && p.pairs[i] >= 0 {
-			sym, isGroup = PFXMaxTokenType+2+int(g), true
-			i = int(p.pairs[i]) + 1
-		} else if t != -1 {
-			i++
-		}
+		t, sym, isGroup, after := p.symbolAt(d, i)
 		next := st.edges[sym].Load()
 		if next == nil {
-			next = PFXDFANext(d, st, sym, t, isGroup)
+			if next = g.next(d, st, sym, t, isGroup); next == nil {
+				return p.predictSLLUncached(d)
+			}
 		}
-		switch {
-		case next == PFXDFAError:
-			p.noViableAlt(d)
-		case next.alt > 0:
-			return int(next.alt)
-		case next.conflict > 0:
-			return p.onConflict(d, int(next.conflict), next.alts)
+		if alt, done := p.settleSLL(d, next); done {
+			return alt
 		}
-		st = next
+		st, i = next, after
+	}
+}
+
+// settleSLL ends a prediction of decision d at st when st ends it: with a
+// syntax error, an alternative or a conflict.
+func (p *PARSER) settleSLL(d int, st *PFXDFAState) (int, bool) {
+	switch {
+	case st == PFXDFAError:
+		p.noViableAlt(d)
+	case st.alt > 0:
+		return int(st.alt), true
+	case st.conflict > 0:
+		return p.onConflict(d, int(st.conflict), st.alts), true
+	}
+	return 0, false
+}
+
+// predictSLLUncached predicts decision d as adaptivePredict does, with the
+// parser's own predictor and no cache. Each step starts from the
+// configurations sorted and added in the order a cached state keeps them, so
+// it computes what the cache would.
+func (p *PARSER) predictSLLUncached(d int) int {
+	pr := &p.pred
+	pr.pool.reset(true)
+	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
+	pr.startSLL(d, next)
+	for i := p.pos; ; {
+		s := append(pr.sorted[:0], next.list...)
+		pr.sorted = s
+		PFXSortConfigs(s)
+		cur.reset()
+		for _, c := range s {
+			cur.add(c, &pr.pool)
+		}
+		t, _, isGroup, after := p.symbolAt(d, i)
+		if st := pr.stepSLL(cur, t, isGroup, intermediate, next); st != nil {
+			alt, _ := p.settleSLL(d, st)
+			return alt
+		}
+		i = after
 	}
 }
 

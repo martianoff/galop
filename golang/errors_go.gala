@@ -604,7 +604,7 @@ func (m *PFXSLLFailure) target(d int, st int32, t int32) int32 {
 	return m.share(d, &m.set)
 }
 
-// settled reports whether SLL prediction stops at a set, as PFXDFANext does:
+// settled reports whether SLL prediction stops at a set, as PFXDFAGen.next does:
 // one alternative is left, or an SLL conflict.
 func (m *PFXSLLFailure) settled(list []PFXFlagConfig) bool {
 	v := m.view[:0]

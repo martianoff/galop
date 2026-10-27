@@ -18,11 +18,16 @@ func ParseGalopWithStats(stream antlr.TokenStream) (antlr.ParserRuleContext, Sta
 // CacheStates is how many states the process's SLL DFA cache and
 // full-context cache hold.
 func CacheStates() (sll, fullContext int) {
-	galaGalopDFA.mu.Lock()
-	sll = len(galaGalopDFA.states)
-	galaGalopDFA.mu.Unlock()
+	sll, _, _ = galaGalopDFAStats()
 	galaGalopFull.mu.RLock()
 	fullContext = len(galaGalopFull.states)
 	galaGalopFull.mu.RUnlock()
 	return sll, fullContext
+}
+
+// SLLCache reports the SLL DFA cache's bound at work: the most states it
+// held, and how many times it started over.
+func SLLCache() (peak, resets int) {
+	_, peak, resets = galaGalopDFAStats()
+	return peak, resets
 }
