@@ -46,8 +46,8 @@ large files where its fast pass fails and it parses the whole file again in its
 slow mode; galop fixes such a pass in place (see [design](docs/DESIGN.md#runtime-prediction)).
 
 On more than 60,000 broken files from both corpora, galop's first syntax error
-matches ANTLR's message, line and column every time; ANTLR's own `~set` bug is
-the one known exception (see [design](docs/DESIGN.md#reporting-syntax-errors-as-antlr-does)).
+matches the message, line and column ANTLR reports when it starts with an empty
+prediction cache. ANTLR's own `~set` bug is the one known exception (see [design](docs/DESIGN.md#reporting-syntax-errors-as-antlr-does)).
 
 ## Why
 

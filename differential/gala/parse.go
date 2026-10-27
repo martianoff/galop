@@ -66,13 +66,15 @@ func tokens(src string, errs antlr.ErrorListener) *antlr.CommonTokenStream {
 // LL) and returns the sourceFile tree with every lexical and syntax error.
 func ParseANTLR(src string, mode int) (antlr.ParserRuleContext, []error) {
 	errs := &errorListener{}
-	tree := parse(tokens(src, errs), mode, errs)
+	tree := parse(tokens(src, errs), mode, errs, nil)
 	return tree, errs.errors
 }
 
-func parse(stream antlr.TokenStream, mode int, errs *errorListener) antlr.ParserRuleContext {
+// parse parses stream with ANTLR, predicting over the DFA set dfa, or over the
+// shared one (see sharedDFA) if dfa is nil.
+func parse(stream antlr.TokenStream, mode int, errs *errorListener, dfa []*antlr.DFA) antlr.ParserRuleContext {
 	p := antlrgala.NewgalaParser(stream)
-	isolateParserCaches(p.BaseParser)
+	isolateParserCaches(p.BaseParser, dfa)
 	p.GetInterpreter().SetPredictionMode(mode)
 	p.RemoveErrorListeners()
 	p.AddErrorListener(errs)
@@ -83,7 +85,7 @@ func parse(stream antlr.TokenStream, mode int, errs *errorListener) antlr.Parser
 func ANTLRParser(mode int) Parser {
 	return func(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
 		errs := &errorListener{}
-		tree := parse(stream, mode, errs)
+		tree := parse(stream, mode, errs, nil)
 		return tree, errors.Join(errs.errors...)
 	}
 }
@@ -152,13 +154,17 @@ type sharedDFA struct {
 }
 
 func (s *sharedDFA) get(atn *antlr.ATN) []*antlr.DFA {
-	s.once.Do(func() {
-		s.dfa = make([]*antlr.DFA, len(atn.DecisionToState))
-		for i, ds := range atn.DecisionToState {
-			s.dfa[i] = antlr.NewDFA(ds, i)
-		}
-	})
+	s.once.Do(func() { s.dfa = newDFA(atn) })
 	return s.dfa
+}
+
+// newDFA is an empty DFA set for atn.
+func newDFA(atn *antlr.ATN) []*antlr.DFA {
+	dfa := make([]*antlr.DFA, len(atn.DecisionToState))
+	for i, ds := range atn.DecisionToState {
+		dfa[i] = antlr.NewDFA(ds, i)
+	}
+	return dfa
 }
 
 var lexerDFA, parserDFA sharedDFA
@@ -171,24 +177,35 @@ func isolateLexerCaches(l *antlr.BaseLexer) {
 	l.Interpreter = antlr.NewLexerATNSimulator(l, atn, lexerDFA.get(atn), antlr.NewPredictionContextCache())
 }
 
-// isolateParserCaches is the parser-side counterpart of isolateLexerCaches.
-func isolateParserCaches(p *antlr.BaseParser) {
+// isolateParserCaches is the parser-side counterpart of isolateLexerCaches,
+// with the DFA set dfa in place of the shared one unless dfa is nil.
+func isolateParserCaches(p *antlr.BaseParser, dfa []*antlr.DFA) {
 	atn := p.GetATN()
-	p.Interpreter = antlr.NewParserATNSimulator(p, atn, parserDFA.get(atn), antlr.NewPredictionContextCache())
+	if dfa == nil {
+		dfa = parserDFA.get(atn)
+	}
+	p.Interpreter = antlr.NewParserATNSimulator(p, atn, dfa, antlr.NewPredictionContextCache())
 }
 
 // FirstSyntaxError is the first syntax error the GALA compiler's strategy
 // (see Lenient) reports for src, as "line:col: message", and whether there
 // is one. Lexical errors are left out: ParseANTLR reports them.
+//
+// Both attempts share a DFA set of their own, which starts empty. ANTLR's
+// error can depend on the DFA states it already holds (a failed prediction
+// takes a kept state's record of which configurations left the decision's
+// rule), so over the shared set the error would depend on what the process
+// parsed before.
 func FirstSyntaxError(src string) (string, bool) {
 	stream := Tokens(src)
+	dfa := newDFA(antlrgala.NewgalaParser(stream).GetATN())
 	errs := &errorListener{}
-	if parse(stream, SLL, errs); len(errs.errors) == 0 {
+	if parse(stream, SLL, errs, dfa); len(errs.errors) == 0 {
 		return "", false
 	}
 	stream.Seek(0)
 	errs = &errorListener{}
-	if parse(stream, LL, errs); len(errs.errors) == 0 {
+	if parse(stream, LL, errs, dfa); len(errs.errors) == 0 {
 		return "", false
 	}
 	return errs.errors[0].Error(), true

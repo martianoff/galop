@@ -70,6 +70,35 @@ func TestSyntaxErrors(t *testing.T) {
 	}
 }
 
+// TestSyntaxErrorCases compares the first syntax error of galop's parsers
+// with ANTLR's on inputs where they once differed.
+func TestSyntaxErrorCases(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{
+			// The prediction in pattern at `if` fails at EOF. After the
+			// second `^` it builds the same configurations as after the
+			// first, but with other flags; ANTLR reuses the first DFA state
+			// and its flags, so no configuration counts as having left the
+			// rule, and ANTLR reports no viable alternative instead of
+			// parsing on.
+			"reused DFA state keeps its flags",
+			`package _n val _n map [ default ] default = ( func ( ) , Z map [ Z ] Z = { case if ( D_v ) "!\+" else { } ^ ( ) => { } >> { case default => map [ _M6 ] map [ Z ] default { } } ^ ( ) match`,
+		},
+	} {
+		want, rejected := gala.FirstSyntaxError(tc.src)
+		if !rejected {
+			t.Fatalf("%s: ANTLR accepts the input", tc.name)
+		}
+		_, nerr := nativegala.ParseSourceFile(nativegala.Tokens(tc.src))
+		_, aerr := antlrgala.NewgalaGalopParser(gala.GalopTokens(tc.src)).SourceFile()
+		for flavor, err := range map[string]error{"native": nerr, "antlr flavor": aerr} {
+			if got := compilerStyle(err); got != want {
+				t.Errorf("%s, %s:\n ANTLR: %s\n galop: %s", tc.name, flavor, want, got)
+			}
+		}
+	}
+}
+
 // errorPosition is the "line:col" of an error rendered as "line:col: message".
 func errorPosition(err string) string {
 	pos, _, _ := strings.Cut(err, ": ")

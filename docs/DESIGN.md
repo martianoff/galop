@@ -436,7 +436,13 @@ on its own context pool. As in ANTLR, "has left the rule" is a flag on a
 configuration, not on one of its paths: two configurations with the same state
 and alternative merge, and so do their flags, so a configuration that only got
 back into the rule through a later statement can mark the one that never
-left it, and what that one reaches. The generator emits the
+left it, and what that one reaches. The flags also depend on what ANTLR's DFA
+already holds. ANTLR keeps each state SLL prediction builds and reuses it for any
+later set with the same configurations in the same order. That equality ignores
+the flags, so the reused state keeps the flags it was built with, and so does
+everything reached from it. The simulation therefore first rebuilds the states
+that earlier predictions of the same decision in this parse built, in order,
+and gives a set equal to one of them that state's flags. The generator emits the
 sets the replay reads: each state's next tokens within its rule, and ANTLR's
 lookahead per decision alternative (`analysis.NextTokens`,
 `analysis.DecisionLookahead`). It also emits the kinds of states and decisions,
@@ -455,6 +461,13 @@ replay) and 0.40 ms on the held-out corpus (0.17 ms). Valid input costs the
 same, also for grammars without runtime prediction: only runtime prediction
 reads the call stack during a parse, so only those grammars keep one, and the
 replay builds its own.
+
+ANTLR's DFA also outlives a parse, so after earlier parses in the same process
+its first error for the same input can differ. galop matches ANTLR with an
+empty DFA at the start of the parse, and the differential tests compare against
+that (`gala.FirstSyntaxError`). The replay also assumes that ANTLR's SLL pass
+predicted what the replay predicts before the error. That holds unless the SLL
+pass took another alternative at a conflict before the error.
 
 One known exception: ANTLR 4.13.1's Go runtime computes the complement of a
 `~` set wrongly when one of the set's ranges starts at the first token type
