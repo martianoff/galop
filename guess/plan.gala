@@ -52,11 +52,22 @@ sealed type DecisionGuess {
     case Bounded(Automaton GuessDFA)
 }
 
-// Plan is how a grammar's guessing first pass settles its runtime decisions.
-struct Plan(Alphabet Alphabet, Decisions HashMap[int, DecisionGuess], Scans HashMap[int, ScanDFA])
+// Plan is how a grammar's guessing first pass settles its runtime decisions:
+// Decisions is indexed by decision id and Scans by rule (the rules that scans
+// read), None where nothing is planned.
+struct Plan(Alphabet Alphabet, Decisions Array[Option[DecisionGuess]], Scans Array[Option[ScanDFA]])
 
 // NoPlan guesses nothing.
-func NoPlan() Plan = Plan(Alphabet(0, EmptyHashMap[int, int](), 0), EmptyHashMap[int, DecisionGuess](), EmptyHashMap[int, ScanDFA]())
+func NoPlan() Plan = Plan(Alphabet(0, EmptyArray[int](), 0), EmptyArray[Option[DecisionGuess]](), EmptyArray[Option[ScanDFA]]())
+
+// Decision is how decision d is settled, if it is planned.
+func (p Plan) Decision(d int) Option[DecisionGuess] = optionAt(p.Decisions, d)
+
+// Scan is rule r's scan automaton, if a scan reads the rule.
+func (p Plan) Scan(r int) Option[ScanDFA] = optionAt(p.Scans, r)
+
+// optionAt is xs[i], or None past its end.
+func optionAt[T any](xs Array[Option[T]], i int) Option[T] = xs.GetOption(i).FlatMap((x) => x)
 
 // scanStateLimit and guessStateLimit bound the automata: a rule whose scan
 // needs more states is not scanned, and a decision's automaton stops
@@ -89,35 +100,35 @@ func PlanFor(a atn.ATN, rules Array[atn.RuleIR], plans Array[analysis.DecisionPl
     }
     val al = AlphabetOf(a.Vocab.MaxType(), b)
     val edges = abstractEdges(a, al, b)
-    val runtime = plans.Collect({ case p if analysis.NeedsRuntime(p.Lookahead) => p.Decision.Id })
+    val decisions = a.Decisions.Size()
+    val runtime = plans.FoldLeft(EmptyHashSet[int](), (s, p) => if (analysis.NeedsRuntime(p.Lookahead)) s.Add(p.Decision.Id) else s)
     val goOn = rules.FlatMap((r) => r.Alts.FlatMap((alt) => goOnOrStop(alt.Steps))).FoldLeft(EmptyHashSet[int](), (s, d) => s.Add(d))
-    val others = runtime.Filter((d) => !goOn.Contains(d))
-    val reqs = others.FoldLeft(EmptyHashMap[int, Array[Requirement]](), (acc, d) =>
-        acc.Put(d, alternativesOf(rules, d).Map((p) => requirementOf(rules, p.V1, p.V2)).Collect({ case Some(r) => r })))
+    val other = (d int) => runtime.Contains(d) && !goOn.Contains(d)
+    val reqs = ArrayTabulate(decisions, (d) =>
+        if (other(d)) alternativesOf(rules, d).Map((p) => requirementOf(rules, p.V1, p.V2)).Collect({ case Some(r) => r })
+        else EmptyArray[Requirement]())
     // The automata are independent of each other and built concurrently.
-    val scanRules = reqs.Values().ToArray().FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).Distinct()
-    val scans = concurrent.Traverse(scanRules, (r) => concurrent.Future(buildScan(a, al, edges, r))).Get()
-        .FoldLeft(EmptyHashMap[int, ScanDFA](), (acc, d) => d match {
-            case Some(scan) => acc.Put(scan.Rule, scan)
-            case None() => acc
-        })
-    val checked = others.FoldLeft(EmptyHashMap[int, Array[Requirement]](), (acc, d) =>
-        acc.Put(d, reqs.Get(d).GetOrElse(EmptyArray[Requirement]()).Filter((r) => holds(al, scans, r))))
+    val scanRules = reqs.FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).Distinct()
+    val built = concurrent.Traverse(scanRules, (r) => concurrent.Future(buildScan(a, al, edges, r))).Get()
+    val scans = ArrayTabulate(a.RuleNames.Size(), (r) => built.Collect({ case Some(s) if s.Rule == r => s }).HeadOption())
+    val checked = reqs.Map((rs) => rs.Filter((r) => holds(al, scans, r)))
     val follows = globalFollows(a)
     // A decision reads an automaton when some alternative has no requirement.
-    val uncovered = (d int) => ArrayTabulate(a.Decisions.Get(d).AltCount, (i) => i + 1)
-        .Exists((alt) => !checked.GetOrElse(d, EmptyArray[Requirement]()).Exists(_.Alt == alt))
-    val automata = concurrent.Traverse(others.Filter(uncovered), (d) =>
+    val uncovered = (d int) => other(d) && ArrayTabulate(a.Decisions.Get(d).AltCount, (i) => i + 1)
+        .Exists((alt) => !checked.Get(d).Exists(_.Alt == alt))
+    val guessed = concurrent.Traverse(ArrayTabulate(decisions, (d) => d).Filter(uncovered), (d) =>
         concurrent.Future((d, buildGuess(a, al, edges, follows, a.Decisions.Get(d))))).Get()
-        .FoldLeft(EmptyHashMap[int, GuessDFA](), (acc, dg) => dg.V2.Map((g) => acc.Put(dg.V1, g)).GetOrElse(acc))
-    val goOns = goOn.ToArray().Filter((d) => runtime.Contains(d)).FoldLeft(EmptyHashMap[int, DecisionGuess](), (acc, d) => acc.Put(d, GoOn()))
-    val all = others.FoldLeft(goOns, (acc, d) => (checked.GetOrElse(d, EmptyArray[Requirement]()), automata.Get(d)) match {
-        case (Array(), Some(g)) => acc.Put(d, Bounded(g))
-        case (Array(), None()) => acc
-        case (reqs, g) => acc.Put(d, Scanned(reqs, g))
-    })
-    val used = checked.Values().ToArray().FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).Distinct()
-    Plan(al, all, used.FoldLeft(EmptyHashMap[int, ScanDFA](), (acc, r) => scans.Get(r).Map((s) => acc.Put(r, s)).GetOrElse(acc)))
+    val automata = ArrayTabulate(decisions, (d) => guessed.Find(_.V1 == d).FlatMap(_.V2))
+    val plan = ArrayTabulate(decisions, (d) =>
+        if (!runtime.Contains(d)) None[DecisionGuess]()
+        else if (goOn.Contains(d)) Some[DecisionGuess](GoOn())
+        else (checked.Get(d), automata.Get(d)) match {
+            case (Array(), Some(g)) => Some[DecisionGuess](Bounded(g))
+            case (Array(), None()) => None[DecisionGuess]()
+            case (rs, g) => Some[DecisionGuess](Scanned(rs, g))
+        })
+    val used = checked.FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).FoldLeft(EmptyHashSet[int](), (s, r) => s.Add(r))
+    Plan(al, plan, scans.ZipWithIndex().Map((si) => if (used.Contains(si.V2)) si.V1 else None[ScanDFA]()))
 }
 
 // goOnOrStop lists the greedy go-on-or-stop decisions in steps, nested ones
@@ -222,7 +233,7 @@ func rulesOf(steps Array[ScanStep]) Array[int] = steps.FlatMap((s) => s match {
 // and the rule must not derive nothing; an optional block's first symbols
 // must differ from what follows it; tokens read and End must not open a
 // bracket, and a token read must not be EOF (the scan never reads past it).
-func holds(al Alphabet, scans HashMap[int, ScanDFA], r Requirement) bool =
+func holds(al Alphabet, scans Array[Option[ScanDFA]], r Requirement) bool =
     !r.End.Values().Exists(al.IsOpener) && checkSteps(al, scans, r.Steps, symbolsOfTokens(al, r.End)).IsDefined()
 
 func symbolsOfTokens(al Alphabet, tokens atn.IntervalSet) HashSet[int] =
@@ -230,9 +241,9 @@ func symbolsOfTokens(al Alphabet, tokens atn.IntervalSet) HashSet[int] =
 
 // checkSteps checks steps followed by symbols after, and returns the symbols
 // they can start with, or None when the check fails.
-func checkSteps(al Alphabet, scans HashMap[int, ScanDFA], steps Array[ScanStep], after HashSet[int]) Option[HashSet[int]] =
+func checkSteps(al Alphabet, scans Array[Option[ScanDFA]], steps Array[ScanStep], after HashSet[int]) Option[HashSet[int]] =
     steps.Reverse().FoldLeft(Some(after), (acc, s) => acc.FlatMap((next) => s match {
-        case ScanRule(r) => scans.Get(r).FlatMap((d) =>
+        case ScanRule(r) => optionAt(scans, r).FlatMap((d) =>
             When(!d.Ends.Get(0) && d.EndMoves.ToArray().ForAll((sym) => !next.Contains(sym)), d.First))
         case ScanToken(set) => When(!set.Values().Exists(al.IsOpener) && !set.Contains(atn.TokenEOF), symbolsOfTokens(al, set))
         case ScanOptional(inner) => checkSteps(al, scans, inner, next).FlatMap((first) =>
@@ -245,7 +256,7 @@ func movesOf(next Array[int], size int, st int) HashSet[int] =
 
 // FirstSymbols are the symbols an optional block's scan starts with, as the
 // generated code tests them.
-func FirstSymbols(al Alphabet, scans HashMap[int, ScanDFA], steps Array[ScanStep]) HashSet[int] =
+func FirstSymbols(al Alphabet, scans Array[Option[ScanDFA]], steps Array[ScanStep]) HashSet[int] =
     checkSteps(al, scans, steps, EmptyHashSet[int]()).GetOrElse(EmptyHashSet[int]())
 
 // regionFollows lists, per rule, the follow states of the calls reachable

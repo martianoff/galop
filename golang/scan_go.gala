@@ -83,13 +83,13 @@ var PFXGuessCheck func(p *PARSER, d int, alts uint64)
 func guessCode(e env) string {
     val plan = e.guessPlan
     val x = e.pfx
-    val scans = plan.Scans.Keys().ToArray().Sorted().FlatMap((r) => plan.Scans.Get(r) match {
-        case Some(scan) => ArrayOf(goSlice(s"${x}Scan$r", "int16", scan.Next.Map((n) => s"$n")))
+    val scans = plan.Scans.ZipWithIndex().FlatMap((sr) => sr.V1 match {
+        case Some(scan) => ArrayOf(goSlice(s"${x}Scan${sr.V2}", "int16", scan.Next.Map((n) => s"$n")))
         case None() => EmptyArray[string]()
     })
-    val decisions = plan.Decisions.Keys().ToArray().Sorted().FlatMap((d) => plan.Decisions.Get(d) match {
-        case Some(guess.Scanned(reqs, g)) => automatonTables(e, d, g).AppendAll(scannedCode(e, d, reqs, g.IsDefined()))
-        case Some(guess.Bounded(g)) => automatonTables(e, d, Some(g)).Append(entryCode(e, d, "bounded", "its bounded automaton", true, ""))
+    val decisions = plan.Decisions.ZipWithIndex().FlatMap((gd) => gd.V1 match {
+        case Some(guess.Scanned(reqs, g)) => automatonTables(e, gd.V2, g).AppendAll(scannedCode(e, gd.V2, reqs, g.IsDefined()))
+        case Some(guess.Bounded(g)) => automatonTables(e, gd.V2, Some(g)).Append(entryCode(e, gd.V2, "bounded", "its bounded automaton", true, ""))
         case _ => EmptyArray[string]()
     })
     if (scans.IsEmpty() && decisions.IsEmpty()) ""

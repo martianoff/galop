@@ -152,7 +152,7 @@ func altMask(alts Array[int]) Option[string] =
 // runtimeChoice is the Go statement for a lookahead leaf that leaves
 // decision d to runtime among alts: in a guessing first pass, as e's guess
 // plan settles the decision (see guess.PlanFor); runtime prediction otherwise.
-func runtimeChoice(e env, d int, alts Array[int]) string = (altMask(alts), e.guessPlan.Decisions.Get(d)) match {
+func runtimeChoice(e env, d int, alts Array[int]) string = (altMask(alts), e.guessPlan.Decision(d)) match {
     case (Some(m), Some(guess.GoOn())) => s"return p.guessOr($d, $m)"
     case (Some(m), Some(guess.Scanned(_, _))) => s"return p.scanned$d($m)"
     case (Some(m), Some(guess.Bounded(_))) => s"return p.bounded$d($m)"
@@ -160,8 +160,8 @@ func runtimeChoice(e env, d int, alts Array[int]) string = (altMask(alts), e.gue
 }
 
 // guessesGoOn says some decision of e's plan goes on (and needs guessOr).
-func guessesGoOn(e env) bool = e.guessPlan.Decisions.Values().ToArray().Exists((g) => g match {
-    case guess.GoOn() => true
+func guessesGoOn(e env) bool = e.guessPlan.Decisions.Exists((g) => g match {
+    case Some(guess.GoOn()) => true
     case _ => false
 })
 
@@ -170,7 +170,8 @@ func allAlts(e env, d int) Array[int] = ArrayTabulate(e.parser.Decisions.Get(d).
 
 // readsAutomata says some decision of e's plan is scanned or reads a bounded
 // automaton (and needs scanSource).
-func readsAutomata(e env) bool = e.guessPlan.Decisions.Values().ToArray().Exists((g) => g match {
-    case guess.GoOn() => false
-    case _ => true
+func readsAutomata(e env) bool = e.guessPlan.Decisions.Exists((g) => g match {
+    case Some(guess.Scanned(_, _)) => true
+    case Some(guess.Bounded(_)) => true
+    case _ => false
 })

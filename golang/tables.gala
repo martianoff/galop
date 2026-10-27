@@ -144,7 +144,7 @@ func bracketTables(e env, transitions int, starts Array[int]) Array[string] {
         s"// ${x}OpenerCount is the number of opening brackets.",
         s"const ${x}OpenerCount = ${openers.Size()}",
         "",
-        goSlice(s"${x}OpenerSym", "int32", ArrayTabulate(e.vocab.MaxType() + 2, (i) => s"${index.Get(i - 1).GetOrElse(-1)}")),
+        goSlice(s"${x}OpenerSym", "int32", ArrayTabulate(e.vocab.MaxType() + 2, (i) => s"${index.GetOption(i).GetOrElse(-1)}")),
         goSlice(s"${x}IsCloser", "bool", ArrayTabulate(e.vocab.MaxType() + 2, (i) => s"${closers.Contains(i - 1)}")),
         goSlice(s"${x}OpenerCloser", "int32", openers.Map((o) => s"${o.V2}")),
         goSlice(s"${x}AfterStart", "int32", codegen.Offsets(after.Map(_.Size())).Map((n) => s"$n")),

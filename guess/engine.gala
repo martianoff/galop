@@ -25,7 +25,8 @@ import (
 // Alphabet numbers the engine's symbols as the generated parser's prediction
 // does: token t (EOF is -1) is t+1, the group opened by the g-th opener is
 // MaxType+2+g.
-struct Alphabet(MaxType int, OpenerIndex HashMap[int, int], Openers int)
+// OpenerIndex is indexed by token type + 1: the opener's index, or -1.
+struct Alphabet(MaxType int, OpenerIndex Array[int], Openers int)
 
 // Size is the number of symbols.
 func (al Alphabet) Size() int = al.MaxType + 2 + al.Openers
@@ -37,11 +38,11 @@ func (al Alphabet) TokenSymbol(t int) int = t + 1
 // bracket families b, openers in family order, as the Go target's tables do.
 func AlphabetOf(maxType int, b brackets.Brackets) Alphabet {
     val openers = b.Families.FlatMap((f) => f.Openers.Values())
-    Alphabet(maxType, openers.ZipWithIndex().FoldLeft(EmptyHashMap[int, int](), (acc, p) => acc.Put(p.V1, p.V2)), openers.Size())
+    Alphabet(maxType, ArrayTabulate(maxType + 2, (i) => openers.IndexOf(i - 1)), openers.Size())
 }
 
 // IsOpener says token t opens a bracket.
-func (al Alphabet) IsOpener(t int) bool = al.OpenerIndex.Contains(t)
+func (al Alphabet) IsOpener(t int) bool = al.OpenerIndex.GetOption(t + 1).Exists((g) => g >= 0)
 
 // edge is a consuming step of the abstract ATN: symbol, then state.
 struct edge(Symbol int, Target int)
@@ -111,15 +112,13 @@ struct engine(
 // a bracket goes to the transition's target; an opener whose transition opens
 // a group goes, as the group's symbol, to the states after its closer. An
 // opener read as a token only occurs in input outside the language.
-func abstractEdges(a atn.ATN, al Alphabet, b brackets.Brackets) Array[Array[edge]] {
-    val sites = b.Sites.FoldLeft(EmptyHashMap[int64, Array[int]](), (acc, s) => acc.Put(siteKey(s.State, s.Index), s.After))
+func abstractEdges(a atn.ATN, al Alphabet, b brackets.Brackets) Array[Array[edge]] =
     a.States.Map((s) => s.Out.ZipWithIndex().FlatMap((ti) => ti.V1.Symbols().Values().FlatMap((t) =>
         if (!al.IsOpener(t)) ArrayOf(edge(al.TokenSymbol(t), ti.V1.Target()))
-        else sites.Get(siteKey(s.Id, ti.V2)) match {
-            case Some(after) => after.Map((st) => edge(al.MaxType + 2 + al.OpenerIndex.Get(t).GetOrElse(0), st))
+        else b.Sites.Find((site) => site.State == s.Id && site.Index == ti.V2) match {
+            case Some(site) => site.After.Map((st) => edge(al.MaxType + 2 + al.OpenerIndex.Get(t + 1), st))
             case None() => EmptyArray[edge]()
         })))
-}
 
 // globalFollows lists, per rule, the follow state of every call of it.
 func globalFollows(a atn.ATN) Array[Array[int]] =
@@ -127,8 +126,9 @@ func globalFollows(a atn.ATN) Array[Array[int]] =
 
 // byRule groups (rule, follow state) pairs by rule.
 func byRule(rules int, calls Array[Tuple[int, int]]) Array[Array[int]] {
-    val grouped = calls.FoldLeft(EmptyHashMap[int, Array[int]](), (acc, c) => acc.Put(c.V1, acc.GetOrElse(c.V1, EmptyArray[int]()).Append(c.V2)))
-    ArrayTabulate(rules, (r) => grouped.GetOrElse(r, EmptyArray[int]()).Distinct())
+    val grouped = m.ArrayTabulate(rules, (_) => EmptyArray[int]())
+    calls.ForEach((c) => grouped.Set(c.V1, grouped.Get(c.V1).Append(c.V2)))
+    ArrayTabulate(rules, (r) => grouped.Get(r).Distinct())
 }
 
 // closureResult is a closure's consuming configurations, sorted, and whether
@@ -202,6 +202,3 @@ func keyOf(configs Array[int64]) string = configs.Map((k) => s"$k").MkString(","
 // symbolsOut are the symbols some configuration of configs can consume.
 func (en engine) symbolsOut(configs Array[int64]) Array[int] =
     configs.FlatMap((k) => en.edges.Get(stateOf(k)).Map(_.Symbol)).Distinct().Sorted()
-
-// siteKey identifies transition index of state.
-func siteKey(state int, index int) int64 = (int64(state) << 32) | int64(index)

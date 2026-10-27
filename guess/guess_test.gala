@@ -27,7 +27,7 @@ func decisionIn(a atn.ATN, text string) Option[int] = a.Decisions.Find((d) => d.
 // alternatives that have requirements, and +dfa when it also reads an
 // automaton), bounded, none, or missing when there is no such decision.
 func kindOf(p Plan, d Option[int]) string = d match {
-    case Some(id) => p.Decisions.Get(id) match {
+    case Some(id) => p.Decision(id) match {
         case Some(GoOn()) => "go-on"
         case Some(Scanned(rs, g)) => s"scanned:${rs.Map(_.Alt).MkString(",")}" + (if (g.IsDefined()) "+dfa" else "")
         case Some(Bounded(_)) => "bounded"
@@ -76,7 +76,7 @@ func TestScanAutomatonEndsAndStops(t T) T {
     val (a, p) = planned(prefixGrammar)
     val ellipsis = p.Alphabet.TokenSymbol(a.Vocab.LiteralType("'...'").GetOrElse(-5))
     // e can end after ID, and '...' is no move from there.
-    a.RuleIndex("e").FlatMap((e) => p.Scans.Get(e)) match {
+    a.RuleIndex("e").FlatMap((e) => p.Scan(e)) match {
         case Some(d) => IsFalse(IsTrue(t, d.EndMoves.NonEmpty()), d.EndMoves.Contains(ellipsis))
         case None() => Fail(t, "no scan automaton for e")
     }
@@ -102,7 +102,7 @@ func TestAutomatonKeepsAnAlternativeEndingTheInput(t T) T {
     val (a, p) = planned(grammartest.GalaGrammar)
     val d = a.Decisions.Find((x) => strings.HasPrefix(x.Text, "primary :")).Map(_.Id)
     val id = p.Alphabet.TokenSymbol(a.Vocab.TypeOf("IDENTIFIER").GetOrElse(-5))
-    d.FlatMap((x) => p.Decisions.Get(x)) match {
+    d.FlatMap((x) => p.Decision(x)) match {
         case Some(Bounded(gd)) => Eq(t, walk(gd, p.Alphabet.Size(), ListOf(id, 0)), uint64(2))
         case _ => Eq(t, kindOf(p, d), "bounded")
     }
