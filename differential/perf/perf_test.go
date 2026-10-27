@@ -7,6 +7,7 @@ func TestJudge(t *testing.T) {
 		Report: Report{
 			Counters: map[string]int64{
 				"native/corpus/predictions":     100,
+				"native/corpus/replays-max":     36,
 				"native/corpus/allocs-per-pass": 1000,
 			},
 			Ratios: map[string]float64{
@@ -27,6 +28,7 @@ func TestJudge(t *testing.T) {
 	}{
 		{"the same count is ok", Report{Counters: map[string]int64{"native/corpus/predictions": 100}}, "ok"},
 		{"one more prediction fails", Report{Counters: map[string]int64{"native/corpus/predictions": 101}}, "worse"},
+		{"one more replay of the worst file fails", Report{Counters: map[string]int64{"native/corpus/replays-max": 37}}, "worse"},
 		{"fewer is better", Report{Counters: map[string]int64{"native/corpus/predictions": 0}}, "better"},
 		{"allocations within their tolerance", Report{Counters: map[string]int64{"native/corpus/allocs-per-pass": 1005}}, "ok"},
 		{"allocations past their tolerance", Report{Counters: map[string]int64{"native/corpus/allocs-per-pass": 1011}}, "worse"},

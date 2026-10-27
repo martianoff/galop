@@ -119,7 +119,7 @@ for both flavors.
 | `predictions` | runtime (adaptive) predictions, in every pass: the first, the repair or LL passes, and the replay that finds a rejected file's first error |
 | `full-context` | full-context (LL) predictions |
 | `replayed-files` | files that needed more than one pass (repair, rerun over tokens) |
-| `replays-median`, `replays-max` | extra passes per such file |
+| `replays-median`, `replays-max` | extra passes per such file; the maximum is the worst file, so a rise there fails even when the median holds |
 | `sll-states`, `full-context-states` | states the prediction caches built: the warm-up |
 | `allocs-per-pass` | allocations of a warm pass |
 | `files`, `accepted` | the input's size and how much of it parses (reported, not judged: the parity tests check acceptance) |
@@ -170,7 +170,7 @@ lexer's gap is the floor any Go program pays.
 
 | Where | What | Judged |
 |---|---|---|
-| every PR and push: job `performance gate` | `perfgate` with the defaults above (about 2 minutes once built) | against `baseline.json`; enforcing only when `PERF_ENFORCE` is `"true"` in `ci.yml` |
+| every PR and push: job `performance gate` | `perfgate` with the defaults above (about 2 minutes once built) | against `baseline.json`; enforcing (`PERF_ENFORCE: "true"` in `ci.yml`): a regression or a missing number fails the job |
 | pushes to main and `workflow_dispatch`: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, generated sets 1–4 | parity with ANTLR |
 | pushes to main and `workflow_dispatch`: job `performance sweep` | `perfgate -every=1 -mutants=300 -runs=7 -passes=7` | not judged: a wider report |
 
