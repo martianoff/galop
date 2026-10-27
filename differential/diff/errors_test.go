@@ -73,26 +73,28 @@ func TestSyntaxErrors(t *testing.T) {
 	}
 }
 
-// TestSyntaxErrorCases compares the first syntax error of galop's parsers
-// with ANTLR's on inputs where they once differed.
+// TestSyntaxErrorCases checks galop's first syntax error on inputs where it
+// once differed from ANTLR's. Each case states the error ANTLR reports in a
+// fresh process, so galop is checked against a fixed answer; the reference,
+// gala.FirstSyntaxError, is checked against the same answer separately.
 func TestSyntaxErrorCases(t *testing.T) {
-	for _, tc := range []struct{ name, src string }{
+	for _, tc := range []struct{ name, src, want string }{
 		{
 			// The prediction in pattern at `if` fails at EOF. After the second
 			// `^` ANTLR reuses the DFA state built after the first, with its
 			// flags, so it finds no alternative to fall back on.
 			"reused DFA state keeps its flags",
 			`package _n val _n map [ default ] default = ( func ( ) , Z map [ Z ] Z = { case if ( D_v ) "!\+" else { } ^ ( ) => { } >> { case default => map [ _M6 ] map [ Z ] default { } } ^ ( ) match`,
+			`1:187: no viable alternative at input 'if(D_v)"!\+"else{}^()=>{}>>{casedefault=>map[_M6]map[Z]default{}}^()match'`,
 		},
 	} {
-		want, rejected := gala.FirstSyntaxError(tc.src)
-		if !rejected {
-			t.Fatalf("%s: ANTLR accepts the input", tc.name)
-		}
 		for _, f := range flavors {
-			if got := f.parse(tc.src); got != want {
-				t.Errorf("%s, %s:\n ANTLR: %s\n galop: %s", tc.name, f.name, want, got)
+			if got := f.parse(tc.src); got != tc.want {
+				t.Errorf("%s, %s:\n want: %s\n  got: %s", tc.name, f.name, tc.want, got)
 			}
+		}
+		if got, _ := gala.FirstSyntaxError(tc.src); got != tc.want {
+			t.Errorf("%s, ANTLR:\n want: %s\n  got: %s", tc.name, tc.want, got)
 		}
 	}
 }

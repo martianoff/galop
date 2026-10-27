@@ -393,8 +393,10 @@ is, gets no bracket families at all: its `repair.Plan` decides that once, and
 
 ### Reporting syntax errors as ANTLR does
 
-A failed parse reports the first syntax error ANTLR 4.13.1's Go runtime
-reports for the same tokens: the same message and the same position. That error
+A failed parse reports the same first syntax error as ANTLR 4.13.1's Go runtime
+parsing the same tokens in a fresh process: the same message and the same
+position. (ANTLR's error text can depend on what the same process parsed
+earlier, because its prediction cache is shared; see below.) That error
 depends on more than the token where the input stops making sense:
 
 - **The shape ANTLR generates for each decision.** Where the alternatives'
@@ -474,9 +476,10 @@ reads the call stack during a parse, so only those grammars keep one, and the
 replay builds its own.
 
 ANTLR's DFA also outlives a parse, so after earlier parses in the same process
-its first error for the same input can differ. galop matches ANTLR with an
-empty DFA at the start of the parse, and the differential tests compare against
-that (`gala.FirstSyntaxError`). The replay also assumes that ANTLR's SLL pass
+its first error for the same input can differ. No parser can reproduce that from
+the input alone. galop matches ANTLR in a fresh process, whose DFA is empty when
+the parse starts, and the differential tests compare against that
+(`gala.FirstSyntaxError`). The replay also assumes that ANTLR's SLL pass
 predicted what the replay predicts before the error. That holds unless the SLL
 pass took another alternative at a conflict before the error.
 
@@ -585,7 +588,8 @@ tool rejects any other with error 508 before generating. The Go target has two
 Both flavors run the same decision functions and runtime predictor (SLL first,
 LL from the start on a syntax error), so they choose the same alternatives.
 Neither recovers from a syntax error yet: a parse stops at the first one and
-reports the error ANTLR reports first, with its message, line and column (see
+reports the same first error as ANTLR in a fresh process, with its message,
+line and column (see
 "Reporting syntax errors as ANTLR does"). The replay reads the tokens alone,
 so bracket abstraction does not change the error.
 
