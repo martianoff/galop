@@ -71,11 +71,13 @@ func guessCode(e env) string {
     val x = e.pfx
     val p = e.parserType
     val size = plan.Alphabet.Size()
-    val scans = plan.Scans.Keys().ToArray().Sorted().Map((r) =>
-        goSlice(s"${x}Scan$r", "int16", plan.Scans.Get(r).Get().Next.Map((n) => s"$n")))
-    val decisions = plan.Decisions.Keys().ToArray().Sorted().FlatMap((d) => plan.Decisions.Get(d).Get() match {
-        case guess.Scanned(reqs) => scannedCode(e, d, reqs)
-        case guess.Bounded(g) => ArrayOf(
+    val scans = plan.Scans.Keys().ToArray().Sorted().FlatMap((r) => plan.Scans.Get(r) match {
+        case Some(scan) => ArrayOf(goSlice(s"${x}Scan$r", "int16", scan.Next.Map((n) => s"$n")))
+        case None() => EmptyArray[string]()
+    })
+    val decisions = plan.Decisions.Keys().ToArray().Sorted().FlatMap((d) => plan.Decisions.Get(d) match {
+        case Some(guess.Scanned(reqs)) => scannedCode(e, d, reqs)
+        case Some(guess.Bounded(g)) => ArrayOf(
             goSlice(s"${x}Guess$d", "int16", g.Next.Map((n) => s"$n")),
             goSlice(s"${x}GuessLeaf$d", "uint64", g.Leaf.ZipWithIndex().Map((li) => if (li.V1) s"0x${strconv.FormatUint(g.Alts.Get(li.V2), 16)}" else "0")),
             s"// bounded$d settles decision $d in a guessing first pass with its bounded automaton.\nfunc (p *$p) bounded$d(alts uint64) int {\n\tif !p.first {\n\t\treturn p.adaptivePredict($d)\n\t}\n\tif alts &= p.guessWalk(${x}Guess$d, ${x}GuessLeaf$d); alts == 0 {\n\t\tp.noViableAlt($d)\n\t}\n\treturn p.guess(alts)\n}\n",

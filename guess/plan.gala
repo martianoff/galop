@@ -74,11 +74,11 @@ val guessStackDepth = 3
 func PlanFor(a atn.ATN, rules Array[atn.RuleIR], plans Array[analysis.DecisionPlan], b brackets.Brackets) Plan {
     val al = AlphabetOf(a.Vocab.MaxType(), b)
     val edges = abstractEdges(a, al, b)
-    val runtime = plans.Filter((p) => analysis.NeedsRuntime(p.Lookahead)).Map(_.Decision.Id)
+    val runtime = plans.Collect({ case p if analysis.NeedsRuntime(p.Lookahead) => p.Decision.Id })
     val goOn = rules.FlatMap((r) => r.Alts.FlatMap((alt) => goOnOrStop(alt.Steps))).FoldLeft(EmptyHashSet[int](), (s, d) => s.Add(d))
     val others = runtime.Filter((d) => !goOn.Contains(d))
     val reqs = others.FoldLeft(EmptyHashMap[int, Array[Requirement]](), (acc, d) =>
-        acc.Put(d, alternativesOf(rules, d).Collect({ case (alt, steps) if requirementOf(rules, alt, steps).IsDefined() => requirementOf(rules, alt, steps).Get() })))
+        acc.Put(d, alternativesOf(rules, d).Map((p) => requirementOf(rules, p.V1, p.V2)).Collect({ case Some(r) => r })))
     // The automata are independent of each other and built concurrently.
     val scanRules = reqs.Values().ToArray().FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).Distinct()
     val scans = concurrent.Traverse(scanRules, (r) => concurrent.Future(buildScan(a, al, edges, r))).Get()
@@ -89,16 +89,19 @@ func PlanFor(a atn.ATN, rules Array[atn.RuleIR], plans Array[analysis.DecisionPl
     val checked = others.FoldLeft(EmptyHashMap[int, Array[Requirement]](), (acc, d) =>
         acc.Put(d, reqs.Get(d).GetOrElse(EmptyArray[Requirement]()).Filter((r) => holds(al, scans, r))))
     val follows = globalFollows(a)
-    val bounded = concurrent.Traverse(others.Filter((d) => checked.Get(d).Get().IsEmpty()), (d) =>
+    val bounded = concurrent.Traverse(others.Filter((d) => checked.GetOrElse(d, EmptyArray[Requirement]()).IsEmpty()), (d) =>
         concurrent.Future((d, buildGuess(a, al, edges, follows, a.Decisions.Get(d))))).Get()
     val decisions = goOn.ToArray().Filter((d) => runtime.Contains(d)).FoldLeft(EmptyHashMap[int, DecisionGuess](), (acc, d) => acc.Put(d, GoOn()))
-    val withScans = others.FoldLeft(decisions, (acc, d) => if (checked.Get(d).Get().NonEmpty()) acc.Put(d, Scanned(checked.Get(d).Get())) else acc)
+    val withScans = others.FoldLeft(decisions, (acc, d) => checked.GetOrElse(d, EmptyArray[Requirement]()) match {
+        case Array() => acc
+        case reqs => acc.Put(d, Scanned(reqs))
+    })
     val all = bounded.FoldLeft(withScans, (acc, dg) => dg.V2 match {
         case Some(g) => acc.Put(dg.V1, Bounded(g))
         case None() => acc
     })
     val used = checked.Values().ToArray().FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).Distinct()
-    Plan(al, all, used.FoldLeft(EmptyHashMap[int, ScanDFA](), (acc, r) => acc.Put(r, scans.Get(r).Get())))
+    Plan(al, all, used.FoldLeft(EmptyHashMap[int, ScanDFA](), (acc, r) => scans.Get(r).Map((s) => acc.Put(r, s)).GetOrElse(acc)))
 }
 
 // goOnOrStop lists the greedy go-on-or-stop decisions in steps, nested ones
@@ -315,11 +318,12 @@ func buildGuess(a atn.ATN, al Alphabet, edges Array[Array[edge]], follows Array[
         case atn.RuleCall(target, _, follow) => Some(pack(target, en.stacks.push(0, follow).V1, false, ti.V2 + 1))
         case t => When(t.IsEpsilon(), pack(t.Target(), 0, false, ti.V2 + 1))
     })
-    if (dec.AltCount > 63 || starts.Exists(_.IsEmpty())) {
+    val known = starts.Collect({ case Some(k) => k })
+    if (dec.AltCount > 63 || known.Size() != starts.Size()) {
         return None()
     }
     val b = newSubset()
-    b.add(en.closure(starts.Map(_.Get())))
+    b.add(en.closure(known))
     // After EOF there is nothing more to read: a state reached on EOF is a leaf.
     val atEOF = m.EmptyHashSet[int]()
     val leaf = (id int) => id >= guessStateLimit || atEOF.Contains(id)
