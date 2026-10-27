@@ -61,42 +61,43 @@
     "native/mutants/replays-median": 6,
     "native/mutants/sll-states": 1194
   },
+  "note": "counters: perfgate on main 285e408 (any machine); ratios: the CI runner (ubuntu-latest, GOMAXPROCS=4), run 40506558701",
   "ratios": {
-    "corpus/w1/first/galop-vs-antlr": 0.032536338161515146,
-    "corpus/w1/first/galop-vs-lexer": 5.203460862511829,
-    "corpus/w1/warm/galop-vs-antlr": 0.10234314994265753,
-    "corpus/w1/warm/galop-vs-lexer": 3.793204452255419,
-    "corpus/w32/first/galop-vs-antlr": 0.032292897258257465,
-    "corpus/w32/first/galop-vs-lexer": 10.267091000454645,
-    "corpus/w32/warm/galop-vs-antlr": 0.09325979394281939,
-    "corpus/w32/warm/galop-vs-lexer": 5.6219760235457406,
-    "generated/w1/first/galop-vs-antlr": 0.03561937846169156,
-    "generated/w1/first/galop-vs-lexer": 30.736729117876664,
-    "generated/w1/warm/galop-vs-antlr": 0.015102277798720065,
-    "generated/w1/warm/galop-vs-lexer": 4.081381733021078,
-    "generated/w32/first/galop-vs-antlr": 0.045253131279166345,
-    "generated/w32/first/galop-vs-lexer": 71.14271572347798,
-    "generated/w32/warm/galop-vs-antlr": 0.01563319635543757,
-    "generated/w32/warm/galop-vs-lexer": 5.590661606995545,
-    "mutants/w1/first/galop-vs-antlr": 0.03905321530070947,
-    "mutants/w1/first/galop-vs-lexer": 34.406418604651165,
-    "mutants/w1/warm/galop-vs-antlr": 0.013250488696325806,
-    "mutants/w1/warm/galop-vs-lexer": 9.652837209302326,
-    "mutants/w32/first/galop-vs-antlr": 0.04716522016692629,
-    "mutants/w32/first/galop-vs-lexer": 75.04140397533185,
-    "mutants/w32/warm/galop-vs-antlr": 0.009620996365512698,
-    "mutants/w32/warm/galop-vs-lexer": 11.447534331369356
+    "corpus/w1/first/galop-vs-antlr": 0.03056086272487875,
+    "corpus/w1/first/galop-vs-lexer": 4.234223234624146,
+    "corpus/w1/warm/galop-vs-antlr": 0.08143068371757213,
+    "corpus/w1/warm/galop-vs-lexer": 2.756911161731207,
+    "corpus/w32/first/galop-vs-antlr": 0.027403406910048275,
+    "corpus/w32/first/galop-vs-lexer": 7.621385017421603,
+    "corpus/w32/warm/galop-vs-antlr": 0.09450013124220749,
+    "corpus/w32/warm/galop-vs-lexer": 4.515953832752613,
+    "generated/w1/first/galop-vs-antlr": 0.033153093796503504,
+    "generated/w1/first/galop-vs-lexer": 27.355594610427648,
+    "generated/w1/warm/galop-vs-antlr": 0.013112475858615791,
+    "generated/w1/warm/galop-vs-lexer": 3.382776801405975,
+    "generated/w32/first/galop-vs-antlr": 0.03921256201939859,
+    "generated/w32/first/galop-vs-lexer": 25.501979269753633,
+    "generated/w32/warm/galop-vs-antlr": 0.014230862626573873,
+    "generated/w32/warm/galop-vs-lexer": 2.240769918572148,
+    "mutants/w1/first/galop-vs-antlr": 0.0442790234879251,
+    "mutants/w1/first/galop-vs-lexer": 26.06018327564873,
+    "mutants/w1/warm/galop-vs-antlr": 0.027977128457823137,
+    "mutants/w1/warm/galop-vs-lexer": 12.871055478842004,
+    "mutants/w32/first/galop-vs-antlr": 0.043822219362612484,
+    "mutants/w32/first/galop-vs-lexer": 31.715143071482157,
+    "mutants/w32/warm/galop-vs-antlr": 0.015348726941290117,
+    "mutants/w32/warm/galop-vs-lexer": 8.576163173446423
   },
   "rules": [
     {
       "pattern": "*/*/files",
-      "tolerance": 0,
-      "report_only": true
+      "report_only": true,
+      "tolerance": 0
     },
     {
       "pattern": "*/*/accepted",
-      "tolerance": 0,
-      "report_only": true
+      "report_only": true,
+      "tolerance": 0
     },
     {
       "pattern": "*/*/allocs-per-pass",
@@ -104,13 +105,12 @@
     },
     {
       "pattern": "*/w32/*/*",
-      "tolerance": 0,
-      "report_only": true
+      "report_only": true,
+      "tolerance": 0
     },
     {
       "pattern": "*/*/*/*",
       "tolerance": 0.3
     }
-  ],
-  "note": "measured by perfgate on windows/amd64, GOMAXPROCS=32"
+  ]
 }
