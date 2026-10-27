@@ -442,7 +442,14 @@ later set with the same configurations in the same order. That equality ignores
 the flags, so the reused state keeps the flags it was built with, and so does
 everything reached from it. The simulation therefore first rebuilds the states
 that earlier predictions of the same decision in this parse built, in order,
-and gives a set equal to one of them that state's flags. The generator emits the
+and gives a set equal to one of them that state's flags. Equality depends on the
+order of the configurations, so the simulation builds each set in ANTLR's order.
+It merges what a token reaches before the closure, follows a context's return
+states last first, and sets `dipsIntoOuterContext` as ANTLR's `Add` does.
+galop's ATN is not ANTLR's state for state, though, so now and then two sets
+that ANTLR keeps apart look equal to the simulation. Compared with ANTLR's own
+DFA on 2,500 rejected mutants, 1,907 of the 1,910 predictions the simulation
+rebuilt built and reused the same states as ANTLR. The generator emits the
 sets the replay reads: each state's next tokens within its rule, and ANTLR's
 lookahead per decision alternative (`analysis.NextTokens`,
 `analysis.DecisionLookahead`). It also emits the kinds of states and decisions,

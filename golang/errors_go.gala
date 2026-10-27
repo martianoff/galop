@@ -380,6 +380,8 @@ func (s *PFXFlagSet) reset() {
 }
 
 func (s *PFXFlagSet) add(c PFXFlagConfig, cp *PFXCtxPool) {
+	// ANTLR's Add sets dipsIntoOuterContext for any flagged configuration.
+	s.dips = s.dips || c.left
 	k := uint64(uint32(c.state))<<32 | uint64(uint32(c.alt))
 	if i, isNew := s.at.put(k, int32(len(s.list))); !isNew {
 		s.list[i].ctx = cp.merge(s.list[i].ctx, c.ctx)
@@ -404,6 +406,7 @@ type PFXSLLFailure struct {
 	pool      PFXCtxPool
 	busy      PFXMap
 	cur, next PFXFlagSet
+	mid       PFXFlagSet // the configurations a token reaches, before closure
 	// history lists, per decision, the tokens the replay predicted it at;
 	// walked counts those whose states built holds already.
 	history [][]int32
@@ -433,15 +436,17 @@ func (m *PFXSLLFailure) closure(c PFXFlagConfig, out *PFXFlagSet) {
 	cp := &m.pool
 	s := c.state
 	if PFXStateIsStop[s] {
-		for i := int32(0); i < cp.length[c.ctx]; i++ {
-			ret, parent := cp.rets[cp.start[c.ctx]+i], cp.parents[cp.start[c.ctx]+i]
-			if ret == PFXEmptyReturn {
-				// Past the rule's end with no caller known: the configuration
-				// keeps its whole context, as in ANTLR.
-				m.follow(PFXFlagConfig{s, c.alt, c.ctx, true}, out)
-			} else {
-				m.closure(PFXFlagConfig{ret, c.alt, parent, c.left}, out)
-			}
+		// In ANTLR's order (closureCheckingStopState): the empty return,
+		// which sorts last, at once; the others from a stack, last first.
+		// Past the rule's end with no caller known, the configuration keeps
+		// its whole context, as in ANTLR.
+		from, n := cp.start[c.ctx], cp.length[c.ctx]
+		if n > 0 && cp.rets[from+n-1] == PFXEmptyReturn {
+			m.follow(c, out)
+			n--
+		}
+		for i := n - 1; i >= 0; i-- {
+			m.closure(PFXFlagConfig{cp.rets[from+i], c.alt, cp.parents[from+i], c.left}, out)
 		}
 		return
 	}
@@ -469,16 +474,22 @@ func (m *PFXSLLFailure) hasEmptyPath(c int32) bool {
 }
 
 // follow continues c, at its rule's end with no caller known, after every
-// call of the rule, as SLL prediction does. A rule nobody calls keeps c there.
+// call of the rule, as SLL prediction does, flagged as having left the rule.
+// A rule nobody calls keeps c there as it is.
 func (m *PFXSLLFailure) follow(c PFXFlagConfig, out *PFXFlagSet) {
 	rule := PFXStateRule[c.state]
 	if PFXFollowStart[rule] == PFXFollowStart[rule+1] {
 		out.add(c, &m.pool)
 		return
 	}
-	out.dips = true
 	for i := PFXFollowStart[rule]; i < PFXFollowStart[rule+1]; i++ {
-		m.closure(PFXFlagConfig{PFXFollowState[i], c.alt, c.ctx, c.left}, out)
+		f := PFXFlagConfig{PFXFollowState[i], c.alt, c.ctx, true}
+		// ANTLR sets dipsIntoOuterContext here only for a configuration new
+		// to the closure.
+		if _, seen := m.busy.get(f.key()); !seen {
+			out.dips = true
+		}
+		m.closure(f, out)
 	}
 }
 
@@ -521,15 +532,20 @@ func (m *PFXSLLFailure) walk(types []int32, d int, from int) (offending int, alt
 	m.share(d, cur)
 	for pos := from; ; pos++ {
 		t := types[pos]
-		next.reset()
-		m.busy.reset()
+		// As ANTLR's computeReachSet: merge what t reaches, then close it.
+		m.mid.reset()
 		for _, c := range cur.list {
 			for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
 				k := PFXTransKind[i]
 				if (k == PFXKindAtom || k == PFXKindSet) && PFXMatches(i, t) {
-					m.closure(PFXFlagConfig{PFXTransTarget[i], c.alt, c.ctx, c.left}, next)
+					m.mid.add(PFXFlagConfig{PFXTransTarget[i], c.alt, c.ctx, c.left}, &m.pool)
 				}
 			}
+		}
+		next.reset()
+		m.busy.reset()
+		for _, c := range m.mid.list {
+			m.closure(c, next)
 		}
 		// A prediction that reads EOF stops there.
 		if len(next.list) == 0 || t == @EOF@ {
