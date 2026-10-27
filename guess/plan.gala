@@ -89,7 +89,9 @@ val guessStackDepth = 64
 // plans, bracket families b): go-on-or-stop decisions guess (GoOn); the
 // others are scanned where some alternative has a requirement whose scans
 // pass their check (and also read a bounded automaton when some alternative
-// has none), and read a bounded automaton otherwise. A decision with more
+// has none), and read a bounded automaton otherwise, when the grammar has
+// bracket families (without them the others are left to runtime
+// prediction). A decision with more
 // than 63 alternatives, or whose alternatives consume at the decision state
 // itself, is left to runtime prediction; so is every decision of a parser
 // with 2^20 states or more.
@@ -103,7 +105,9 @@ func PlanFor(a atn.ATN, rules Array[atn.RuleIR], plans Array[analysis.DecisionPl
     val decisions = a.Decisions.Size()
     val runtime = plans.FoldLeft(EmptyHashSet[int](), (s, p) => if (analysis.NeedsRuntime(p.Lookahead)) s.Add(p.Decision.Id) else s)
     val goOn = rules.FlatMap((r) => r.Alts.FlatMap((alt) => goOnOrStop(alt.Steps))).FoldLeft(EmptyHashSet[int](), (s, d) => s.Add(d))
-    val other = (d int) => runtime.Contains(d) && !goOn.Contains(d)
+    // Scans and automata read bracketed groups as one symbol: over tokens alone
+    // they settle too little, and a decision is better left to runtime prediction.
+    val other = (d int) => b.Families.NonEmpty() && runtime.Contains(d) && !goOn.Contains(d)
     val reqs = ArrayTabulate(decisions, (d) =>
         if (other(d)) alternativesOf(rules, d).Map((p) => requirementOf(rules, p.V1, p.V2)).Collect({ case Some(r) => r })
         else EmptyArray[Requirement]())
@@ -122,6 +126,7 @@ func PlanFor(a atn.ATN, rules Array[atn.RuleIR], plans Array[analysis.DecisionPl
     val plan = ArrayTabulate(decisions, (d) =>
         if (!runtime.Contains(d)) None[DecisionGuess]()
         else if (goOn.Contains(d)) Some[DecisionGuess](GoOn())
+        else if (!other(d)) None[DecisionGuess]()
         else (checked.Get(d), automata.Get(d)) match {
             case (Array(), Some(g)) => Some[DecisionGuess](Bounded(g))
             case (Array(), None()) => None[DecisionGuess]()

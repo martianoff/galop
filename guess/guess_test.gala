@@ -58,11 +58,12 @@ func TestScanWhenTheTokenAfterThePrefixDecides(t T) T {
 // counterexample: '!' can go on inside e (`a ! b`), so a scan of e from `a`
 // does not stop where stat's e ends; ruling out stat's first alternative by
 // the token after the scan would be wrong. The check must refuse it, and the
-// decision reads a bounded automaton instead.
+// decision reads a bounded automaton instead. (The parenthesized e gives the
+// grammar a bracket family, which scans and automata need.)
 val counterexample = `grammar C;
 prog : stat+ EOF ;
 stat : e '!' | e | '!' ID ;
-e : ID ('!' ID)? ;
+e : ID ('!' ID)? | '(' e ')' ;
 ID : [a-z]+ ;
 WS : [ \t\r\n]+ -> skip ;
 `
@@ -106,4 +107,22 @@ func TestAutomatonKeepsAnAlternativeEndingTheInput(t T) T {
         case Some(Bounded(gd)) => Eq(t, walk(gd, p.Alphabet.Size(), ListOf(id, 0)), uint64(2))
         case _ => Eq(t, kindOf(p, d), "bounded")
     }
+}
+
+// withoutBrackets has a decision left to runtime (e nests without bound) that
+// a scan settles, but no token pair behaves like brackets: without groups as
+// symbols it is not scanned. With a bracketed alternative, it is.
+val withoutBrackets = `grammar N;
+prog : stat+ EOF ;
+stat : e '...' | e ;
+e : '-' e | ID ;
+ID : [a-z]+ ;
+WS : [ \t\r\n]+ -> skip ;
+`
+
+func TestNoScansWithoutBrackets(t T) T {
+    val (a, p) = planned(withoutBrackets)
+    val (b, q) = planned(strings.Replace(withoutBrackets, "| ID ;", "| ID | '(' e ')' ;", 1))
+    val t1 = Eq(t, kindOf(p, decisionIn(a, "stat : e '...' | e")), "none")
+    Eq(t1, kindOf(q, decisionIn(b, "stat : e '...' | e")), "scanned:1+dfa")
 }

@@ -298,6 +298,11 @@ prediction, by ruling alternatives out and guessing the smallest left:
   16 states; past them, and after EOF, the parse guesses among the
   alternatives the state still holds.
 
+
+Scans and bounded automata read bracketed groups as one symbol; in a grammar
+without bracket families they settle too little, so its other decisions are
+left to runtime prediction (go-on-or-stop decisions still guess).
+
 Both kinds of automaton are built ahead of time by an abstract simulation of
 the ATN: each bracketed group is one symbol, as runtime prediction reads it,
 and the call stack keeps up to 64 return states (1 for a scan); a rule end
