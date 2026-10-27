@@ -324,17 +324,19 @@ again without guessing, and the parse goes on exactly as it would have without
 the search: the pass over tokens, repair or the LL rerun, and ANTLR's syntax
 error if the input is not in the language.
 
-**Cost bound.** A replay reads the input from its start, so the search stops
-after 16 replays or once its replays have read 4 times the input's tokens,
-whichever comes first. A file the search settles costs at most about 4 passes
-more than the first; a file it does not settle costs at most about 5 passes
-more than before (the search and the first pass again), then what it cost
-before. An early wrong guess behind more than 16 later guess points is
-therefore not reached by the search, but by what follows it. On the GALA corpus
-the search settles 30 of the 35 valid files whose first pass fails, and on the
-held-out corpus all 9; on invalid single-token mutants of both corpora, a
-broken file takes on average 0.1 to 0.3 ms and at most about 2.6 ms longer than
-without the search.
+**Cost bound.** A replay reads the input from its start. The search stops
+after 64 replays, once its replays have read 4 times the input's tokens (at
+least 16,384 tokens, so a short input still gets its replays), or after 16
+replays in a row that fail no further into the input than the furthest failure
+so far: a search that will succeed fixes its wrong guesses one by one and gets
+further with each, while on input outside the language every replay fails
+about where the first pass did. A file the search does not settle costs at
+most about 5 passes more than before (the search and the first pass again),
+then what it cost before; an early wrong guess the search does not reach is
+found by what follows it. Input whose brackets do not balance is not in the
+language (every sentence is balanced, see [Bracket abstraction](#bracket-abstraction)):
+it does not guess at all and costs exactly what it cost before. Stopping the
+search early is always exact, since what follows it is.
 
 ### Repairing a failed SLL parse
 

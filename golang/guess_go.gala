@@ -46,13 +46,19 @@ type PFXGuesses struct {
 	wide   bool
 }
 
-// The search stops after PFXGuessReplays replays, or once its replays have
-// read PFXGuessTokens times the input's tokens: a replay rereads the input
-// from its start, so k wrong guesses far into a large input cost k passes,
-// and the search is cut off when that is about to cost more than a few passes.
+// The search stops after PFXGuessReplays replays; once its replays have read
+// PFXGuessTokens times the input's tokens, or PFXGuessFloor tokens for a short
+// input (a replay rereads the input from its start, so k wrong guesses far into
+// a large input cost k passes); or after PFXGuessStall replays in a row that
+// fail no further into the input than the furthest failure so far. A search
+// that will succeed fixes its wrong guesses one by one and gets further with
+// each; on input outside the language every replay fails about where the
+// first pass did. Stopping early is always exact: what follows the search is.
 const (
-	PFXGuessReplays = 16
+	PFXGuessReplays = 64
 	PFXGuessTokens  = 4
+	PFXGuessFloor   = 16384
+	PFXGuessStall   = 16
 )
 
 // guess takes the smallest alternative in alts, through guessPoint when alts
@@ -104,13 +110,19 @@ func (g *PFXGuesses) next() bool {
 func (p *PARSER) search(rule @RULE@) (root @ROOT@, ok bool) {
 	g := &p.gs
 	defer func() { g.forced, g.pts = 0, g.pts[:0] }()
-	budget := PFXGuessTokens * len(p.types)
+	budget := max(PFXGuessTokens*len(p.types), PFXGuessFloor)
+	furthest, stall := p.pos, 0
 	for replays := 0; replays < PFXGuessReplays && !g.wide && g.next(); replays++ {
 		root, err := p.attempt(rule)
 		if err == nil {
 			return root, true
 		}
 		if budget -= p.pos + 1; budget <= 0 {
+			break
+		}
+		if p.pos > furthest {
+			furthest, stall = p.pos, 0
+		} else if stall++; stall >= PFXGuessStall {
 			break
 		}
 	}

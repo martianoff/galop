@@ -470,12 +470,14 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
 // EOF and the grammar runs no actions while parsing, so a pass can only
 // succeed on the whole input, and replaying runs nothing twice. Such a pass
 // also reads bracketed groups, and only then are the input's brackets paired
-// (see PFXBracketMatch). Without bracket families (none inferred, or none
-// allowed: see repair.Plan) a parse never reads groups.
+// (see PFXBracketMatch). Input whose brackets do not balance is not in the
+// language: it does not guess, so it costs what it cost before guessing.
+// Without bracket families (none inferred, or none allowed: see repair.Plan)
+// a parse never reads groups.
 func groupsOn(e env) string =
     if (!e.adaptive) ""
     else "\n\tp.first = repair" + (if (e.brackets.Families.NonEmpty())
-        s"\n\tp.group = repair\n\tif p.group {\n\t\tp.pairs = ${e.pfx}BracketMatch(p.types, p.pairs)\n\t}"
+        s"\n\tp.group = repair\n\tif p.group {\n\t\tvar balanced bool\n\t\tp.pairs, balanced = ${e.pfx}BracketMatch(p.types, p.pairs)\n\t\tp.first = p.first && balanced\n\t}"
     else "")
 
 // resetPass clears what one pass of a parse leaves behind (see attempt): the
