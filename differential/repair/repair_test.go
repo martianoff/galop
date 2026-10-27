@@ -62,11 +62,14 @@ func TestRepairMatchesANTLR(t *testing.T) {
 					needLL++
 				}
 			}
-			// The repair against ANTLR: the verdict and, on success, the tree.
-			// On failure, against the LL rerun: the same error at the same
-			// place (and, in the antlr flavor, the token stream left there).
+			antlrErr := antlrFirstError(c.rule, src)
+			// The repair against ANTLR: the verdict and, on success, the tree;
+			// on failure, ANTLR's first error. And against the LL rerun: the same
+			// error and (in the antlr flavor) the token stream left at the same place.
 			check := func(flavor, got, where string, err error, rerunWhere string) {
 				switch {
+				case !wantOK && err != nil && err.Error() != antlrErr:
+					t.Errorf("%s %q, %s flavor:\n error %v\n ANTLR %s", c.rule, src, flavor, err, antlrErr)
 				case wantOK != (err == nil):
 					t.Errorf("%s %q, %s flavor: ANTLR accepts=%v, galop error=%v", c.rule, src, flavor, wantOK, err)
 				case wantOK && got != want:
@@ -113,22 +116,43 @@ func galop(src string, parse func(*ra.RepairGalopParser) (antlr.Tree, error)) (a
 	return tree, "", nil
 }
 
-type errCount struct {
-	antlr.DefaultErrorListener
-	n int
-}
-
-func (e *errCount) SyntaxError(antlr.Recognizer, any, int, int, string, antlr.RecognitionException) {
-	e.n++
-}
-
 // antlrParse parses src as rule with ANTLR in one prediction mode; ok says
 // there was no syntax error.
 func antlrParse(rule, src string, mode int) (string, bool) {
 	p := ra.NewRepairParser(antlr.NewCommonTokenStream(ra.NewRepairLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel))
 	p.RemoveErrorListeners()
-	errs := &errCount{}
+	errs := &firstError{}
 	p.AddErrorListener(errs)
 	p.GetInterpreter().SetPredictionMode(mode)
-	return antlr.TreesStringTree(ra.Entries[rule](p), p.GetRuleNames(), nil), errs.n == 0
+	return antlr.TreesStringTree(ra.Entries[rule](p), p.GetRuleNames(), nil), errs.msg == ""
+}
+
+type firstError struct {
+	antlr.DefaultErrorListener
+	msg string
+}
+
+func (e *firstError) SyntaxError(_ antlr.Recognizer, _ any, line, column int, msg string, _ antlr.RecognitionException) {
+	if e.msg == "" {
+		e.msg = fmt.Sprintf("line %d:%d %s", line, column, msg)
+	}
+}
+
+// antlrFirstError is the first syntax error ANTLR reports parsing src as rule
+// the way the GALA compiler parses: SLL prediction, then, after an error, LL
+// prediction from the start. It is empty when there is none.
+func antlrFirstError(rule, src string) string {
+	var msg string
+	for _, mode := range []int{antlr.PredictionModeSLL, antlr.PredictionModeLL} {
+		p := ra.NewRepairParser(antlr.NewCommonTokenStream(ra.NewRepairLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel))
+		p.RemoveErrorListeners()
+		errs := &firstError{}
+		p.AddErrorListener(errs)
+		p.GetInterpreter().SetPredictionMode(mode)
+		ra.Entries[rule](p)
+		if msg = errs.msg; msg == "" {
+			return ""
+		}
+	}
+	return msg
 }

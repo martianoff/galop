@@ -1,8 +1,11 @@
 package golang
 
 import (
+    "strconv"
+
     . "martianoff/gala/collection_immutable"
 
+    "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
 )
@@ -72,19 +75,14 @@ func tables(e env) string {
         goSlice(s"${x}ClosKind", "uint8", closAll.Map((c) => s"${c.Kind}")),
         goSlice(s"${x}ClosState", "int32", closAll.Map((c) => s"${c.State}")),
         goSlice(s"${x}ClosArg", "int32", closAll.Map((c) => s"${c.Arg}")),
-    ).AppendAll(bracketTables(e, all.Size(), starts)).AppendAll(sets match {
-        // gofmt writes an empty composite literal on one line.
-        case Array() => ArrayOf(s"var ${x}Sets = [][]int32{}")
-        case _ => ArrayOf(s"var ${x}Sets = [][]int32{")
-            .AppendAll(sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},"))
-            .Append("}")
-    }).MkString("\n") + "\n"
+    ).AppendAll(bracketTables(e, all.Size(), starts)).Append(goSets(s"${x}Sets", sets)).MkString("\n") + "\n"
 }
 
 // goSlice renders `var name = []typ{...}` with a bounded number of values per line.
-func goSlice(name string, typ string, values Array[string]) string {
-    val rows = values.Grouped(24).Map((row) => "\t" + row.MkString(", ") + ",")
-    s"var $name = []$typ{\n" + rows.MkString("\n") + "\n}\n"
+func goSlice(name string, typ string, values Array[string]) string = values match {
+    // gofmt writes an empty composite literal on one line.
+    case Array() => s"var $name = []$typ{}\n"
+    case _ => s"var $name = []$typ{\n" + values.Grouped(24).Map((row) => "\t" + row.MkString(", ") + ",").MkString("\n") + "\n}\n"
 }
 
 // Kinds of the items in a state's static closure.
@@ -151,3 +149,103 @@ func bracketTables(e env, transitions int, starts Array[int]) Array[string] {
         goSlice(s"${x}AfterState", "int32", after.FlatMap((a) => a).Map((n) => s"$n")),
     )
 }
+
+// decisionKindCode numbers a decision's kind for the error emulator's tables.
+func decisionKindCode(k atn.DecisionKind) int = k match {
+    case atn.AltBlock() => 0
+    case atn.OptionalBlock() => 1
+    case atn.StarEntry() => 2
+    case atn.PlusBack() => 3
+}
+
+// isSetDecision reports whether decision d is a rule's alternatives that
+// ANTLR's tool turns into one set match (its BlockSetTransformer): more than
+// one alternative, each a single unlabeled token, the first without an
+// alternative label.
+func isSetDecision(rules Array[atn.RuleIR], d int) bool = rules.Find((r) => r.Decision == Some(d)) match {
+    case Some(r) => r.Alts.Size() > 1 && r.Alts.Head().Label.IsEmpty() && r.Alts.ForAll((a) => a.Steps.Size() == 1 && (a.Steps.Head() match {
+        case atn.MatchToken(_, None()) => true
+        case _ => false
+    }))
+    case None() => false
+}
+
+// setAfter is, for a set decision at state s, the state its tokens lead to:
+// past the epsilon steps into the first alternative and its one token.
+func setAfter(a atn.ATN, s int) int = tokenTarget(a, a.State(s).Out.Head().Target())
+
+func tokenTarget(a atn.ATN, s int) int = a.State(s).Out.Head() match {
+    case atn.Epsilon(target) => tokenTarget(a, target)
+    case t => t.Target()
+}
+
+// Sync kinds: where ANTLR's generated code calls its error strategy's Sync at
+// a state that is not a decision, and as which kind of state.
+val syncNone = 0
+val syncBlockStart = 1
+val syncLoopBack = 2
+
+// errorTables emits what the error emulator (errors_go.gala) needs beyond the
+// predictor's tables: decision kinds, how ANTLR's code generator makes each
+// decision, where it syncs, and the token sets ANTLR's error strategy reads.
+func errorTables(e env) string {
+    val a = e.parser
+    val states = a.States
+    val next = analysis.NextTokens(a, e.analysis)
+    val looks = analysis.DecisionLookahead(a, e.analysis)
+    val loops = HashMapFromSlice(e.rules.FlatMap((r) => r.Alts.FlatMap((alt) => loopsIn(alt.Steps))).Map((l) => (l.Decision, l)).ToGoSlice())
+    // ANTLR's code generator never makes a non-greedy decision a switch.
+    val ll1 = a.Decisions.Map((d) => d.Greedy && analysis.GeneratesSwitch(looks.Get(d.Id)) && !loops.Get(d.Id).Exists(_.Choice))
+    val sets = next.Map(_.Tokens).AppendAll(looks.FlatMap((l) => l)).Distinct()
+    val lookIds = looks.Map((l) => l.Map((set) => sets.IndexOf(set)))
+    // The first state of every `+` loop's body: ANTLR syncs there before the
+    // first iteration.
+    val plusStarts = HashSetFromSlice(a.States.Filter((s) => s.Kind == atn.PlusLoopBackState())
+        .FlatMap((s) => s.Out.Map(_.Target()).Filter((t) => a.State(t).Kind != atn.LoopEndState())).ToGoSlice())
+    val syncs = states.Map((s) => s.Kind match {
+        case atn.StarLoopBackState() => syncLoopBack
+        case _ if plusStarts.Contains(s.Id) => syncBlockStart
+        case _ => syncNone
+    })
+    val x = e.pfx
+    ArrayOf(
+        "// How ANTLR's generated parser decides and syncs, and the token sets its",
+        "// error strategy reads, for reporting syntax errors as ANTLR does.",
+        goSlice(s"${x}StateDecision", "int16", states.Map((s) => s"${s.Decision.GetOrElse(-1)}")),
+        goSlice(s"${x}StateSync", "uint8", syncs.Map((k) => s"$k")),
+        goSlice(s"${x}StateNext", "int32", next.Map((l) => s"${sets.IndexOf(l.Tokens)}")),
+        goSlice(s"${x}StateReachesEnd", "bool", next.Map((l) => s"${l.ReachesEnd}")),
+        goSlice(s"${x}RuleStartState", "int32", a.RuleStart.Map((n) => s"$n")),
+        goSlice(s"${x}DecisionKind", "uint8", a.Decisions.Map((d) => s"${decisionKindCode(d.Kind)}")),
+        goSlice(s"${x}DecisionSetAfter", "int32", a.Decisions.Map((d) => s"${if (isSetDecision(e.rules, d.Id)) setAfter(a, d.State) else -1}")),
+        goSlice(s"${x}DecisionLL1", "bool", ll1.Map((b) => s"$b")),
+        goSlice(s"${x}DecisionLoopAlt", "uint8", a.Decisions.Map((d) => s"${loops.Get(d.Id).Map(_.Continue).GetOrElse(0)}")),
+        goSlice(s"${x}AltLookStart", "int32", codegen.Offsets(lookIds.Map(_.Size())).Map((n) => s"$n")),
+        goSlice(s"${x}AltLook", "int32", lookIds.FlatMap((l) => l).Map((n) => s"$n")),
+        goSlice(s"${x}TokenDisplay", "string", ArrayTabulate(e.vocab.MaxType() + 1, (t) => strconv.Quote(if (t == 0) "<INVALID>" else e.vocab.Display(t)))),
+        goSets(s"${x}TokenSets", sets),
+    ).MkString("\n") + "\n"
+}
+
+// goSets renders `var name = [][]int32{...}`, one set's ranges per line.
+func goSets(name string, sets Array[atn.IntervalSet]) string = sets match {
+    // gofmt writes an empty composite literal on one line.
+    case Array() => s"var $name = [][]int32{}"
+    case _ => s"var $name = [][]int32{\n" +
+        sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},").MkString("\n") + "\n}"
+}
+
+// loopInfo is what ANTLR's code generator reads of a `*` or `+` loop's
+// decision: the alternative that runs the body again, and whether the body
+// is one block of several alternatives, which ANTLR predicts adaptively even
+// where one token decides.
+struct loopInfo(Decision int, Continue int, Choice bool)
+
+func loopsIn(steps Array[atn.Step]) Array[loopInfo] = steps.FlatMap((s) => s match {
+    case atn.Loop(_, d, cont, body) => ArrayOf(loopInfo(d, cont, body match {
+        case Array(atn.Choose(_, _, None())) => true
+        case _ => false
+    })).AppendAll(loopsIn(body))
+    case atn.Choose(_, alts, _) => alts.FlatMap((a) => loopsIn(a))
+    case _ => EmptyArray[loopInfo]()
+})

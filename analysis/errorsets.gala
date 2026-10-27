@@ -1,0 +1,45 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// The sets ANTLR's default error strategy reads, computed here so that
+// generated parsers can report syntax errors as ANTLR does.
+
+// StateLook is ANTLR's ATN.NextTokens(s) without a context: the tokens a path
+// from state s inside its rule can begin with, and whether the path can reach
+// the rule's end (ANTLR's EPSILON).
+struct StateLook(Tokens atn.IntervalSet, ReachesEnd bool)
+
+// NextTokens is the StateLook of every state of a, by state id. a has no
+// left recursion, so rule FIRST sets give what ANTLR's LL1Analyzer walks.
+func NextTokens(a atn.ATN, an Analysis) Array[StateLook] =
+    a.States.Map((s) => {
+        val l = lookFrom(a, s.Id, an.First, an.Nullable)
+        StateLook(l.Tokens, l.ReachesEnd)
+    })
+
+// DecisionLookahead is ANTLR's LL1Analyzer.getDecisionLookahead for every
+// decision of a: per alternative, the tokens it can begin with, where reaching
+// the end of the decision's rule continues after every call of the rule. A rule
+// no rule calls, not even itself, is followed by EOF: ANTLR's tool adds an EOF
+// transition to such a rule's end before this analysis.
+func DecisionLookahead(a atn.ATN, an Analysis) Array[Array[atn.IntervalSet]] {
+    val sites = callSites(a)
+    val uncalled = ArrayTabulate(a.RuleNames.Size(), (r) => !sites.Exists(_.Callee == r))
+    val follow = followSets(a, sites, uncalled, an.First, an.Nullable)
+    a.Decisions.Map((d) => a.State(d.State).Out.Map((t) => {
+        val l = lookFrom(a, t.Target(), an.First, an.Nullable)
+        if (l.ReachesEnd) l.Tokens.Union(follow.Get(d.Rule)) else l.Tokens
+    }))
+}
+
+// GeneratesSwitch reports whether ANTLR's code generator makes a decision with these
+// alternative lookaheads an LL(1) switch: every set is non-empty and no two
+// overlap.
+func GeneratesSwitch(looks Array[atn.IntervalSet]) bool =
+    looks.ForAll(_.NonEmpty()) &&
+        looks.FoldLeft(Tuple(atn.EmptySet(), true), (acc, l) => (acc.V1.Union(l), acc.V2 && acc.V1.Intersect(l).IsEmpty())).V2

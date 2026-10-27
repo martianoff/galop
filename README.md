@@ -45,7 +45,9 @@ token and tree objects. Most of ANTLR's time on the second corpus goes to two
 large files where its fast pass fails and it parses the whole file again in its
 slow mode; galop fixes such a pass in place (see [design](docs/DESIGN.md#runtime-prediction)).
 
-<!-- Error messages: how often galop's first syntax error matches ANTLR's (position and text), on invalid mutants of both corpora. To be filled in by the error-parity change. -->
+On more than 60,000 broken files from both corpora, galop's first syntax error
+matches ANTLR's message, line and column every time; ANTLR's own `~set` bug is
+the one known exception (see [design](docs/DESIGN.md#reporting-syntax-errors-as-antlr-does)).
 
 ## Why
 
@@ -198,7 +200,9 @@ for _, st := range prog.AllStat() {  // ANTLR's accessors, on typed handles
 ```
 
 Both flavors decide exactly as ANTLR does and give the same tokens and trees.
-Neither recovers from syntax errors yet: a parse stops at the first one.
+On input with a syntax error, both report the error ANTLR reports first, with
+the same message, line and column. Neither recovers from syntax errors yet: a
+parse stops at that first error.
 
 ### Bazel
 

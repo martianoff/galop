@@ -97,11 +97,20 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
   per corpus in `diff_test` and `heldout_test`, `-mutants` and `-mutant_seed` for
   more). `mutations_large_test` and `heldout_mutations_large_test` (tagged
   `manual`) check 20,000 and 10,000; CI runs them on pushes to `main`.
+- On mutated corpus files that ANTLR rejects, both flavors report ANTLR's first
+  syntax error, as the GALA compiler gets it (SLL, then LL after an error): the
+  same message at the same line and column (`TestSyntaxErrors`; 200 rejected
+  mutants per corpus, `-error_mutants` for more; the large runs check 5,000 and
+  3,000).
 - `//differential/repair:repair_test` checks both flavors against ANTLR on
   [`repair/Repair.g4`](repair/Repair.g4), a grammar whose SLL prediction fails
   where LL prediction finds the parse: through the static automaton, through
   runtime prediction past deep nesting, several times in one input, with no
-  viable alternative, and for an entry rule without EOF.
+  viable alternative, and for an entry rule without EOF. On rejected inputs it
+  also checks ANTLR's first error.
+- `//differential/errors:errors_test` checks both flavors' syntax errors against
+  ANTLR's on mutations of programs in [`errors/Errors.g4`](errors/Errors.g4), a
+  grammar galop decides without runtime prediction.
 
 ## Plugging in a parser
 

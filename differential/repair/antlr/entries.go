@@ -9,15 +9,15 @@ import "github.com/antlr4-go/antlr/v4"
 var GalopEntries = map[string]struct {
 	Parse, Rerun func(*RepairGalopParser) (antlr.Tree, error)
 }{
-	"s1": {galop((*RepairGalopParser).S1), rerun((*RepairGalopParser).ruleS1)},
-	"s2": {galop((*RepairGalopParser).S2), rerun((*RepairGalopParser).ruleS2)},
-	"s3": {galop((*RepairGalopParser).S3), rerun((*RepairGalopParser).ruleS3)},
-	"s4": {galop((*RepairGalopParser).S4), rerun((*RepairGalopParser).ruleS4)},
-	"s5": {galop((*RepairGalopParser).S5), rerun((*RepairGalopParser).ruleS5)},
-	"s6": {galop((*RepairGalopParser).S6), rerun((*RepairGalopParser).ruleS6)},
-	"s7": {galop((*RepairGalopParser).S7), rerun((*RepairGalopParser).ruleS7)},
-	"s8": {galop((*RepairGalopParser).S8), rerun((*RepairGalopParser).ruleS8)},
-	"s9": {galop((*RepairGalopParser).S9), rerun((*RepairGalopParser).ruleS9)},
+	"s1": {galop((*RepairGalopParser).S1), rerun((*RepairGalopParser).ruleS1, RepairParserRULE_s1)},
+	"s2": {galop((*RepairGalopParser).S2), rerun((*RepairGalopParser).ruleS2, RepairParserRULE_s2)},
+	"s3": {galop((*RepairGalopParser).S3), rerun((*RepairGalopParser).ruleS3, RepairParserRULE_s3)},
+	"s4": {galop((*RepairGalopParser).S4), rerun((*RepairGalopParser).ruleS4, RepairParserRULE_s4)},
+	"s5": {galop((*RepairGalopParser).S5), rerun((*RepairGalopParser).ruleS5, RepairParserRULE_s5)},
+	"s6": {galop((*RepairGalopParser).S6), rerun((*RepairGalopParser).ruleS6, RepairParserRULE_s6)},
+	"s7": {galop((*RepairGalopParser).S7), rerun((*RepairGalopParser).ruleS7, RepairParserRULE_s7)},
+	"s8": {galop((*RepairGalopParser).S8), rerun((*RepairGalopParser).ruleS8, RepairParserRULE_s8)},
+	"s9": {galop((*RepairGalopParser).S9), rerun((*RepairGalopParser).ruleS9, RepairParserRULE_s9)},
 }
 
 // Entries are the same rules in ANTLR's own parser.
@@ -43,10 +43,10 @@ func galop[C antlr.Tree](parse func(*RepairGalopParser) (C, error)) func(*Repair
 	}
 }
 
-func rerun(rule func(*RepairGalopParser, antlr.ParserRuleContext, int) antlr.ParserRuleContext) func(*RepairGalopParser) (antlr.Tree, error) {
+func rerun(rule func(*RepairGalopParser, antlr.ParserRuleContext, int) antlr.ParserRuleContext, index int) func(*RepairGalopParser) (antlr.Tree, error) {
 	return func(p *RepairGalopParser) (antlr.Tree, error) {
 		return p.parse(func(parent antlr.ParserRuleContext, state int) antlr.ParserRuleContext {
 			return rule(p, parent, state)
-		}, false)
+		}, RepairGalopRuleStartState[index], false)
 	}
 }

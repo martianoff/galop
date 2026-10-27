@@ -29,8 +29,8 @@ func TestRepairInANTLRFlavor(t T) T {
     val code = parserOf(generate(adaptiveGrammar, antlrDefines))
     val expected = ArrayOf(
         // Entry rules ending with EOF may repair; others rerun in LL mode.
-        "ctx, err := p.parse(p.ruleS, true)",
-        "ctx, err := p.parse(p.ruleR, false)",
+        "ctx, err := p.parse(p.ruleS, 0, true)",
+        "ctx, err := p.parse(p.ruleR, 2, false)",
         "ctx, err = p.llParse(rule, repair, err)",
         "func (p *AGalopParser) llParse(rule func(antlr.ParserRuleContext, int) antlr.ParserRuleContext, repair bool, sllErr error) (antlr.ParserRuleContext, error)",
         "return nil, dead.err",
@@ -49,10 +49,12 @@ func TestRepairInANTLRFlavor(t T) T {
 func TestRepairInNativeFlavor(t T) T {
     val code = nativeFiles(adaptiveGrammar).Get("a_parser.go").GetOrElse("")
     val expected = ArrayOf(
-        "t, root, err := newAGalopParser(ts).run((*AGalopParser).ruleS, true)",
-        "t, root, err := newAGalopParser(ts).run((*AGalopParser).ruleR, false)",
+        "t, root, err := newAGalopParser(ts).run((*AGalopParser).ruleS, 0, true)",
+        "t, root, err := newAGalopParser(ts).run((*AGalopParser).ruleR, 2, false)",
         // The exported entry point takes no repair flag and does not repair.
-        "func AGalopParse(ts *ATokens, rule func(*AGalopParser) int32) (*ATree, int32, error) {\n\treturn newAGalopParser(ts).run(rule, false)",
+        "func AGalopParse(ts *ATokens, rule int) (*ATree, int32, error) {",
+        "return newAGalopParser(ts).run(AGalopRuleFuncs[rule], AGalopRuleStartState[rule], false)",
+        "var AGalopRuleFuncs = []func(*AGalopParser) int32{\n\t(*AGalopParser).ruleS,",
         "root, err = p.llParse(rule, repair, err)",
         "func (p *AGalopParser) llParse(rule func(*AGalopParser) int32, repair bool, sllErr error) (int32, error)",
         "return -1, dead.err",
@@ -64,10 +66,11 @@ func TestRepairInNativeFlavor(t T) T {
 }
 
 func TestStaticGrammarHasNoRepair(t T) T {
-    // Without runtime prediction there are no conflicts to repair.
+    // Without runtime prediction SLL and LL agree, so a failed parse is not
+    // parsed again; only its error is replayed as ANTLR's.
     val code = parserFile(t)
-    val t1 = IsFalse(t, strings.Contains(code, ") llParse("))
-    IsFalse(t1, strings.Contains(code, "FullCache struct"))
+    val t1 = IsFalse(t, strings.Contains(code, "p.llParse(rule, repair, err)"))
+    IsTrue(t1, strings.Contains(code, "err = p.antlrError(start, err)"))
 }
 
 func TestGoTargetRejectsMutualLeftRecursion(t T) T =
@@ -85,6 +88,24 @@ a : '(' a ')' | X ;
 b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;
 `, antlrDefines))
-    val t1 = IsTrue(t, strings.Contains(code, "ctx, err := p.parse(p.ruleS, false)"))
+    val t1 = IsTrue(t, strings.Contains(code, "ctx, err := p.parse(p.ruleS, 0, false)"))
     IsTrue(t1, strings.Contains(code, "ctx, err = p.llParse(rule, repair, err)"))
+}
+
+func TestErrorReplayInBothFlavors(t T) T {
+    // A failed parse reports ANTLR's first error: both flavors replay ANTLR's
+    // parse from the entry rule's start state, with the generated tables.
+    val native = nativeFiles(adaptiveGrammar).Get("a_parser.go").GetOrElse("")
+    val antlr = parserOf(generate(adaptiveGrammar, antlrDefines))
+    val shared = ArrayOf(
+        "err = p.antlrError(start, err)",
+        "func (e *AGalopEmu) run(s int32) *AGalopEmuError {",
+        "var AGalopDecisionLL1 = []bool{",
+        "var AGalopTokenDisplay = []string{",
+        "\"<INVALID>\", \"'('\", \"')'\", \"'x'\", \"'y'\",",
+        "\tllBad bool",
+    )
+    val t1 = shared.FoldLeft(t, (acc, s) => IsTrue(IsTrue(acc, strings.Contains(native, s)), strings.Contains(antlr, s)))
+    val t2 = IsTrue(t1, strings.Contains(native, "return &ASyntaxError{Line: int(t.Line), Column: int(t.Column), Msg: msg}"))
+    IsTrue(t2, strings.Contains(antlr, "return p.input.GetTextFromTokens(p.toks[start], p.toks[stop])"))
 }

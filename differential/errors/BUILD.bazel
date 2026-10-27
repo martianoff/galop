@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+exports_files(["Errors.g4"])
+
+# galop's syntax errors for Errors.g4, a grammar without runtime prediction,
+# in both flavors, against ANTLR's on mutated programs.
+go_test(
+    name = "errors_test",
+    size = "small",
+    srcs = ["errors_test.go"],
+    deps = [
+        "//differential/errors/antlr",
+        "//differential/errors/native",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)

@@ -34,7 +34,7 @@ func ParseByRerun(src string) (SourceFileNode, error) {
 	if len(ts.Errors) > 0 {
 		return SourceFileNode{}, &ts.Errors[0]
 	}
-	t, root, err := newgalaGalopParser(ts).run((*galaGalopParser).ruleSourceFile, false)
+	t, root, err := newgalaGalopParser(ts).run((*galaGalopParser).ruleSourceFile, galaGalopRuleStartState[GalaRULE_sourceFile], false)
 	if err != nil {
 		return SourceFileNode{}, err
 	}

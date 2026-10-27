@@ -26,6 +26,9 @@ func (p *PARSER) onConflict(d int, sllAlt int) int {
 // records a new one.
 func (p *PARSER) onConflictSlow(d int, sllAlt int) int {
 	if p.ll {
+		if alt := p.rp.knownAt(d, p.pos, p.stack); alt > 0 {
+			return alt
+		}
 		return p.predictLL(d)
 	}
 	r := &p.rp
@@ -62,6 +65,30 @@ type PFXRepair struct {
 	seq    int
 	recs   []PFXConflict
 	stacks []int32
+	// byPos indexes recs by decision and token while an error replay (see
+	// antlrError) reads their LL answers; nil otherwise.
+	byPos map[uint64][]int32
+}
+
+// indexRecs indexes recs by decision and token for knownAt.
+func (r *PFXRepair) indexRecs() {
+	r.byPos = make(map[uint64][]int32, len(r.recs))
+	for i, c := range r.recs {
+		k := uint64(c.pos)<<32 | uint64(c.d)
+		r.byPos[k] = append(r.byPos[k], int32(i))
+	}
+}
+
+// knownAt is the LL answer a repair recorded for decision d at token pos with
+// call stack stack, or 0.
+func (r *PFXRepair) knownAt(d, pos int, stack []int32) int {
+	for _, i := range r.byPos[uint64(pos)<<32|uint64(d)] {
+		c := &r.recs[i]
+		if c.known > 0 && slices.Equal(r.stacks[c.stackFrom:c.stackTo], stack) {
+			return int(c.known)
+		}
+	}
+	return 0
 }
 
 // A repair stops and falls back to the whole-input LL rerun when the passes
@@ -256,6 +283,7 @@ func (p *PARSER) predictLLUncached(d int) int {
 		t := p.la(offset + 1)
 		switch alt := pr.stepLL(cur, t, intermediate, next); {
 		case alt < 0:
+			p.llBad = true
 			p.noViableAlt(d)
 		case alt > 0:
 			return int(alt)
@@ -390,6 +418,7 @@ func (p *PARSER) predictLL(d int) int {
 		}
 		switch {
 		case next == PFXDFAError:
+			p.llBad = true
 			p.noViableAlt(d)
 		case next.alt > 0:
 			return int(next.alt)

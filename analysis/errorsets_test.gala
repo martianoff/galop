@@ -1,0 +1,49 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// lookaheadOf is DecisionLookahead's sets for the first decision of src's
+// rule r, as token names.
+func lookaheadOf(src string, r string) Array[Array[string]] {
+    val (a, an) = analyzed(src)
+    val looks = DecisionLookahead(a, an)
+    val d = a.Decisions.Find((d) => a.RuleNames.Get(d.Rule) == r).Get()
+    looks.Get(d.Id).Map((set) => set.Ranges.FlatMap((rg) => ArrayTabulate(rg.Hi - rg.Lo + 1, (i) => a.Vocab.Name(rg.Lo + i))))
+}
+
+func TestDecisionLookahead(t T) T {
+    // b can match nothing, so its lookahead is what follows s's calls; the end
+    // of the start rule adds nothing, as in ANTLR.
+    val src = "grammar L;\ntop : s Z | s W EOF ;\ns : X | b ;\nb : Y? ;\nX : 'x' ; Y : 'y' ; Z : 'z' ; W : 'w' ;\n"
+    val t1 = Eq(t, lookaheadOf(src, "s"), ArrayOf(ArrayOf("X"), ArrayOf("Y", "Z", "W")))
+    Eq(t1, lookaheadOf(src, "b"), ArrayOf(ArrayOf("Y"), ArrayOf("Z", "W")))
+}
+
+func TestGeneratesSwitch(t T) T {
+    val x = atn.SetOf(1)
+    val y = atn.SetOf(2)
+    val t1 = IsTrue(t, GeneratesSwitch(ArrayOf(x, y)))
+    val t2 = IsFalse(t1, GeneratesSwitch(ArrayOf(x, x.Union(y))))
+    IsFalse(t2, GeneratesSwitch(ArrayOf(x, atn.EmptySet())))
+}
+
+func TestNextTokens(t T) T {
+    // From s's start: X, or past an empty b to the rule's end.
+    val (a, an) = analyzed("grammar L;\ns : X | b ;\nb : Y? ;\nX : 'x' ; Y : 'y' ;\n")
+    val next = NextTokens(a, an).Get(a.RuleStart.Get(0))
+    val t1 = Eq(t, next.Tokens, atn.SetOf(1).Union(atn.SetOf(2)))
+    IsTrue(t1, next.ReachesEnd)
+}
+
+// ANTLR's tool follows the end of a rule no rule calls with EOF; a rule that
+// only calls itself is not such a rule.
+func TestDecisionLookaheadAtTheEndOfAStartRule(t T) T {
+    val t1 = Eq(t, lookaheadOf("grammar L;\ns : A (P | M) B? ;\nA : 'a' ; B : 'b' ; P : '+' ; M : '-' ;\n", "s"),
+        ArrayOf(ArrayOf("B"), ArrayOf("EOF")))
+    Eq(t1, lookaheadOf("grammar L;\ns : A s? ;\nA : 'a' ;\n", "s"), ArrayOf(ArrayOf("A"), EmptyArray[string]()))
+}
