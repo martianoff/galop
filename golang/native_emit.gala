@@ -266,13 +266,12 @@ func nativeParserCore(e env) string {
     val predictor = predictorFields(e)
     val labs = if (e.tokenLabels) "\n\tlabs  []int32" else ""
     val retry = retryCode(e, "root")
-    val resetStack = "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0\n\tp.gs.seq = 0"
     val resetLabs = if (e.tokenLabels) "\n\tp.labs = p.labs[:0]\n\tp.tree.TokenLabels = p.tree.TokenLabels[:0]" else ""
     // The helpers go in through one placeholder, and fill does not rescan
     // what it inserts, so their own placeholders are filled first.
     val labelHelpers = if (e.tokenLabels) fill(nativeLabelHelpers, "PARSER", e.parserType, "@X@", e.exported()) else ""
     val ruleFuncs = e.rules.Map((r) => s"\n\t(*${e.parserType}).${e.ruleFunc(r.Index)},").MkString("")
-    fill(nativeCoreTemplate, "PREDICTOR", predictor, "RULEFUNCS", ruleFuncs, "GROUPON", groupsOn(e), "LABS", labs, "RETRY", retry, "ERRORS", errorsHook, "RESETSTACK", resetStack,
+    fill(nativeCoreTemplate, "PREDICTOR", predictor, "RULEFUNCS", ruleFuncs, "GROUPON", groupsOn(e), "LABS", labs, "RETRY", retry, "ERRORS", errorsHook, "RESETSTACK", resetPass,
         "RESETLABS", resetLabs, "LABELHELPERS", labelHelpers, "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported())
 }
 

@@ -148,7 +148,6 @@ func parserCore(e env) string {
     val x = e.pfx
     val predictor = predictorFields(e)
     val retry = retryCode(e, "ctx")
-    val resetStack = "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0\n\tp.gs.seq = 0"
     fill(`// PARSER parses GRAMMAR input with decisions galop made at generation time.
 // It builds the same context objects as ANTLRPARSER. Each instance is
 // single-use and not safe for concurrent use; separate instances are independent.
@@ -271,7 +270,7 @@ func (p *PARSER) matchIf(ctx antlr.ParserRuleContext, ok bool) antlr.Token {
 func (p *PARSER) noViableAlt(decision int) {
 	panic(&PFXSyntaxError{p.toks[p.pos], "no viable alternative at input " + PFXTokenText(p.toks[p.pos])})
 }
-`, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "GROUPON", groupsOn(e), "RETRY", retry, "ERRORS", errorsHook, "RESETSTACK", resetStack)
+`, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "GROUPON", groupsOn(e), "RETRY", retry, "ERRORS", errorsHook, "RESETSTACK", resetPass)
 }
 
 // entryMethod is the public method that parses input as one rule.
@@ -471,6 +470,10 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
 // allowed: see repair.Plan) a parse never reads groups.
 func groupsOn(e env) string =
     if (!e.adaptive) ""
-    else if (e.brackets.Families.NonEmpty())
-        s"\n\tp.first = repair\n\tp.group = repair\n\tif p.group {\n\t\tp.pairs = ${e.pfx}BracketMatch(p.types, p.pairs)\n\t}"
-    else "\n\tp.first = repair"
+    else "\n\tp.first = repair" + (if (e.brackets.Families.NonEmpty())
+        s"\n\tp.group = repair\n\tif p.group {\n\t\tp.pairs = ${e.pfx}BracketMatch(p.types, p.pairs)\n\t}"
+    else "")
+
+// resetPass clears what one pass of a parse leaves behind (see attempt): the
+// call stack, the conflict count and the guess points met.
+val resetPass = "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0\n\tp.gs.seq = 0"

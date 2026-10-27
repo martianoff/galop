@@ -5,7 +5,6 @@ import (
 
     . "martianoff/gala/collection_immutable"
 
-    "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
 )
 
@@ -71,10 +70,11 @@ func (p *PARSER) guess(alts uint64) int {
 	return low
 }
 
-// guessOr guesses decision d among alts in the first pass, and predicts it
-// otherwise (in a repair or LL pass, or reporting an error).
+// guessOr guesses decision d among alts in the first pass and its search,
+// and predicts it otherwise (in a repair or LL pass, or reporting an error:
+// the first pass is over by then).
 func (p *PARSER) guessOr(d int, alts uint64) int {
-	if p.first && !p.ll && !p.rp.on {
+	if p.first {
 		return p.guess(alts)
 	}
 	return p.adaptivePredict(d)
@@ -123,11 +123,9 @@ func (p *PARSER) search(rule @RULE@) (root @ROOT@, ok bool) {
 // block like `(simpleStatement ';')?` is decided by the token after a long
 // prefix, which guessing would get wrong as often as not. Which decisions
 // guess affects only speed: any guess is exact (see guessSource).
-func guessDecisions(e env) HashSet[int] {
-    val adaptive = e.plans.FoldLeft(EmptyHashSet[int](), (s, p) => if (hasAdaptiveLeaf(p.Lookahead)) s.Add(p.Decision.Id) else s)
-    e.rules.FlatMap((r) => r.Alts.FlatMap((a) => goOnOrStop(a.Steps))).FoldLeft(EmptyHashSet[int](), (s, d) =>
-        if (adaptive.Contains(d) && e.parser.Decisions.Get(d).Greedy) s.Add(d) else s)
-}
+func guessDecisions(rules Array[atn.RuleIR], parser atn.ATN) HashSet[int] =
+    rules.FlatMap((r) => r.Alts.FlatMap((a) => goOnOrStop(a.Steps)))
+        .FoldLeft(EmptyHashSet[int](), (s, d) => if (parser.Decisions.Get(d).Greedy) s.Add(d) else s)
 
 // goOnOrStop lists the go-on-or-stop decisions in steps, nested ones included.
 func goOnOrStop(steps Array[atn.Step]) Array[int] = steps.FlatMap((s) => s match {
@@ -155,14 +153,6 @@ func separatorTerminated(body Array[atn.Step]) bool = body.Size() >= 2 && (body.
     case atn.MatchSet(_, _, _) => true
     case _ => false
 })
-
-// hasAdaptiveLeaf says la leaves some input to runtime prediction.
-func hasAdaptiveLeaf(la analysis.Lookahead) bool = la match {
-    case analysis.Adaptive(_) => true
-    case analysis.Otherwise() => true
-    case analysis.Switch(_, cases) => cases.Exists((c) => hasAdaptiveLeaf(c.Then))
-    case _ => false
-}
 
 // altMask is alts as a Go uint64 literal (bit a for alternative a), or None
 // when an alternative is past 63.
