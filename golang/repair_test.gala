@@ -37,7 +37,7 @@ func TestRepairInANTLRFlavor(t T) T {
         "se, ok := e.(*AGalopSyntaxError)",
         // Every SLL conflict goes through onConflict (precomputed automata settle
         // every input and have none), and LL prediction through the cache.
-        "return p.onConflict(d, int(next.conflict))",
+        "return p.onConflict(d, int(next.conflict), next.alts)",
         "var AGalopFull = func() *AGalopFullCache {",
         "return p.predictLLUncached(d)",
         "\trp    AGalopRepair",

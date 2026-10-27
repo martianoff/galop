@@ -125,7 +125,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             }
             val grammar = in.Grammar.Name
             val base = baseName(in.Grammar)
-            val e = env(
+            val base0 = env(
                 names = Names(Grammar = grammar, Combined = isCombined(in.Grammar)),
                 pfx = base + "Galop",
                 parserType = base + "GalopParser",
@@ -140,6 +140,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
             )
+            val e = base0.Copy(guessed = guessDecisions(base0))
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"
             val code = f match {

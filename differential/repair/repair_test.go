@@ -47,6 +47,11 @@ var cases = []struct {
 	{"s8", []string{"c x y z", "x y y z", "c x z"}, 1},
 	// Over groups the parse would stop after x; the tokens say otherwise.
 	{"s9", []string{"x ( ( ( ( b ) ) ) )", "x ( b )", "x", "x ( ( q ) )"}, 0},
+	// The first pass guesses that l10 goes on; c inputs need it to stop.
+	{"s10", []string{"c a x " + parens(3) + " x " + parens(3) + " q", "c a x " + parens(3) + " q", "r a x " + parens(3) + " x " + parens(3),
+		"c a x " + parens(3) + " x " + parens(3) + " x " + parens(3) + " q", "c a q", "c a x " + parens(3) + " x " + parens(3), "r a x"}, 0},
+	// Twenty items, each a wrong guess: past the search's replays.
+	{"s11", []string{strings.Repeat("c a x " + parens(3) + " x " + parens(3) + " q ; ", 20), strings.Repeat("c a x " + parens(3) + " q ; ", 3) + "c a q ;"}, 0},
 }
 
 func TestRepairMatchesANTLR(t *testing.T) {

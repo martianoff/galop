@@ -1,0 +1,181 @@
+package golang
+
+import (
+    "strconv"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+)
+
+// guessSource is the guessing first pass and its search. A first pass of an
+// entry that may be repaired takes, at every guess point, the smallest
+// alternative no test ruled out, where a larger one is still possible: an
+// SLL conflict (the lowest conflicting alternative, as before), or a decision
+// the generator lets guess without predicting (see guessDecisions). On input
+// ANTLR accepts, its parse is the leftmost-choice derivation: at every
+// decision, the smallest alternative that still lets the whole input parse.
+// So a pass that reaches EOF with such choices has built ANTLR's tree, and a
+// wrong guess can only make the pass fail.
+//
+// When it fails, the search replays the parse, changing the latest guess
+// that has an untried alternative to its next one. Choice sequences are then
+// tried in increasing lexicographic order, so the first pass that reaches EOF
+// is the leftmost-choice derivation again. The search needs no prediction.
+// Past its budget, or when no sequence is left (the input is not in the
+// language), the parse goes on as without it: repair or the LL rerun, which
+// also give ANTLR's syntax error. PFX is the per-grammar prefix, PARSER the
+// parser type, @RULE@ the rule function type, @ROOT@ what attempt returns
+// besides the error and @ZERO@ its value on failure.
+val guessSource = `
+// PFXGuess is a guess point of the first pass: the alternatives no test
+// ruled out (bit a for alternative a) and the one taken.
+type PFXGuess struct {
+	alts uint64
+	cur  uint8
+}
+
+// PFXGuesses records the guess points of the first pass: seq counts those met
+// by the current pass, the first forced of pts replay their choice, and wide
+// says a guess point had an alternative past 63, which the search cannot record.
+type PFXGuesses struct {
+	seq    int
+	forced int
+	pts    []PFXGuess
+	wide   bool
+}
+
+// PFXGuessReplays and PFXGuessTokens bound the search: at most PFXGuessReplays
+// replays, reading at most PFXGuessTokens times the input's tokens in all.
+const (
+	PFXGuessReplays = 16
+	PFXGuessTokens  = 16
+)
+
+// guess takes the smallest alternative in alts, recording a guess point when
+// alts has more than one, or replays the choice the search forces there.
+func (p *PARSER) guess(alts uint64) int {
+	p.rp.seen++
+	low := bits.TrailingZeros64(alts)
+	if alts&(alts-1) == 0 {
+		return low
+	}
+	g := &p.gs
+	i := g.seq
+	g.seq++
+	if i < g.forced {
+		return int(g.pts[i].cur)
+	}
+	g.pts = append(g.pts[:i], PFXGuess{alts: alts, cur: uint8(low)})
+	return low
+}
+
+// guessOr guesses decision d among alts in the first pass, and predicts it
+// otherwise (in a repair or LL pass, or reporting an error).
+func (p *PARSER) guessOr(d int, alts uint64) int {
+	if p.first && !p.ll && !p.rp.on {
+		return p.guess(alts)
+	}
+	return p.adaptivePredict(d)
+}
+
+// next makes the latest guess point with an untried alternative take the
+// next one, forcing the choices before it; false when none is left.
+func (g *PFXGuesses) next() bool {
+	for j := min(g.seq, len(g.pts)) - 1; j >= 0; j-- {
+		pt := &g.pts[j]
+		if rest := pt.alts &^ (uint64(2)<<pt.cur - 1); rest != 0 {
+			pt.cur = uint8(bits.TrailingZeros64(rest))
+			g.pts = g.pts[:j+1]
+			g.forced = j + 1
+			return true
+		}
+	}
+	return false
+}
+
+// search replays the failed first pass with the next choice sequences, as
+// described above; ok is false when it stopped without a parse.
+func (p *PARSER) search(rule @RULE@) (root @ROOT@, ok bool) {
+	g := &p.gs
+	defer func() { g.forced, g.pts = 0, g.pts[:0] }()
+	budget := PFXGuessTokens * len(p.types)
+	for replays := 0; replays < PFXGuessReplays && budget > 0 && !g.wide; replays++ {
+		if !g.next() {
+			break
+		}
+		root, err := p.attempt(rule)
+		if err == nil {
+			return root, true
+		}
+		budget -= p.pos + 1
+	}
+	return @ZERO@, false
+}
+`
+
+// guessDecisions are the decisions the first pass guesses without runtime
+// prediction: greedy loops and greedy single-alternative optional blocks,
+// where the choice is to go on or to stop, and whose block does not start
+// with a rule call and end with a token. In a grammar without separators
+// between statements, going on is almost always the leftmost choice, while a
+// block like `(simpleStatement ';')?` is decided by the token after a long
+// prefix, which guessing would get wrong as often as not. Which decisions
+// guess affects only speed: any guess is exact (see guessSource).
+func guessDecisions(e env) HashSet[int] {
+    val adaptive = e.plans.FoldLeft(EmptyHashSet[int](), (s, p) => if (hasAdaptiveLeaf(p.Lookahead)) s.Add(p.Decision.Id) else s)
+    e.rules.FlatMap((r) => r.Alts.FlatMap((a) => goOnOrStop(a.Steps))).FoldLeft(EmptyHashSet[int](), (s, d) =>
+        if (adaptive.Contains(d) && e.parser.Decisions.Get(d).Greedy) s.Add(d) else s)
+}
+
+// goOnOrStop lists the go-on-or-stop decisions in steps, nested ones included.
+func goOnOrStop(steps Array[atn.Step]) Array[int] = steps.FlatMap((s) => s match {
+    case atn.Loop(_, d, 1, body) => {
+        val own = if (separatorTerminated(body)) EmptyArray[int]() else ArrayOf(d)
+        own.AppendAll(goOnOrStop(body))
+    }
+    case atn.Choose(d, alts, exit) => {
+        val optional = exit match {
+            case Some(2) => alts.Size() == 1 && !separatorTerminated(alts.Get(0))
+            case _ => false
+        }
+        val own = if (optional) ArrayOf(d) else EmptyArray[int]()
+        own.AppendAll(alts.FlatMap((a) => goOnOrStop(a)))
+    }
+    case _ => EmptyArray[int]()
+})
+
+// separatorTerminated says a block starts with a rule call and ends with a token.
+func separatorTerminated(body Array[atn.Step]) bool = body.Size() >= 2 && (body.Head() match {
+    case atn.CallRule(_, _, _) => true
+    case _ => false
+}) && (body.Last() match {
+    case atn.MatchToken(_, _) => true
+    case atn.MatchSet(_, _, _) => true
+    case _ => false
+})
+
+// hasAdaptiveLeaf says la leaves some input to runtime prediction.
+func hasAdaptiveLeaf(la analysis.Lookahead) bool = la match {
+    case analysis.Adaptive(_) => true
+    case analysis.Otherwise() => true
+    case analysis.Switch(_, cases) => cases.Exists((c) => hasAdaptiveLeaf(c.Then))
+    case _ => false
+}
+
+// altMask is alts as a Go uint64 literal (bit a for alternative a), or None
+// when an alternative is past 63.
+func altMask(alts Array[int]) Option[string] =
+    Unless(alts.Exists((a) => a < 1 || a > 63), s"0x${strconv.FormatUint(alts.FoldLeft(uint64(0), (m, a) => m | (uint64(1) << uint64(a))), 16)}")
+
+// runtimeChoice is the Go statement for a lookahead leaf that leaves
+// decision d to runtime: a guess among alts in the first pass when the
+// decision guesses, runtime prediction otherwise.
+func runtimeChoice(e env, d int, alts Array[int]) string = altMask(alts) match {
+    case Some(m) if e.guessed.Contains(d) => s"return p.guessOr($d, $m)"
+    case _ => s"return p.adaptivePredict($d)"
+}
+
+// allAlts are decision d's alternatives.
+func allAlts(e env, d int) Array[int] = ArrayTabulate(e.parser.Decisions.Get(d).AltCount, (i) => i + 1)

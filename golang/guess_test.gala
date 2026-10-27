@@ -1,0 +1,43 @@
+package golang
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+)
+
+// guessGrammar has a go-on-or-stop loop (l) and an optional block decided by
+// the token after a long prefix (o); n nests without bound, so both are left
+// to runtime.
+val guessGrammar = `grammar G;
+s : 'c' l 'x' n Q EOF | 'r' l EOF | o EOF ;
+l : A ('x' n)* ;
+o : (n ';')? n Q ;
+n : '(' n ')' | B ;
+A : 'a' ; B : 'b' ; Q : 'q' ;
+`
+
+// decideBody is the body of the decision function whose comment names text.
+func decideBody(code string, text string) string {
+    val (_, rest, found) = strings.Cut(code, "decides " + text + "\n")
+    val (body, _, _) = strings.Cut(rest, "\n}\n")
+    if (found) body else ""
+}
+
+func TestLoopGuessesSeparatorBlockPredicts(t T) T {
+    val code = nativeFiles(guessGrammar).Get("g_parser.go").GetOrElse("")
+    val loop = decideBody(code, "l: ('x' n)*")
+    val optional = decideBody(code, "o: (n ';')?")
+    val t1 = IsTrue(t, strings.Contains(loop, "return p.guessOr("))
+    val t2 = IsFalse(t1, strings.Contains(loop, "return p.adaptivePredict("))
+    val t3 = IsTrue(t2, strings.Contains(optional, "return p.adaptivePredict("))
+    val t4 = IsFalse(t3, strings.Contains(optional, "p.guessOr("))
+    IsTrue(t4, strings.Contains(code, "func (p *GGalopParser) search(rule func(*GGalopParser) int32) (root int32, ok bool) {"))
+}
+
+func TestGuessMasks(t T) T {
+    val t1 = Eq(t, altMask(ArrayOf(1, 2)).GetOrElse(""), "0x6")
+    val t2 = Eq(t1, altMask(ArrayOf(2, 63)).GetOrElse(""), "0x8000000000000004")
+    IsTrue(t2, altMask(ArrayOf(1, 64)).IsEmpty())
+}
