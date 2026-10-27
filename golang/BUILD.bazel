@@ -4,6 +4,7 @@ gala_library(
     name = "golang",
     srcs = [
         "errors_go.gala",
+        "guess_go.gala",
         "names.gala",
         "native_emit.gala",
         "parser_emit.gala",
@@ -32,6 +33,7 @@ gala_test(
     name = "golang_test",
     srcs = [
         "golang_test.gala",
+        "guess_test.gala",
         "repair_test.gala",
     ],
     importpath = "github.com/martianoff/galop/golang",
@@ -44,6 +46,7 @@ gala_test(
         "target.gala",
         "repair_go.gala",
         "errors_go.gala",
+        "guess_go.gala",
     ],
     pkg = "golang",
     deps = [
