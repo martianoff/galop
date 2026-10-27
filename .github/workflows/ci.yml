@@ -128,6 +128,21 @@ jobs:
           go-version: '1.25'
           cache: false
 
+      # The Windows runner's C: drive has little free space; D: has plenty.
+      # Keep Go's build cache and temp files (and the GALA build workspace,
+      # which lives under TEMP) on D:.
+      - name: Put build files on the larger drive (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          d="$RUNNER_TEMP/gobuild"
+          mkdir -p "$d/cache" "$d/tmp"
+          {
+            echo "GOCACHE=$d/cache"
+            echo "GOTMPDIR=$d/tmp"
+            echo "TMP=$d/tmp"
+            echo "TEMP=$d/tmp"
+          } >> "$GITHUB_ENV"
+
       # Go's build cache, so unchanged packages (the GALA stdlib, and galop
       # packages a change doesn't touch) aren't recompiled. Saved even when the
       # job fails or times out, so one cold run warms the next.
