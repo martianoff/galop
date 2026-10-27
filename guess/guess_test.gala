@@ -1,0 +1,107 @@
+package guess
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/grammartest"
+    "github.com/martianoff/galop/repair"
+)
+
+// planned compiles src and plans its guessing first pass as code generation does.
+func planned(src string) Tuple[atn.ATN, Plan] {
+    val (g, c) = grammartest.Compile(src)
+    val a = c.Parser.Get()
+    val an = analysis.Analyze(a, repair.PlanFor(g, c), false)
+    (a, PlanFor(a, c.Rules, an.Plans, an.Brackets))
+}
+
+// decisionIn is the id of the decision whose source text is text.
+func decisionIn(a atn.ATN, text string) int = a.Decisions.Find((d) => d.Text == text).Map(_.Id).GetOrElse(-1)
+
+func kindOf(p Plan, d int) string = p.Decisions.Get(d) match {
+    case Some(GoOn()) => "go-on"
+    case Some(Scanned(rs)) => s"scanned:${rs.Map(_.Alt).MkString(",")}"
+    case Some(Bounded(_)) => "bounded"
+    case None() => "none"
+}
+
+// prefixGrammar has decisions whose alternatives share a long prefix (e):
+// one told apart by the token after it, one by a token e can go on with.
+val prefixGrammar = `grammar P;
+prog : (stat | decl)+ EOF ;
+stat : e '...' | e ;
+decl : v e '=' e | v e ;
+v : 'v' ;
+e : '(' e ')' | ID ('.' ID)* ;
+ID : [a-z]+ ;
+WS : [ \t\r\n]+ -> skip ;
+`
+
+func TestScanWhenTheTokenAfterThePrefixDecides(t T) T {
+    val (a, p) = planned(prefixGrammar)
+    // '...' never continues e: alternative 1 is scanned.
+    Eq(t, kindOf(p, decisionIn(a, "stat : e '...' | e")), "scanned:1")
+}
+
+// counterexample: '!' can go on inside e (`a ! b`), so a scan of e from `a`
+// does not stop where stat's e ends; ruling out stat's first alternative by
+// the token after the scan would be wrong. The check must refuse it.
+val counterexample = `grammar C;
+prog : stat+ EOF ;
+stat : e '!' | e | '!' ID ;
+e : ID ('!' ID)? ;
+ID : [a-z]+ ;
+WS : [ \t\r\n]+ -> skip ;
+`
+
+func TestScanRefusedWhenThePrefixCanGoOnWithTheToken(t T) T {
+    val (a, p) = planned(counterexample)
+    val d = decisionIn(a, "stat : e '!' | e | '!' ID")
+    val scanned = p.Decisions.Get(d) match {
+        case Some(Scanned(_)) => true
+        case _ => false
+    }
+    IsFalse(t, scanned)
+}
+
+func TestScanAutomatonEndsAndStops(t T) T {
+    val (a, p) = planned(prefixGrammar)
+    val e = a.RuleIndex("e").Get()
+    val d = p.Scans.Get(e)
+    val t1 = IsTrue(t, d.IsDefined())
+    // e can end after ID, and '...' is no move from there.
+    val al = p.Alphabet
+    val endSyms = d.Get().movesAtEnds(al)
+    IsFalse(t1, endSyms.Contains(al.TokenSymbol(a.Vocab.LiteralType("'...'").GetOrElse(-5))))
+}
+
+// walk reads syms through a decision's automaton from state st: the
+// alternatives left (bit a for alternative a).
+func walk(g GuessDFA, size int, syms List[int], st int = 0) uint64 =
+    if (g.Leaf.Get(st)) g.Alts.Get(st)
+    else syms match {
+        case Cons(sym, rest) => {
+            val n = g.Next.Get(st * size + sym)
+            if (n >= 0) walk(g, size, rest, n)
+            else if (n == -1) uint64(0)
+            else uint64(1) << uint64(-2 - n)
+        }
+        case _ => g.Alts.Get(st)
+    }
+
+// An identifier ending the input: decision 86 (`primary`) must keep its first
+// alternative after EOF, where nothing more is read.
+func TestAutomatonKeepsAnAlternativeEndingTheInput(t T) T {
+    val (a, p) = planned(grammartest.GalaGrammar)
+    val d = a.Decisions.Find((x) => strings.HasPrefix(x.Text, "primary :")).Map(_.Id).GetOrElse(-1)
+    val id = p.Alphabet.TokenSymbol(a.Vocab.TypeOf("IDENTIFIER").Get())
+    p.Decisions.Get(d) match {
+        case Some(Bounded(gd)) => Eq(t, walk(gd, p.Alphabet.Size(), ListOf(id, 0)), uint64(2))
+        case _ => Eq(t, kindOf(p, d), "bounded")
+    }
+}

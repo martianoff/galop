@@ -9,6 +9,7 @@ import (
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/guess"
     "github.com/martianoff/galop/lexgen"
 )
 
@@ -139,7 +140,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 brackets = an.Brackets,
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
-                guessed = guessDecisions(compiled.Rules, an.Plans),
+                guessPlan = guess.PlanFor(parser, compiled.Rules, an.Plans, an.Brackets),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"

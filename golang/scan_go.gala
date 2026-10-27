@@ -1,0 +1,109 @@
+package golang
+
+import (
+    "strconv"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/guess"
+)
+
+// scanSource reads the input as the guess package's automata do (see
+// guess.Alphabet): each bracketed group is one symbol while the parse reads
+// groups. PFX is the per-grammar prefix, PARSER the parser type and @EOF@
+// the EOF token constant.
+val scanSource = `
+// scanSym is the symbol at token i of the guessing automata, and the token
+// after it: a bracketed group is one symbol while the parse reads groups.
+func (p *PARSER) scanSym(i int) (int, int) {
+	t := p.types[i]
+	if g := PFXOpenerSym[t+1]; p.group && g >= 0 && p.pairs[i] >= 0 {
+		return PFXMaxTokenType + 2 + int(g), int(p.pairs[i]) + 1
+	}
+	if t == @EOF@ {
+		return 0, i
+	}
+	return int(t) + 1, i + 1
+}
+
+// scanStop is the first token from i at which scan automaton next has no
+// move: where a scan of its rule stops.
+func (p *PARSER) scanStop(i int, next []int16) int {
+	st := 0
+	for {
+		sym, j := p.scanSym(i)
+		n := next[st*PFXSymbols+sym]
+		if n < 0 || j == i {
+			return i
+		}
+		st, i = int(n), j
+	}
+}
+
+// guessWalk reads a decision's bounded automaton from the current token
+// (next: its moves, leaf: the alternatives a leaf guesses among, 0 for other
+// states) and returns the alternatives it leaves (bit a for alternative a).
+func (p *PARSER) guessWalk(next []int16, leaf []uint64) uint64 {
+	st, i := 0, p.pos
+	for {
+		if m := leaf[st]; m != 0 {
+			return m
+		}
+		sym, j := p.scanSym(i)
+		switch n := next[st*PFXSymbols+sym]; {
+		case n >= 0:
+			st, i = int(n), j
+		case n == -1:
+			return 0
+		default:
+			return 1 << uint(-2-n)
+		}
+	}
+}
+`
+
+// guessCode is the code of e's guess plan: the scan automata, each scanned
+// decision's requirements and entry, and each bounded decision's automaton
+// and entry. Empty when nothing is scanned or bounded.
+func guessCode(e env) string {
+    val plan = e.guessPlan
+    val x = e.pfx
+    val p = e.parserType
+    val size = plan.Alphabet.Size()
+    val scans = plan.Scans.Keys().ToArray().Sorted().Map((r) =>
+        goSlice(s"${x}Scan$r", "int16", plan.Scans.Get(r).Get().Next.Map((n) => s"$n")))
+    val decisions = plan.Decisions.Keys().ToArray().Sorted().FlatMap((d) => plan.Decisions.Get(d).Get() match {
+        case guess.Scanned(reqs) => scannedCode(e, d, reqs)
+        case guess.Bounded(g) => ArrayOf(
+            goSlice(s"${x}Guess$d", "int16", g.Next.Map((n) => s"$n")),
+            goSlice(s"${x}GuessLeaf$d", "uint64", g.Leaf.ZipWithIndex().Map((li) => if (li.V1) s"0x${strconv.FormatUint(g.Alts.Get(li.V2), 16)}" else "0")),
+            s"// bounded$d settles decision $d in a guessing first pass with its bounded automaton.\nfunc (p *$p) bounded$d(alts uint64) int {\n\tif !p.first {\n\t\treturn p.adaptivePredict($d)\n\t}\n\tif alts &= p.guessWalk(${x}Guess$d, ${x}GuessLeaf$d); alts == 0 {\n\t\tp.noViableAlt($d)\n\t}\n\treturn p.guess(alts)\n}\n",
+        )
+        case _ => EmptyArray[string]()
+    })
+    if (scans.IsEmpty() && decisions.IsEmpty()) ""
+    else (ArrayOf(s"// ${x}Symbols is the number of symbols of the guessing automata.\nconst ${x}Symbols = $size\n")
+        .AppendAll(scans).AppendAll(decisions)).MkString("\n")
+}
+
+// scannedCode is a scanned decision's requirements and its entry, which
+// rules out the alternatives whose requirement fails and guesses among the rest.
+func scannedCode(e env, d int, reqs Array[guess.Requirement]) Array[string] {
+    val p = e.parserType
+    val checks = reqs.Map((r) => s"\tif alts&(1<<${r.Alt}) != 0 && !p.scan${d}x${r.Alt}() {\n\t\talts &^= 1 << ${r.Alt}\n\t}\n").MkString("")
+    reqs.Map((r) => {
+        val body = scanStepsCode(e, r.Steps, "\t")
+        s"// scan${d}x${r.Alt} says alternative ${r.Alt} of decision $d is not ruled out.\nfunc (p *$p) scan${d}x${r.Alt}() bool {\n\ti := p.pos\n$body\treturn ${setTest(e, r.End, "p.types[i]")}\n}\n"
+    }).Append(s"// scanned$d settles decision $d in a guessing first pass by its requirements.\nfunc (p *$p) scanned$d(alts uint64) int {\n\tif !p.first {\n\t\treturn p.adaptivePredict($d)\n\t}\n$checks\tif alts == 0 {\n\t\tp.noViableAlt($d)\n\t}\n\treturn p.guess(alts)\n}\n")
+}
+
+// scanStepsCode is the code that reads steps from token i.
+func scanStepsCode(e env, steps Array[guess.ScanStep], ind string) string = steps.Map((s) => s match {
+    case guess.ScanRule(r) => s"${ind}i = p.scanStop(i, ${e.pfx}Scan$r)\n"
+    case guess.ScanToken(set) => s"${ind}if !(${setTest(e, set, "p.types[i]")}) {\n$ind\treturn false\n$ind}\n${ind}i++\n"
+    case guess.ScanOptional(inner) => {
+        val first = guess.FirstSymbols(e.guessPlan.Alphabet, e.guessPlan.Scans, inner).ToArray().Sorted().Map((n) => s"$n").MkString(", ")
+        s"${ind}switch s, _ := p.scanSym(i); s {\n${ind}case $first:\n" + scanStepsCode(e, inner, ind + "\t") + s"$ind}\n"
+    }
+}).MkString("")

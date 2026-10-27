@@ -1,0 +1,195 @@
+package guess
+
+import (
+    "slices"
+
+    . "martianoff/gala/collection_immutable"
+    m "martianoff/gala/collection_mutable"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
+)
+
+// The engine simulates the parser ATN over an abstract alphabet, ahead of
+// time: each bracketed group is one symbol (as runtime prediction reads it,
+// see brackets), and the call stack keeps only its top few frames. A
+// configuration is an ATN state, the stack (return states), whether frames
+// below it were dropped, and an alternative. A rule end pops the top frame;
+// with no frame left and frames dropped, it continues after every call of the
+// rule. Every path of the parser over the tokens has a path here,
+// ending in a configuration that covers the real one, so what the engine
+// rules out is ruled out for the parser: its automata over-approximate, and
+// guessing their smallest alternative is exact (see the Go target's guessing
+// first pass).
+
+// Alphabet numbers the engine's symbols as the generated parser's prediction
+// does: token t (EOF is -1) is t+1, the group opened by the g-th opener is
+// MaxType+2+g.
+struct Alphabet(MaxType int, OpenerIndex HashMap[int, int], Openers int)
+
+// Size is the number of symbols.
+func (al Alphabet) Size() int = al.MaxType + 2 + al.Openers
+
+// TokenSymbol is token t's symbol.
+func (al Alphabet) TokenSymbol(t int) int = t + 1
+
+// AlphabetOf numbers the symbols of a parser over vocabulary maxType with
+// bracket families b, openers in family order, as the Go target's tables do.
+func AlphabetOf(maxType int, b brackets.Brackets) Alphabet {
+    val openers = b.Families.FlatMap((f) => f.Openers.Values())
+    Alphabet(maxType, openers.ZipWithIndex().FoldLeft(EmptyHashMap[int, int](), (acc, p) => acc.Put(p.V1, p.V2)), openers.Size())
+}
+
+// IsOpener says token t opens a bracket.
+func (al Alphabet) IsOpener(t int) bool = al.OpenerIndex.Contains(t)
+
+// edge is a consuming step of the abstract ATN: symbol, then state.
+struct edge(Symbol int, Target int)
+
+// pack encodes a configuration: state in bits 0-19, the stack's id in its
+// engine's stack table in 20-39, the dropped-frames flag in bit 40, the
+// alternative from bit 41.
+func pack(state int, stack int, dropped bool, alt int) int64 =
+    int64(state) | (int64(stack) << 20) | (if (dropped) int64(1) << 40 else int64(0)) | (int64(alt) << 41)
+
+func stateOf(k int64) int = int(k & 0xFFFFF)
+
+func stackOf(k int64) int = int((k >> 20) & 0xFFFFF)
+
+func droppedOf(k int64) bool = ((k >> 40) & 1) == 1
+
+func altOf(k int64) int = int(k >> 41)
+
+// stackTable interns call stacks of at most limit return states (top last);
+// id 0 is the empty stack.
+struct stackTable(limit int, index Ptr[m.HashMap[string, int]], frames Ptr[m.Array[Array[int]]])
+
+func newStackTable(limit int) stackTable {
+    val t = stackTable(limit, m.EmptyHashMap[string, int](), m.EmptyArray[Array[int]]())
+    t.intern(EmptyArray[int]())
+    t
+}
+
+func (t stackTable) intern(frames Array[int]) int {
+    val key = frames.MkString(",")
+    t.index.Get(key) match {
+        case Some(id) => id
+        case None() => {
+            val id = t.frames.Size()
+            t.index.Put(key, id)
+            t.frames.Append(frames)
+            id
+        }
+    }
+}
+
+// push is stack id with follow on top, and whether a frame was dropped to
+// stay within the limit.
+func (t stackTable) push(id int, follow int) Tuple[int, bool] {
+    val frames = t.frames.Get(id).Append(follow)
+    if (frames.Size() > t.limit) (t.intern(frames.Drop(1)), true) else (t.intern(frames), false)
+}
+
+// engine is the abstract ATN of one simulation. root is the rule a scan
+// recognizes, whose end is recorded, or -1 for a decision; follows lists, per
+// rule, where an end with unknown frames continues; stacks interns the stacks.
+struct engine(
+    a atn.ATN,
+    al Alphabet,
+    edges Array[Array[edge]],
+    follows Array[Array[int]],
+    root int,
+    stacks stackTable,
+)
+
+// abstractEdges are the consuming steps of every state: a token not opening
+// a bracket goes to the transition's target; an opener whose transition opens
+// a group goes, as the group's symbol, to the states after its closer. An
+// opener read as a token only occurs in input outside the language.
+func abstractEdges(a atn.ATN, al Alphabet, b brackets.Brackets) Array[Array[edge]] {
+    val sites = b.Sites.FoldLeft(EmptyHashMap[int64, Array[int]](), (acc, s) => acc.Put(int64(s.State) * 1024 + int64(s.Index), s.After))
+    a.States.Map((s) => s.Out.ZipWithIndex().FlatMap((ti) => ti.V1.Symbols().Values().FlatMap((t) =>
+        if (!al.IsOpener(t)) ArrayOf(edge(al.TokenSymbol(t), ti.V1.Target()))
+        else sites.Get(int64(s.Id) * 1024 + int64(ti.V2)) match {
+            case Some(after) => after.Map((st) => edge(al.MaxType + 2 + al.OpenerIndex.Get(t).GetOrElse(0), st))
+            case None() => EmptyArray[edge]()
+        })))
+}
+
+// globalFollows lists, per rule, the follow state of every call of it.
+func globalFollows(a atn.ATN) Array[Array[int]] {
+    val byRule = a.States.FlatMap((s) => s.Out.Collect({ case atn.RuleCall(_, r, follow) => (r, follow) }))
+    ArrayTabulate(a.RuleNames.Size(), (r) => byRule.Collect({ case (rule, f) if rule == r => f }).Distinct())
+}
+
+// closureResult is a closure's consuming configurations, sorted, and whether
+// it reached the end of the scanned rule.
+struct closureResult(Configs Array[int64], Ends bool)
+
+// closure follows every path that consumes nothing from start.
+func (en engine) closure(start Array[int64]) closureResult {
+    val seen = m.EmptyHashSet[int64]()
+    val out = m.EmptyArray[int64]()
+    var ends = false
+    var work = EmptyList[int64]()
+    val visit = (k int64) => {
+        if seen.Add(k) {
+            work = work.Prepend(k)
+        }
+    }
+    start.ForEach(visit)
+    // A worklist: each configuration queues what it reaches without consuming.
+    for work.NonEmpty() {
+        val k = work.Head()
+        work = work.Tail()
+        val s = en.a.State(stateOf(k))
+        if s.IsRuleStop() {
+            val frames = en.stacks.frames.Get(stackOf(k))
+            if frames.NonEmpty() {
+                visit(pack(frames.Last(), en.stacks.intern(frames.Take(frames.Size() - 1)), droppedOf(k), altOf(k)))
+            } else {
+                ends = ends || s.Rule == en.root
+                if droppedOf(k) || en.root < 0 {
+                    val follows = en.follows.Get(s.Rule)
+                    // The end of a rule nothing calls is the end of the input: the
+                    // configuration stays, so a step onto it is not a dead end.
+                    if follows.IsEmpty() && en.root < 0 {
+                        out.Append(k)
+                    }
+                    follows.ForEach((f) => visit(pack(f, 0, true, altOf(k))))
+                }
+            }
+        } else {
+            if en.edges.Get(s.Id).NonEmpty() {
+                out.Append(k)
+            }
+            s.Out.ForEach((t) => {
+                if t.IsEpsilon() {
+                    t match {
+                        case atn.RuleCall(target, _, follow) => {
+                            val (id, drop) = en.stacks.push(stackOf(k), follow)
+                            visit(pack(target, id, droppedOf(k) || drop, altOf(k)))
+                        }
+                        case _ => visit(pack(t.Target(), stackOf(k), droppedOf(k), altOf(k)))
+                    }
+                }
+            })
+        }
+    }
+    val sorted = out.ToGoSlice()
+    slices.Sort(sorted)
+    closureResult(ArrayFromSlice(sorted), ends)
+}
+
+// step is the closure of what configs reach on symbol sym.
+func (en engine) step(configs Array[int64], sym int) closureResult =
+    en.closure(configs.FlatMap((k) => en.edges.Get(stateOf(k)).Collect({
+        case edge(s, target) if s == sym => pack(target, stackOf(k), droppedOf(k), altOf(k))
+    })))
+
+// keyOf is a configuration set's identity.
+func keyOf(configs Array[int64]) string = configs.Map((k) => s"$k").MkString(",")
+
+// symbolsOut are the symbols some configuration of configs can consume.
+func (en engine) symbolsOut(configs Array[int64]) Array[int] =
+    configs.FlatMap((k) => en.edges.Get(stateOf(k)).Map(_.Symbol)).Distinct().Sorted()

@@ -20,6 +20,7 @@ var GalopEntries = map[string]struct {
 	"s9": {galop((*RepairGalopParser).S9), rerun((*RepairGalopParser).ruleS9, RepairParserRULE_s9)},
 	"s10": {galop((*RepairGalopParser).S10), rerun((*RepairGalopParser).ruleS10, RepairParserRULE_s10)},
 	"s11": {galop((*RepairGalopParser).S11), rerun((*RepairGalopParser).ruleS11, RepairParserRULE_s11)},
+	"s12": {galop((*RepairGalopParser).S12), rerun((*RepairGalopParser).ruleS12, RepairParserRULE_s12)},
 }
 
 // Entries are the same rules in ANTLR's own parser.
@@ -35,6 +36,7 @@ var Entries = map[string]func(*RepairParser) antlr.Tree{
 	"s9": func(p *RepairParser) antlr.Tree { return p.S9() },
 	"s10": func(p *RepairParser) antlr.Tree { return p.S10() },
 	"s11": func(p *RepairParser) antlr.Tree { return p.S11() },
+	"s12": func(p *RepairParser) antlr.Tree { return p.S12() },
 }
 
 func galop[C antlr.Tree](parse func(*RepairGalopParser) (C, error)) func(*RepairGalopParser) (antlr.Tree, error) {

@@ -152,10 +152,15 @@ flowchart TD
   k -- yes --> sw["switch on the tokens"]
   k -- no --> a{"Its SLL automaton settles<br/>every input?"}
   a -- yes --> au["precomputed automaton"]
-  a -- no --> g{"Go on or stop?"}
-  g -- yes --> gu["first pass guesses: go on"]
-  g -- no --> p["SLL prediction at runtime,<br/>bracketed groups read as one symbol"]
+  a -- no --> e{"First pass of an entry<br/>that may be repaired?"}
+  e -- no --> p["SLL prediction at runtime,<br/>bracketed groups read as one symbol"]
+  e -- yes --> g{"The generator's plan"}
+  g -- "go on or stop" --> gu["guess: go on"]
+  g -- "long shared prefix" --> sc["scan the prefix,<br/>guess among the rest"]
+  g -- other --> bo["bounded automaton,<br/>guess among the rest"]
   gu --> ok{"The first pass<br/>parses the input?"}
+  sc --> ok
+  bo --> ok
   p --> ok
   ok -- yes --> tree["ANTLR's tree"]
   ok -- no --> s["Search: replay with the next guesses,<br/>in alternative order"]
@@ -170,7 +175,7 @@ flowchart TD
 |---|---|---|
 | [SLL automata](#sll-automata) | decide a decision without runtime prediction | always tried, and kept only when the automaton settles every input (none in `gala.g4`) |
 | [Bracket abstraction](#bracket-abstraction) | reads each bracketed group as one symbol, so prediction stops scanning operands | `-Xno-brackets`; the grammar has actions, predicates or left recursion, or no entry rule may be repaired (the grammar's `repair.Plan`: no bracket families are generated); an entry rule that may not be repaired; after a failed first pass |
-| [Guessing first pass](#guessing-first-pass-and-search) | guesses go-on-or-stop decisions without predicting, and searches a failed first pass by replaying it with other guesses | whenever repair is off (below), and after the search |
+| [Guessing first pass](#guessing-first-pass-and-search) | settles every runtime decision of a first pass without predicting: go-on-or-stop decisions guess, others are scanned or read a bounded automaton; searches a failed first pass by replaying it with other guesses | whenever repair is off (below), and after the search |
 | [Repair](#repairing-a-failed-sll-parse) | settles a failed first pass with a few full-context predictions instead of ANTLR's whole-input LL rerun | the grammar has actions, predicates or left recursion, or the entry rule does not end with EOF or can be called again from inside itself: then the parser reruns in LL mode, as ANTLR does; also after 8 passes, or once its replays would cover more tokens than the input holds |
 | [Full-context cache](#full-context-cache) | caches full-context prediction per decision and call stack | never; it stops growing past 32,768 states or 2^20 contexts |
 
@@ -270,6 +275,38 @@ can only make the pass fail. Which decisions guess affects speed, not results:
 the generator picks greedy loops and greedy optional blocks of one alternative,
 except a block that starts with a rule call and ends with a token, such as
 `(simpleStatement ';')?`, which the token after a long prefix decides.
+
+**The other decisions.** A decision that is not go-on-or-stop is settled by
+the generator's plan for it (the `guess` package), still without runtime
+prediction, by ruling alternatives out and guessing the smallest left:
+
+- *Scanned*, when alternatives share a long prefix and the token after it tells
+  them apart: `expression '...'` against `expression`, `simpleStatement ';'`
+  before an `if` condition, an assignment against an expression statement, a
+  lambda's `( … ) type? =>` against a tuple. An alternative made of rule calls,
+  optional blocks and tokens before its first token has a *requirement*: scan
+  those steps from the decision's token and stop at that token. The scan of a
+  rule runs its automaton (below) until a symbol has no move. The generator
+  checks that the requirement is sound: each rule's derivation is followed by
+  symbols that are no move from any state where the rule can end (so the scan
+  stops exactly where the derivation does), an optional block's first symbols
+  differ from what follows it, and no token in it opens a bracket. Then an
+  alternative whose scan stops anywhere else is not viable. A requirement that
+  fails the check is not used (`e '!' | e` with `e : ID ('!' ID)?` is one: `e`
+  can go on with `'!'`).
+- *Bounded*, otherwise: an automaton over the decision's next symbols, up to
+  16 states; past them, and after EOF, the parse guesses among the
+  alternatives the state still holds.
+
+Both kinds of automaton are built ahead of time by an abstract simulation of
+the ATN: each bracketed group is one symbol, as runtime prediction reads it,
+and the call stack keeps its top 3 return states (1 for a scan); a rule end
+with the frames below dropped continues after every call of the rule. Every
+path of the parser has a path in the simulation, so what an automaton rules out
+is ruled out for the parser, and the guesses stay exact. The tables are static
+data in the generated parser. For `gala.g4` the plan scans 7 decisions, reads a
+bounded automaton for 4 and guesses go-on for 10: no first pass predicts at
+runtime.
 
 **How.** Every guess point of the first pass, the guesses and the SLL
 conflicts, goes through one function that records the alternatives not ruled

@@ -9,6 +9,7 @@ import (
     "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/brackets"
+    "github.com/martianoff/galop/guess"
     "github.com/martianoff/galop/lexgen"
     "github.com/martianoff/galop/repair"
 )
@@ -33,8 +34,9 @@ struct env(
     flavor Flavor = ANTLRFlavor(),
     // tokenLabels says whether some rule labels a token (`op=('+'|'-')`).
     tokenLabels bool = false,
-    // guessed are the decisions the first pass guesses (see guessDecisions).
-    guessed HashSet[int] = EmptyHashSet[int](),
+    // guessPlan is how a guessing first pass settles the runtime decisions
+    // (see guess.PlanFor).
+    guessPlan guess.Plan = guess.NoPlan(),
 )
 
 // Flavor is the output style of the Go target (see GoFlavors).
@@ -80,6 +82,7 @@ func antlrParser(e env, pkg string, version string, grammarFile string) string {
         e.rules.Map((r) => entryMethod(e, r)).MkString("\n"),
         ruleCode.MkString("\n"),
         decisionCode.MkString("\n"),
+        guessCode(e),
     )
     val runtime = ArrayOf(tables(e), errorTables(e), predictor(e))
     parts.AppendAll(runtime).Filter(_ != "").MkString("\n")
@@ -96,7 +99,7 @@ func predictor(e env) string {
         case NativeFlavor(x) => (nativeErrorHelpers, x + "EOF")
         case ANTLRFlavor() => (antlrErrorHelpers, "antlr.TokenEOF")
     }
-    val code = fill(predictorSource + repairSource + guessSource + (if (e.guessed.IsEmpty()) "" else guessOrSource) + fullCacheSource + errorsSource + helpers,
+    val code = fill(predictorSource + repairSource + guessSource + (if (guessesGoOn(e)) guessOrSource else "") + (if (guessCode(e) == "") "" else scanSource) + fullCacheSource + errorsSource + helpers,
         "@RULE@", ruleFuncType(e), "@ROOT@", root, "@ZERO@", zero, "@SYNTAXERROR@", syntaxError, "@EOF@", eof,
         "PARSER", e.parserType, "PFX", e.pfx)
     strings.TrimPrefix(code, "\n")

@@ -52,6 +52,8 @@ var cases = []struct {
 		"c a x " + parens(3) + " x " + parens(3) + " x " + parens(3) + " q", "c a q", "c a x " + parens(3) + " x " + parens(3), "r a x"}, 0},
 	// Twenty and a hundred items, each a wrong guess: past the search's budget.
 	{"s11", []string{wrongGuesses(20), wrongGuesses(100), strings.Repeat("c a x " + parens(3) + " q ; ", 3) + "c a q ;"}, 0},
+	// e12 goes on with '!': the first alternative of stat12 is not ruled out by a scan.
+	{"s12", []string{"a ! b", "a !", "a ! b !", "a ! a !", "a ! ! b", "! b a !", "a a ! b", "a ! b a"}, 0},
 }
 
 func TestRepairMatchesANTLR(t *testing.T) {
