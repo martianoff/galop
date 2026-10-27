@@ -282,13 +282,13 @@ func counters(flavor string, srcs []string) map[string]int64 {
 		_, s, err := nativegala.ParseWithStats(src)
 		return s, err == nil
 	}
-	cacheStates := nativegala.CacheStates
+	cacheStates, sllCache := nativegala.CacheStates, nativegala.SLLCache
 	if flavor == "antlrflavor" {
 		parse = func(src string) (nativegala.Stats, bool) {
 			_, s, err := antlrgala.ParseGalopWithStats(gala.GalopTokens(src))
 			return nativegala.Stats(s), err == nil
 		}
-		cacheStates = antlrgala.CacheStates
+		cacheStates, sllCache = antlrgala.CacheStates, antlrgala.SLLCache
 	}
 	c := map[string]int64{"files": int64(len(srcs)), "replays-median": 0, "replays-max": 0}
 	var replays []int
@@ -311,6 +311,8 @@ func counters(flavor string, srcs []string) map[string]int64 {
 	}
 	sll, full := cacheStates()
 	c["sll-states"], c["full-context-states"] = int64(sll), int64(full)
+	peak, resets := sllCache()
+	c["sll-peak-states"], c["sll-resets"] = int64(peak), int64(resets)
 	c["allocs-per-pass"] = int64(measure.Once(func() {
 		for _, src := range srcs {
 			parse(src)

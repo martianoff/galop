@@ -11,8 +11,8 @@ package golang
 //
 //   - SLL: the calling context is a wildcard (a rule's end continues at every
 //     caller) and an SLL conflict is settled by the lowest conflicting
-//     alternative. SLL results are cached in a per-decision DFA for the life of
-//     the process, as ANTLR caches them.
+//     alternative. SLL results are cached in a per-decision DFA across parses,
+//     as ANTLR caches them, up to a bound (see PFXDFA).
 //   - LL: the parser's real call stack is the context, and prediction runs until
 //     ANTLR's stopping rule picks an alternative.
 //
