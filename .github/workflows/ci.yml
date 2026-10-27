@@ -97,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 30 }}
     env:
-      PERF_ENFORCE: "false"
+      PERF_ENFORCE: "true"
       # Seconds for the build and the measurement, inside the job limit.
       PERF_BUDGET: ${{ github.event_name == 'pull_request' && 480 || 1500 }}
     steps:
