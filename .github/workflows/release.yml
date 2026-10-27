@@ -30,7 +30,8 @@ jobs:
             goflags: -p=2
             gala: gala-windows-amd64.exe
             target: galop-windows-amd64.exe
-    timeout-minutes: 60
+    # macOS builds one package at a time (-p=1) and took 61 minutes for 0.2.0.
+    timeout-minutes: 120
     # Same memory limits as CI; see the comment in ci.yml.
     env:
       GOFLAGS: ${{ matrix.goflags }}
