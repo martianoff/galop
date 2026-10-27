@@ -788,15 +788,19 @@ driven as the GALA compiler drives it, SLL then LL; galop repairing a failed
 SLL parse), Go 1.25 on Windows, one machine with 32 hardware threads that other
 work shared during the run, so compare columns rather than runs.
 `-Xno-brackets` is the native flavor generated without bracket abstraction.
+Each row is measured in its own process, so warm passes don't pay for the
+garbage collector scanning another parser's heap, such as ANTLR's DFA caches.
+(Earlier tables timed every warm row in one shared process, which inflated
+them: the native flavor's warm pass took 70 ms there and 44 ms on its own.)
 
 GALA corpus (723 files, 1.8 MB):
 
 | | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` | `native`, `-Xno-brackets` |
 |---|---:|---:|---:|---:|
-| Warm, 1 goroutine | 916 ms | 273 ms | 70.1 ms | 72.3 ms |
-| Warm, 32 goroutines | 430 ms | 63.2 ms | 11.4 ms | 11.3 ms |
-| Fresh process, 1 goroutine | 1.55 s | 184 ms | 52.4 ms | 177 ms |
-| Fresh process, 32 goroutines | 832 ms | 69.1 ms | 12.9 ms | 151 ms |
+| Warm, 1 goroutine | 466 ms | 163 ms | 43.8 ms | 39.9 ms |
+| Warm, 32 goroutines | 325 ms | 45.2 ms | 7.7 ms | 4.9 ms |
+| Fresh process, 1 goroutine | 1.48 s | 174 ms | 48.9 ms | 154 ms |
+| Fresh process, 32 goroutines | 773 ms | 66.5 ms | 11.7 ms | 145 ms |
 | Allocations per warm pass | 6.84 M, 526 MB | 4.13 M, 325 MB | 23 k, 75 MB | 22 k, 73 MB |
 
 Held-out code (gala_team, gala_tui and gala-server; 247 files, 3.5 MB, not
@@ -804,10 +808,10 @@ used to tune galop):
 
 | | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` | `native`, `-Xno-brackets` |
 |---|---:|---:|---:|---:|
-| Warm, 1 goroutine | 5.78 s | 388 ms | 95.5 ms | 99.1 ms |
-| Warm, 32 goroutines | 3.25 s | 123 ms | 20.7 ms | 21.5 ms |
-| Fresh process, 1 goroutine | 7.16 s | 240 ms | 60.3 ms | 297 ms |
-| Fresh process, 32 goroutines | 3.03 s | 75.6 ms | 13.5 ms | 278 ms |
+| Warm, 1 goroutine | 5.76 s | 227 ms | 59.3 ms | 57.2 ms |
+| Warm, 32 goroutines | 3.26 s | 60.8 ms | 11.4 ms | 9.3 ms |
+| Fresh process, 1 goroutine | 6.79 s | 239 ms | 59.4 ms | 276 ms |
+| Fresh process, 32 goroutines | 2.89 s | 72.2 ms | 15.5 ms | 256 ms |
 
 Where the `antlr` flavor's warm time goes (profiled on one goroutine): about
 half builds ANTLR's context objects, their child slices and terminal nodes, and

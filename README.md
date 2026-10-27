@@ -22,8 +22,8 @@ report a syntax error.**
 > **Status: early development.** galop generates a Go lexer and parser for the
 > GALA compiler's grammar that produce exactly ANTLR's tokens and trees on the
 > whole GALA source corpus (722 of 722 files ANTLR accepts) and on code it was
-> not tuned on, in two flavors: its own compact tree (the default, 13× to 220×
-> faster than ANTLR) or ANTLR's tree types (3× to 40×).
+> not tuned on, in two flavors: its own compact tree (the default, 11× to 290×
+> faster than ANTLR) or ANTLR's tree types (3× to 50×).
 > Other grammars work as far as their features are supported (see below); see the
 > [roadmap](docs/ROADMAP.md).
 
@@ -36,16 +36,16 @@ Go 1.25 on Windows, one machine with 32 hardware threads:
 | | ANTLR 4.13.1 | galop, `native` (default) | galop, `antlr` flavor |
 |---|---:|---:|---:|
 | **GALA compiler** (723 files, 1.8 MB) | | | |
-| Warm, one goroutine | 916 ms | 70 ms (13×) | 273 ms (3.3×) |
-| Warm, 32 goroutines | 430 ms | 11 ms (38×) | 63 ms (6.8×) |
-| Fresh process, one goroutine | 1.55 s | 52 ms (30×) | 184 ms (8.5×) |
-| Fresh process, 32 goroutines | 832 ms | 13 ms (65×) | 69 ms (12×) |
+| Warm, one goroutine | 466 ms | 44 ms (11×) | 163 ms (2.9×) |
+| Warm, 32 goroutines | 325 ms | 7.7 ms (42×) | 45 ms (7.2×) |
+| Fresh process, one goroutine | 1.48 s | 49 ms (30×) | 174 ms (8.5×) |
+| Fresh process, 32 goroutines | 773 ms | 12 ms (66×) | 67 ms (12×) |
 | Allocations per warm pass | 6.8 M, 526 MB | 23 k, 75 MB | 4.1 M, 325 MB |
 | **Code galop was not tuned on** (gala_team, gala_tui, gala-server: 247 files, 3.5 MB) | | | |
-| Warm, one goroutine | 5.78 s | 96 ms (60×) | 388 ms (15×) |
-| Warm, 32 goroutines | 3.25 s | 21 ms (157×) | 123 ms (27×) |
-| Fresh process, one goroutine | 7.16 s | 60 ms (119×) | 240 ms (30×) |
-| Fresh process, 32 goroutines | 3.03 s | 14 ms (224×) | 76 ms (40×) |
+| Warm, one goroutine | 5.76 s | 59 ms (97×) | 227 ms (25×) |
+| Warm, 32 goroutines | 3.26 s | 11 ms (286×) | 61 ms (54×) |
+| Fresh process, one goroutine | 6.79 s | 59 ms (114×) | 239 ms (28×) |
+| Fresh process, 32 goroutines | 2.89 s | 15 ms (187×) | 72 ms (40×) |
 
 The `native` flavor is the default; the `antlr` flavor is for programs already
 written against ANTLR's trees, and spends most of its time building ANTLR's
