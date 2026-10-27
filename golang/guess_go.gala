@@ -5,15 +5,14 @@ import (
 
     . "martianoff/gala/collection_immutable"
 
-    "github.com/martianoff/galop/analysis"
-    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/guess"
 )
 
 // guessSource is the guessing first pass and its search. A first pass of an
 // entry that may be repaired takes, at every guess point, the smallest
 // alternative no test ruled out, where a larger one is still possible: an
 // SLL conflict (the lowest conflicting alternative, as before), or a decision
-// the generator lets guess without predicting (see guessDecisions). On input
+// the generator lets guess without predicting (see guess.PlanFor). On input
 // ANTLR accepts, its parse is the leftmost-choice derivation: at every
 // decision, the smallest alternative that still lets the whole input parse.
 // So a pass that reaches EOF with such choices has built ANTLR's tree, and a
@@ -47,13 +46,19 @@ type PFXGuesses struct {
 	wide   bool
 }
 
-// The search stops after PFXGuessReplays replays, or once its replays have
-// read PFXGuessTokens times the input's tokens: a replay rereads the input
-// from its start, so k wrong guesses far into a large input cost k passes,
-// and the search is cut off when that is about to cost more than a few passes.
+// The search stops after PFXGuessReplays replays; once its replays have read
+// PFXGuessTokens times the input's tokens, or PFXGuessFloor tokens for a short
+// input (a replay rereads the input from its start, so k wrong guesses far into
+// a large input cost k passes); or after PFXGuessStall replays in a row that
+// fail no further into the input than the furthest failure so far. A search
+// that will succeed fixes its wrong guesses one by one and gets further with
+// each; on input outside the language every replay fails about where the
+// first pass did. Stopping early is always exact: what follows the search is.
 const (
-	PFXGuessReplays = 16
+	PFXGuessReplays = 64
 	PFXGuessTokens  = 4
+	PFXGuessFloor   = 16384
+	PFXGuessStall   = 16
 )
 
 // guess takes the smallest alternative in alts, through guessPoint when alts
@@ -105,7 +110,8 @@ func (g *PFXGuesses) next() bool {
 func (p *PARSER) search(rule @RULE@) (root @ROOT@, ok bool) {
 	g := &p.gs
 	defer func() { g.forced, g.pts = 0, g.pts[:0] }()
-	budget := PFXGuessTokens * len(p.types)
+	budget := max(PFXGuessTokens*len(p.types), PFXGuessFloor)
+	furthest, stall := p.pos, 0
 	for replays := 0; replays < PFXGuessReplays && !g.wide && g.next(); replays++ {
 		root, err := p.attempt(rule)
 		if err == nil {
@@ -114,13 +120,18 @@ func (p *PARSER) search(rule @RULE@) (root @ROOT@, ok bool) {
 		if budget -= p.pos + 1; budget <= 0 {
 			break
 		}
+		if p.pos > furthest {
+			furthest, stall = p.pos, 0
+		} else if stall++; stall >= PFXGuessStall {
+			break
+		}
 	}
 	return @ZERO@, false
 }
 `
 
 // guessOrSource is the helper of the decisions that guess (see
-// guessDecisions), emitted only when some do.
+// guess.PlanFor), emitted only when some do.
 val guessOrSource = `
 // guessOr guesses decision d among alts in the first pass and its search,
 // and predicts it otherwise (in a repair or LL pass, or reporting an error:
@@ -133,62 +144,34 @@ func (p *PARSER) guessOr(d int, alts uint64) int {
 }
 `
 
-// guessDecisions are the decisions the first pass guesses without runtime
-// prediction: loops and single-alternative optional blocks left to runtime,
-// greedy ones, where the choice is to go on or to stop (alternative 1 goes
-// on), and whose block does not start with a rule call and end with a token.
-// In a grammar without separators between statements, going on is almost
-// always the leftmost choice, while a block like `(simpleStatement ';')?` is
-// decided by the token after a long prefix, which guessing would get wrong as
-// often as not. Which decisions guess affects only speed: any guess is exact
-// (see guessSource).
-func guessDecisions(rules Array[atn.RuleIR], plans Array[analysis.DecisionPlan]) HashSet[int] {
-    val runtime = plans.FoldLeft(EmptyHashSet[int](), (s, p) => if (analysis.NeedsRuntime(p.Lookahead)) s.Add(p.Decision.Id) else s)
-    rules.FlatMap((r) => r.Alts.FlatMap((a) => goOnOrStop(a.Steps)))
-        .FoldLeft(EmptyHashSet[int](), (s, d) => if (runtime.Contains(d)) s.Add(d) else s)
-}
-
-// goOnOrStop lists the greedy go-on-or-stop decisions in steps, nested ones
-// included: a loop whose alternative 1 repeats, and an optional block of one
-// alternative whose exit is alternative 2 (a non-greedy one exits with 1).
-func goOnOrStop(steps Array[atn.Step]) Array[int] = steps.FlatMap((s) => s match {
-    case atn.Loop(_, d, 1, body) => {
-        val own = if (separatorTerminated(body)) EmptyArray[int]() else ArrayOf(d)
-        own.AppendAll(goOnOrStop(body))
-    }
-    case atn.Choose(d, alts, exit) => {
-        val optional = exit match {
-            case Some(2) => alts.Size() == 1 && !separatorTerminated(alts.Get(0))
-            case _ => false
-        }
-        val own = if (optional) ArrayOf(d) else EmptyArray[int]()
-        own.AppendAll(alts.FlatMap((a) => goOnOrStop(a)))
-    }
-    case _ => EmptyArray[int]()
-})
-
-// separatorTerminated says a block starts with a rule call and ends with a token.
-func separatorTerminated(body Array[atn.Step]) bool = body.Size() >= 2 && (body.Head() match {
-    case atn.CallRule(_, _, _) => true
-    case _ => false
-}) && (body.Last() match {
-    case atn.MatchToken(_, _) => true
-    case atn.MatchSet(_, _, _) => true
-    case _ => false
-})
-
 // altMask is alts as a Go uint64 literal (bit a for alternative a), or None
 // when an alternative is past 63.
 func altMask(alts Array[int]) Option[string] =
     Unless(alts.Exists((a) => a < 1 || a > 63), s"0x${strconv.FormatUint(alts.FoldLeft(uint64(0), (m, a) => m | (uint64(1) << uint64(a))), 16)}")
 
 // runtimeChoice is the Go statement for a lookahead leaf that leaves
-// decision d to runtime: a guess among alts in the first pass when the
-// decision guesses, runtime prediction otherwise.
-func runtimeChoice(e env, d int, alts Array[int]) string = altMask(alts) match {
-    case Some(m) if e.guessed.Contains(d) => s"return p.guessOr($d, $m)"
+// decision d to runtime among alts: in a guessing first pass, as e's guess
+// plan settles the decision (see guess.PlanFor); runtime prediction otherwise.
+func runtimeChoice(e env, d int, alts Array[int]) string = (altMask(alts), e.guessPlan.Decision(d)) match {
+    case (Some(m), Some(guess.GoOn())) => s"return p.guessOr($d, $m)"
+    case (Some(m), Some(guess.Scanned(_, _))) => s"return p.scanned$d($m)"
+    case (Some(m), Some(guess.Bounded(_))) => s"return p.bounded$d($m)"
     case _ => s"return p.adaptivePredict($d)"
 }
 
+// guessesGoOn says some decision of e's plan goes on (and needs guessOr).
+func guessesGoOn(e env) bool = e.guessPlan.Decisions.Exists((g) => g match {
+    case Some(guess.GoOn()) => true
+    case _ => false
+})
+
 // allAlts are decision d's alternatives.
 func allAlts(e env, d int) Array[int] = ArrayTabulate(e.parser.Decisions.Get(d).AltCount, (i) => i + 1)
+
+// readsAutomata says some decision of e's plan is scanned or reads a bounded
+// automaton (and needs scanSource).
+func readsAutomata(e env) bool = e.guessPlan.Decisions.Exists((g) => g match {
+    case Some(guess.Scanned(_, _)) => true
+    case Some(guess.Bounded(_)) => true
+    case _ => false
+})

@@ -7,9 +7,9 @@ import (
     . "martianoff/gala/test"
 )
 
-// guessGrammar has a go-on-or-stop loop (l) and an optional block decided by
-// the token after a long prefix (o); n nests without bound, so both are left
-// to runtime.
+// guessGrammar has a go-on-or-stop loop (l), which guesses, and an optional
+// block decided by the token after a long prefix (o), which is scanned; n
+// nests without bound, so both are left to runtime.
 val guessGrammar = `grammar G;
 s : 'c' l 'x' n Q EOF | 'r' l EOF | o EOF ;
 l : A ('x' n)* ;
@@ -25,13 +25,13 @@ func decideBody(code string, text string) string {
     if (found) body else ""
 }
 
-func TestLoopGuessesSeparatorBlockPredicts(t T) T {
+func TestLoopGuessesSeparatorBlockScans(t T) T {
     val code = nativeFiles(guessGrammar).Get("g_parser.go").GetOrElse("")
     val loop = decideBody(code, "l: ('x' n)*")
     val optional = decideBody(code, "o: (n ';')?")
     val t1 = IsTrue(t, strings.Contains(loop, "return p.guessOr("))
     val t2 = IsFalse(t1, strings.Contains(loop, "return p.adaptivePredict("))
-    val t3 = IsTrue(t2, strings.Contains(optional, "return p.adaptivePredict("))
+    val t3 = IsTrue(t2, strings.Contains(optional, "return p.scanned"))
     val t4 = IsFalse(t3, strings.Contains(optional, "p.guessOr("))
     IsTrue(t4, strings.Contains(code, "func (p *GGalopParser) search(rule func(*GGalopParser) int32) (root int32, ok bool) {"))
 }

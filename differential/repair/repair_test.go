@@ -52,6 +52,8 @@ var cases = []struct {
 		"c a x " + parens(3) + " x " + parens(3) + " x " + parens(3) + " q", "c a q", "c a x " + parens(3) + " x " + parens(3), "r a x"}, 0},
 	// Twenty and a hundred items, each a wrong guess: past the search's budget.
 	{"s11", []string{wrongGuesses(20), wrongGuesses(100), strings.Repeat("c a x " + parens(3) + " q ; ", 3) + "c a q ;"}, 0},
+	// e12 goes on with '!': the first alternative of stat12 is not ruled out by a scan.
+	{"s12", []string{"a ! b", "a !", "a ! b !", "a ! a !", "a ! ! b", "! b a !", "a a ! b", "a ! b a"}, 0},
 }
 
 func TestRepairMatchesANTLR(t *testing.T) {
@@ -176,6 +178,36 @@ func BenchmarkWrongGuesses(b *testing.B) {
 	for b.Loop() {
 		if _, err := rn.Entries["s11"].Parse(rn.RepairLex(src)); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// TestOutOfVocabularyTokens gives every entry each input with one token
+// re-typed to a type outside the vocabulary: never a panic, whatever reads
+// that token (static lookahead, a scan, a bounded automaton, runtime
+// prediction or the search), and a syntax error from every entry that ends
+// with EOF (s4 and s9 parse a prefix and may stop before the token).
+func TestOutOfVocabularyTokens(t *testing.T) {
+	for _, c := range cases {
+		for _, src := range c.inputs {
+			n := len(rn.RepairLex(src).Tokens) - 1 // not EOF
+			if n > 200 {
+				continue
+			}
+			for k := 0; k < n; k++ {
+				ts := rn.RepairLex(src)
+				ts.Tokens[k].Type = 999
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							t.Errorf("%s %q, token %d out of the vocabulary: panic %v", c.rule, src, k, r)
+						}
+					}()
+					if _, err := rn.Entries[c.rule].Parse(ts); err == nil && c.rule != "s4" && c.rule != "s9" {
+						t.Errorf("%s %q, token %d out of the vocabulary: no syntax error", c.rule, src, k)
+					}
+				}()
+			}
 		}
 	}
 }

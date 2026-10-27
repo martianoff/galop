@@ -1,0 +1,40 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "guess",
+    srcs = [
+        "engine.gala",
+        "plan.gala",
+    ],
+    importpath = "github.com/martianoff/galop/guess",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//analysis",
+        "//atn",
+        "//brackets",
+        "@gala//collection_immutable",
+        "@gala//collection_mutable",
+        "@gala//concurrent",
+    ],
+)
+
+gala_test(
+    name = "guess_test",
+    srcs = ["guess_test.gala"],
+    importpath = "github.com/martianoff/galop/guess",
+    lib_srcs = [
+        "engine.gala",
+        "plan.gala",
+    ],
+    pkg = "guess",
+    deps = [
+        "//analysis",
+        "//atn",
+        "//brackets",
+        "//grammartest",
+        "//repair",
+        "@gala//collection_immutable",
+        "@gala//collection_mutable",
+        "@gala//concurrent",
+    ],
+)

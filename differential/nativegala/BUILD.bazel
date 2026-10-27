@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 # galop's lexer and parser for gala.g4 in the Go target's default, native
 # flavor, generated at build time by the galop CLI built from this repository.
@@ -33,3 +33,17 @@ exports_files([
     "newline.go",
     "tokens.go",
 ])
+
+# The guessing first pass's plan against the runtime predictor, on both corpora.
+[go_test(
+    name = name,
+    size = "medium",
+    srcs = ["guess_test.go"],
+    args = ["-manifest=$(rlocationpath %s)" % corpus],
+    data = [corpus],
+    embed = [":nativegala"],
+    deps = ["//differential/corpus"],
+) for name, corpus in [
+    ("guess_test", "//differential:corpus"),
+    ("heldout_guess_test", "//differential:heldout"),
+]]

@@ -44,6 +44,7 @@ func nativeParser(e env, pkg string, version string, grammarFile string, withTok
         nativeParserCore(e),
         ruleCode.MkString("\n"),
         decisionCode.MkString("\n"),
+        guessCode(e),
     ))
     val runtime = ArrayOf(tables(e), errorTables(e), predictor(e))
     parts.AppendAll(runtime).Filter(_ != "").MkString("\n")

@@ -1,0 +1,389 @@
+package guess
+
+import (
+    . "martianoff/gala/collection_immutable"
+    m "martianoff/gala/collection_mutable"
+    "martianoff/gala/concurrent"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/brackets"
+)
+
+// ScanDFA is the abstract automaton of one rule from its start: Next holds,
+// for each state, the state after each symbol (row state*Size), or -1, and
+// Ends says the rule can end in a state. A scan of the rule from a token
+// reads symbols until the automaton has no move: on input in the language,
+// a derivation of the rule followed by a symbol that is no move from any
+// state where the rule can end makes the scan stop exactly after it.
+// First are the symbols a scan can start with, and EndMoves the symbols that
+// are moves from some state where the rule can end.
+struct ScanDFA(Rule int, Next Array[int], Ends Array[bool], First HashSet[int], EndMoves HashSet[int])
+
+// GuessDFA is a decision's bounded abstract automaton. Next holds, for each
+// state that is not a leaf, what each symbol leads to (row state*Size): a
+// state (>= 0), nothing (-1, a syntax error), or the only alternative left
+// (-2-alt). A Leaf state is
+// not expanded: the parse guesses among its Alts (bit a for alternative a).
+struct GuessDFA(Next Array[int], Leaf Array[bool], Alts Array[uint64])
+
+// ScanStep is one element of what a scan reads before the token that tells
+// an alternative apart: a derivation of Rule, an optional block (taken when
+// its first symbol is one its steps can start with), or one token of Tokens.
+sealed type ScanStep {
+    case ScanRule(Rule int)
+    case ScanOptional(Steps Array[ScanStep])
+    case ScanToken(Tokens atn.IntervalSet)
+}
+
+// Requirement says alternative Alt is viable only if Steps, scanned from the
+// decision's first token, stop at a token in End.
+struct Requirement(Alt int, Steps Array[ScanStep], End atn.IntervalSet)
+
+// DecisionGuess is how a guessing first pass settles a decision it would
+// otherwise predict at runtime.
+sealed type DecisionGuess {
+    // GoOn takes the smallest alternative left: go on.
+    case GoOn()
+    // Scanned rules alternatives out by Requirements, and by Automaton when
+    // some alternative has no requirement.
+    case Scanned(Requirements Array[Requirement], Automaton Option[GuessDFA])
+    // Bounded reads Automaton.
+    case Bounded(Automaton GuessDFA)
+}
+
+// Plan is how a grammar's guessing first pass settles its runtime decisions:
+// Decisions is indexed by decision id and Scans by rule (the rules that scans
+// read), None where nothing is planned.
+struct Plan(Alphabet Alphabet, Decisions Array[Option[DecisionGuess]], Scans Array[Option[ScanDFA]])
+
+// NoPlan guesses nothing.
+func NoPlan() Plan = Plan(Alphabet(0, EmptyArray[int](), 0), EmptyArray[Option[DecisionGuess]](), EmptyArray[Option[ScanDFA]]())
+
+// Decision is how decision d is settled, if it is planned.
+func (p Plan) Decision(d int) Option[DecisionGuess] = optionAt(p.Decisions, d)
+
+// Scan is rule r's scan automaton, if a scan reads the rule.
+func (p Plan) Scan(r int) Option[ScanDFA] = optionAt(p.Scans, r)
+
+// optionAt is xs[i], or None past its end.
+func optionAt[T any](xs Array[Option[T]], i int) Option[T] = xs.GetOption(i).FlatMap((x) => x)
+
+// scanStateLimit and guessStateLimit bound the automata: a rule whose scan
+// needs more states is not scanned, and a decision's automaton stops
+// expanding past guessStateLimit states, guessing in the rest.
+val scanStateLimit = 2048
+
+val guessStateLimit = 16
+
+// scanStackDepth and guessStackDepth are how many return states the engine
+// keeps (see engine): deeper stacks are more precise, and cost states. A
+// decision's automaton keeps as many as the analysis's SLL automata do: an
+// expression in a grammar like GALA's is a chain of a dozen rules, and a
+// shallower stack forgets, inside one expression, the statement it is in.
+val scanStackDepth = 1
+
+val guessStackDepth = 64
+
+// PlanFor plans the runtime decisions of parser a (rule IR rules, analysis
+// plans, bracket families b): go-on-or-stop decisions guess (GoOn); the
+// others are scanned where some alternative has a requirement whose scans
+// pass their check (and also read a bounded automaton when some alternative
+// has none), and read a bounded automaton otherwise, when the grammar has
+// bracket families (without them the others are left to runtime
+// prediction). A decision with more
+// than 63 alternatives, or whose alternatives consume at the decision state
+// itself, is left to runtime prediction; so is every decision of a parser
+// with 2^20 states or more.
+func PlanFor(a atn.ATN, rules Array[atn.RuleIR], plans Array[analysis.DecisionPlan], b brackets.Brackets) Plan {
+    // pack gives states 20 bits.
+    if a.States.Size() >= 1 << 20 {
+        return NoPlan()
+    }
+    val al = AlphabetOf(a.Vocab.MaxType(), b)
+    val edges = abstractEdges(a, al, b)
+    val decisions = a.Decisions.Size()
+    val runtime = plans.FoldLeft(EmptyHashSet[int](), (s, p) => if (analysis.NeedsRuntime(p.Lookahead)) s.Add(p.Decision.Id) else s)
+    val goOn = rules.FlatMap((r) => r.Alts.FlatMap((alt) => goOnOrStop(alt.Steps))).FoldLeft(EmptyHashSet[int](), (s, d) => s.Add(d))
+    // Scans and automata read bracketed groups as one symbol: over tokens alone
+    // they settle too little, and a decision is better left to runtime prediction.
+    val other = (d int) => b.Families.NonEmpty() && runtime.Contains(d) && !goOn.Contains(d)
+    val reqs = ArrayTabulate(decisions, (d) =>
+        if (other(d)) alternativesOf(rules, d).Map((p) => requirementOf(rules, p.V1, p.V2)).Collect({ case Some(r) => r })
+        else EmptyArray[Requirement]())
+    // The automata are independent of each other and built concurrently.
+    val scanRules = reqs.FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).Distinct()
+    val built = concurrent.Traverse(scanRules, (r) => concurrent.Future(buildScan(a, al, edges, r))).Get()
+    val scans = ArrayTabulate(a.RuleNames.Size(), (r) => built.Collect({ case Some(s) if s.Rule == r => s }).HeadOption())
+    val checked = reqs.Map((rs) => rs.Filter((r) => holds(al, scans, r)))
+    val follows = globalFollows(a)
+    // A decision reads an automaton when some alternative has no requirement.
+    val uncovered = (d int) => other(d) && ArrayTabulate(a.Decisions.Get(d).AltCount, (i) => i + 1)
+        .Exists((alt) => !checked.Get(d).Exists(_.Alt == alt))
+    val guessed = concurrent.Traverse(ArrayTabulate(decisions, (d) => d).Filter(uncovered), (d) =>
+        concurrent.Future((d, buildGuess(a, al, edges, follows, a.Decisions.Get(d))))).Get()
+    val automata = ArrayTabulate(decisions, (d) => guessed.Find(_.V1 == d).FlatMap(_.V2))
+    val plan = ArrayTabulate(decisions, (d) =>
+        if (!runtime.Contains(d)) None[DecisionGuess]()
+        else if (goOn.Contains(d)) Some[DecisionGuess](GoOn())
+        else if (!other(d)) None[DecisionGuess]()
+        else (checked.Get(d), automata.Get(d)) match {
+            case (Array(), Some(g)) => Some[DecisionGuess](Bounded(g))
+            case (Array(), None()) => None[DecisionGuess]()
+            case (rs, g) => Some[DecisionGuess](Scanned(rs, g))
+        })
+    val used = checked.FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).FoldLeft(EmptyHashSet[int](), (s, r) => s.Add(r))
+    Plan(al, plan, scans.ZipWithIndex().Map((si) => if (used.Contains(si.V2)) si.V1 else None[ScanDFA]()))
+}
+
+// goOnOrStop lists the greedy go-on-or-stop decisions in steps, nested ones
+// included: a loop whose alternative 1 repeats, and an optional block of one
+// alternative whose exit is alternative 2 (a non-greedy one exits with 1),
+// unless the block starts with a rule call and ends with a token, like
+// `(simpleStatement ';')?`: the token after a long prefix decides it, which
+// guessing gets wrong as often as not, so it is scanned instead. In a grammar
+// without separators between statements, going on is almost always the
+// leftmost choice. Which decisions guess affects only speed.
+func goOnOrStop(steps Array[atn.Step]) Array[int] = steps.FlatMap((s) => s match {
+    case atn.Loop(_, d, 1, body) => {
+        val own = if (separatorTerminated(body)) EmptyArray[int]() else ArrayOf(d)
+        own.AppendAll(goOnOrStop(body))
+    }
+    case atn.Choose(d, alts, exit) => {
+        val optional = exit match {
+            case Some(2) => alts.Size() == 1 && !separatorTerminated(alts.Get(0))
+            case _ => false
+        }
+        val own = if (optional) ArrayOf(d) else EmptyArray[int]()
+        own.AppendAll(alts.FlatMap((a) => goOnOrStop(a)))
+    }
+    case _ => EmptyArray[int]()
+})
+
+// separatorTerminated says a block starts with a rule call and ends with a token.
+func separatorTerminated(body Array[atn.Step]) bool = body.Size() >= 2 && (body.Head() match {
+    case atn.CallRule(_, _, _) => true
+    case _ => false
+}) && isToken(body.Last())
+
+func isToken(s atn.Step) bool = s match {
+    case atn.MatchToken(_, _) => true
+    case atn.MatchSet(_, _, _) => true
+    case _ => false
+}
+
+// alternativesOf lists decision d's alternatives with their steps: a rule's
+// alternatives or a block's; a loop's are not listed (it guesses or reads an
+// automaton).
+func alternativesOf(rules Array[atn.RuleIR], d int) Array[Tuple[int, Array[atn.Step]]] =
+    rules.Find((r) => r.Decision == Some(d)) match {
+        case Some(r) => r.Alts.ZipWithIndex().Map((p) => (p.V2 + 1, p.V1.Steps))
+        case None() => rules.FlatMap((r) => r.Alts.FlatMap((a) => choicesOf(a.Steps, d)))
+    }
+
+func choicesOf(steps Array[atn.Step], d int) Array[Tuple[int, Array[atn.Step]]] = steps.FlatMap((s) => s match {
+    case atn.Choose(id, alts, exit) =>
+        if (id == d) alts.ZipWithIndex().Map((p) => (atn.AltNumber(exit, p.V2), p.V1))
+        else alts.FlatMap((a) => choicesOf(a, d))
+    case atn.Loop(_, _, _, body) => choicesOf(body, d)
+    case _ => EmptyArray[Tuple[int, Array[atn.Step]]]()
+})
+
+// unfoldDepth bounds how many rule calls unfold looks through.
+val unfoldDepth = 4
+
+// unfold replaces an alternative that is only a call of a rule with one
+// alternative by that alternative, a few levels deep.
+func unfold(rules Array[atn.RuleIR], steps Array[atn.Step], depth int) Array[atn.Step] = steps match {
+    case Array(atn.CallRule(r, _, _)) if depth < unfoldDepth && rules.Get(r).Alts.Size() == 1 => unfold(rules, rules.Get(r).Alts.Get(0).Steps, depth + 1)
+    case _ => steps
+}
+
+// requirementOf is what alternative alt reads before its first token, and
+// that token, when it reads something first: rule calls, optional blocks of
+// such steps and tokens; None for any other shape.
+func requirementOf(rules Array[atn.RuleIR], alt int, steps Array[atn.Step]) Option[Requirement] {
+    val body = unfold(rules, steps, 0)
+    val prefix = body.TakeWhile((s) => !isToken(s))
+    if (prefix.IsEmpty() || prefix.Size() == body.Size()) None[Requirement]()
+    else scanSteps(prefix).Map((ss) => Requirement(alt, ss, tokensOf(body.Get(prefix.Size()))))
+}
+
+func tokensOf(s atn.Step) atn.IntervalSet = s match {
+    case atn.MatchToken(t, _) => atn.SetOf(t)
+    case atn.MatchSet(set, _, _) => set
+    case _ => atn.EmptySet()
+}
+
+// scanSteps turns steps into scan steps, or None when one has another shape.
+func scanSteps(steps Array[atn.Step]) Option[Array[ScanStep]] = steps.FoldLeft(Some(EmptyArray[ScanStep]()), (acc, s) => acc.FlatMap((ss) => (s match {
+    case atn.CallRule(r, _, _) => Some[ScanStep](ScanRule(r))
+    case atn.MatchToken(t, _) => Some[ScanStep](ScanToken(atn.SetOf(t)))
+    case atn.MatchSet(set, _, _) => Some[ScanStep](ScanToken(set))
+    case atn.Choose(_, Array(alt), Some(2)) => scanSteps(alt).Map((inner) => ScanOptional(inner))
+    case _ => None[ScanStep]()
+}).Map((step) => ss.Append(step))))
+
+// rulesOf lists the rules scan steps derive.
+func rulesOf(steps Array[ScanStep]) Array[int] = steps.FlatMap((s) => s match {
+    case ScanRule(r) => ArrayOf(r)
+    case ScanOptional(inner) => rulesOf(inner)
+    case ScanToken(_) => EmptyArray[int]()
+})
+
+// holds checks that requirement r is sound: scanned from the decision, its steps stop exactly
+// where a derivation of them stops (see ScanDFA), so an alternative whose
+// scan stops elsewhere than at End is not viable. Each rule's derivation must
+// be followed by symbols that are no move from a state where the rule can end
+// and the rule must not derive nothing; an optional block's first symbols
+// must differ from what follows it; tokens read and End must not open a
+// bracket, and a token read must not be EOF (the scan never reads past it).
+func holds(al Alphabet, scans Array[Option[ScanDFA]], r Requirement) bool =
+    !r.End.Values().Exists(al.IsOpener) && checkSteps(al, scans, r.Steps, symbolsOfTokens(al, r.End)).IsDefined()
+
+func symbolsOfTokens(al Alphabet, tokens atn.IntervalSet) HashSet[int] =
+    tokens.Values().FoldLeft(EmptyHashSet[int](), (s, t) => s.Add(al.TokenSymbol(t)))
+
+// checkSteps checks steps followed by symbols after, and returns the symbols
+// they can start with, or None when the check fails.
+func checkSteps(al Alphabet, scans Array[Option[ScanDFA]], steps Array[ScanStep], after HashSet[int]) Option[HashSet[int]] =
+    steps.Reverse().FoldLeft(Some(after), (acc, s) => acc.FlatMap((next) => s match {
+        case ScanRule(r) => optionAt(scans, r).FlatMap((d) =>
+            When(!d.Ends.Get(0) && d.EndMoves.ToArray().ForAll((sym) => !next.Contains(sym)), d.First))
+        case ScanToken(set) => When(!set.Values().Exists(al.IsOpener) && !set.Contains(atn.TokenEOF), symbolsOfTokens(al, set))
+        case ScanOptional(inner) => checkSteps(al, scans, inner, next).FlatMap((first) =>
+            When(first.ToArray().ForAll((sym) => !next.Contains(sym)), first.AddAll(next)))
+    }))
+
+// movesOf are the symbols that are moves from state st of automaton next.
+func movesOf(next Array[int], size int, st int) HashSet[int] =
+    ArrayTabulate(size, (sym) => sym).FoldLeft(EmptyHashSet[int](), (s, sym) => if (next.Get(st * size + sym) >= 0) s.Add(sym) else s)
+
+// FirstSymbols are the symbols an optional block's scan starts with, as the
+// generated code tests them.
+func FirstSymbols(al Alphabet, scans Array[Option[ScanDFA]], steps Array[ScanStep]) HashSet[int] =
+    checkSteps(al, scans, steps, EmptyHashSet[int]()).GetOrElse(EmptyHashSet[int]())
+
+// regionFollows lists, per rule, the follow states of the calls reachable
+// from rule root without entering a group: where a scan of root can return
+// once its frames are dropped.
+func regionFollows(a atn.ATN, edges Array[Array[edge]], root int) Array[Array[int]] {
+    val seen = m.EmptyHashSet[int]()
+    val calls = m.EmptyArray[Tuple[int, int]]()
+    var work = ListOf(a.RuleStart.Get(root))
+    seen.Add(a.RuleStart.Get(root))
+    val visit = (st int) => {
+        if seen.Add(st) {
+            work = work.Prepend(st)
+        }
+    }
+    // A worklist over the states reachable at depth 0.
+    for work.NonEmpty() {
+        val st = work.Head()
+        work = work.Tail()
+        edges.Get(st).ForEach((e) => visit(e.Target))
+        a.State(st).Out.ForEach((t) => {
+            if t.IsEpsilon() {
+                t match {
+                    case atn.RuleCall(target, r, follow) => {
+                        calls.Append((r, follow))
+                        visit(target)
+                        visit(follow)
+                    }
+                    case _ => visit(t.Target())
+                }
+            }
+        })
+    }
+    byRule(a.RuleNames.Size(), ArrayFromSlice(calls.ToGoSlice()))
+}
+
+// subset is a DFA under construction: the configuration sets of its states,
+// by key, in creation order.
+struct subset(index Ptr[m.HashMap[string, int]], sets Ptr[m.Array[closureResult]])
+
+func newSubset() subset = subset(m.EmptyHashMap[string, int](), m.EmptyArray[closureResult]())
+
+// add returns the state of r, creating it when new.
+func (b subset) add(r closureResult) int {
+    val key = keyOf(r.Configs) + (if (r.Ends) "E" else "")
+    b.index.Get(key) match {
+        case Some(id) => id
+        case None() => {
+            val id = b.sets.Size()
+            b.index.Put(key, id)
+            b.sets.Append(r)
+            id
+        }
+    }
+}
+
+// buildScan builds rule's scan automaton, or None past scanStateLimit states.
+func buildScan(a atn.ATN, al Alphabet, edges Array[Array[edge]], rule int) Option[ScanDFA] {
+    val en = engine(a, al, edges, regionFollows(a, edges, rule), rule, newStackTable(scanStackDepth))
+    val b = newSubset()
+    b.add(en.closure(ArrayOf(pack(a.RuleStart.Get(rule), 0, false, 0))))
+    val next = m.EmptyArray[int]()
+    var st = 0
+    // A worklist: expanding a state may add states.
+    for st < b.sets.Size() && st < scanStateLimit {
+        val configs = b.sets.Get(st).Configs
+        val row = m.ArrayTabulate(al.Size(), (_) => -1)
+        en.symbolsOut(configs).ForEach((sym) => row.Set(sym, b.add(en.step(configs, sym))))
+        row.ForEach((v) => next.Append(v))
+        st = st + 1
+    }
+    val rows = ArrayFromSlice(next.ToGoSlice())
+    val ends = ArrayTabulate(b.sets.Size(), (i) => b.sets.Get(i).Ends)
+    val endMoves = ends.ZipWithIndex().FoldLeft(EmptyHashSet[int](), (acc, ei) =>
+        if (ei.V1) acc.AddAll(movesOf(rows, al.Size(), ei.V2)) else acc)
+    When(b.sets.Size() <= scanStateLimit && en.stacks.fits(),
+        ScanDFA(rule, rows, ends, movesOf(rows, al.Size(), 0), endMoves))
+}
+
+// buildGuess builds decision dec's bounded automaton: states past
+// guessStateLimit are leaves. None when an alternative is past 63 or starts
+// by consuming at the decision state itself.
+func buildGuess(a atn.ATN, al Alphabet, edges Array[Array[edge]], follows Array[Array[int]], dec atn.Decision) Option[GuessDFA] {
+    val en = engine(a, al, edges, follows, -1, newStackTable(guessStackDepth))
+    val starts = a.State(dec.State).Out.ZipWithIndex().Map((ti) => ti.V1 match {
+        case atn.RuleCall(target, _, follow) => Some(pack(target, en.stacks.push(0, follow).V1, false, ti.V2 + 1))
+        case t => When(t.IsEpsilon(), pack(t.Target(), 0, false, ti.V2 + 1))
+    })
+    val known = starts.Collect({ case Some(k) => k })
+    if (dec.AltCount > 63 || known.Size() != starts.Size()) {
+        return None()
+    }
+    val b = newSubset()
+    b.add(en.closure(known))
+    // After EOF there is nothing more to read: a state reached on EOF is a leaf.
+    val atEOF = m.EmptyHashSet[int]()
+    val leaf = (id int) => id >= guessStateLimit || atEOF.Contains(id)
+    val next = m.EmptyArray[int]()
+    var st = 0
+    // A worklist: expanding a state may add states; leaves are not expanded.
+    for st < b.sets.Size() {
+        val configs = b.sets.Get(st).Configs
+        val row = m.ArrayTabulate(al.Size(), (_) => -1)
+        if !leaf(st) {
+            en.symbolsOut(configs).ForEach((sym) => {
+                val r = en.step(configs, sym)
+                val alts = r.Configs.Map(altOf).Distinct()
+                val target = if (alts.IsEmpty()) -1 else if (alts.Size() == 1) -2 - alts.Head() else b.add(r)
+                if (sym == 0 && target >= 0) {
+                    atEOF.Add(target)
+                }
+                row.Set(sym, target)
+            })
+            row.ForEach((v) => next.Append(v))
+        } else if st < guessStateLimit {
+            // A leaf reached on EOF keeps its row, so rows stay indexed by
+            // state; the leaves past the limit have none (a leaf's row is never read).
+            row.ForEach((v) => next.Append(v))
+        }
+        st = st + 1
+    }
+    val n = b.sets.Size()
+    When(en.stacks.fits(), GuessDFA(ArrayFromSlice(next.ToGoSlice()), ArrayTabulate(n, leaf),
+        ArrayTabulate(n, (i) => b.sets.Get(i).Configs.FoldLeft(uint64(0), (mask, k) => mask | (uint64(1) << uint64(altOf(k)))))))
+}

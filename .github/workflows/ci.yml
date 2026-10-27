@@ -65,11 +65,11 @@ jobs:
         timeout-minutes: ${{ github.event_name == 'pull_request' && 8 || 38 }}
         run: |
           echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
-          # Go compiles of the largest packages (analysis, golang) peak at 7-9 GB
+          # Go compiles of the largest packages (analysis, golang, guess) peak at 7-9 GB
           # each (gala#872), and two at once exhaust the runner, which then kills
           # Bazel. rules_go doesn't pass --action_env or GOGC to its compiles,
           # so build those packages and their tests one action at a time first.
-          bazel build //analysis:all //golang:all --jobs=1
+          bazel build //analysis:all //golang:all //guess:all --jobs=1
           bazel test //... --jobs=2
 
       # BUILD files are generated; a stale one means someone added or removed a

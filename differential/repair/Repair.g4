@@ -61,6 +61,14 @@ l10 : A ('x' n)* ;
 // repaired instead.
 s11 : ('c' l10 'x' n Q ';')+ EOF ;
 
+// A prefix that can go on with the token that tells the alternatives apart:
+// e12 can continue with '!', so a scan of e12 from the first token does not
+// stop where stat12's e12 ends, and must not rule stat12's first alternative
+// out by the token after it.
+s12 : stat12+ EOF ;
+stat12 : e12 '!' | e12 | '!' B ;
+e12 : A ('!' B)? ;
+
 A : 'a' ;
 B : 'b' ;
 Q : 'q' ;

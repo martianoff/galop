@@ -297,7 +297,7 @@ X : 'x' ; Y : 'y' ;
 `, antlrDefines))
     val expected = ArrayOf(
         "const AGalopOpenerCount = 1",
-        "p.pairs = AGalopBracketMatch(p.types, p.pairs)",
+        "p.pairs, balanced = AGalopBracketMatch(p.types, p.pairs)",
     )
     val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
     // No automaton is emitted for the decision: it would stop at a bound.
@@ -311,7 +311,7 @@ a : '(' a ')' | X ;
 b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;
 `, EmptyArray[g4.OptionEntry]()))
-    IsTrue(t, strings.Contains(code, "p.pairs = AGalopBracketMatch(p.types, p.pairs)"))
+    IsTrue(t, strings.Contains(code, "p.pairs, balanced = AGalopBracketMatch(p.types, p.pairs)"))
 }
 
 func TestTokenTypesAboveTheVocabularyAreRejected(t T) T {
