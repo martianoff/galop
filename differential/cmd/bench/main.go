@@ -8,13 +8,15 @@
 // galop's antlr flavor, parse-native with the native flavor, and parse-tokens
 // with the native flavor generated with -Xno-brackets. Each is timed:
 //
-//   - warm: in this process, after one untimed pass has built ANTLR's DFA
-//     caches, timed with testing.Benchmark; per file for the largest files,
-//     and per corpus pass on one goroutine and on GOMAXPROCS goroutines;
-//   - cold: the first pass in a fresh process, for which bench runs itself
-//     as a subprocess (-child). The time is measured inside the child, so
-//     process start-up is excluded; ANTLR's ATN deserialisation and DFA
-//     construction are included.
+//   - warm: after one untimed pass has built ANTLR's DFA caches, timed with
+//     testing.Benchmark; per file for the largest files, and per corpus pass
+//     on one goroutine and on GOMAXPROCS goroutines;
+//   - cold: the first pass in a fresh process; ANTLR's ATN deserialisation
+//     and DFA construction are included.
+//
+// Every measurement runs in its own subprocess (-child) and is timed inside
+// it, so process start-up is excluded, and no phase pays for the garbage
+// collector scanning another phase's heap, such as ANTLR's DFA caches.
 //
 // The output is a Markdown table.
 package main
@@ -65,8 +67,9 @@ func main() {
 	src.RegisterFlags(flag.CommandLine)
 	top := flag.Int("top", 5, "time the N largest files individually")
 	coldRuns := flag.Int("cold", 3, "fresh processes per cold measurement (the best is reported); 0 skips cold runs")
-	child := flag.String("child", "", "internal: time one cold pass of this phase over the input and print it as JSON")
-	par := flag.Bool("parallel", false, "internal, with -child: spread the pass over GOMAXPROCS goroutines")
+	child := flag.String("child", "", "internal: time this phase over the input and print it as JSON")
+	par := flag.Bool("parallel", false, "internal, with -child: spread each pass over GOMAXPROCS goroutines")
+	warmChild := flag.Bool("warm", false, "internal, with -child: time warm passes instead of the first one")
 	flag.Parse()
 	src.Files = flag.Args()
 
@@ -76,7 +79,11 @@ func main() {
 		os.Exit(2)
 	}
 	if *child != "" {
-		s := measure(files, phases[*child], *par)
+		do := phases[*child]
+		s := measure(files, do, *par)
+		if *warmChild {
+			s = warm(files, do, *par)
+		}
 		if err := json.NewEncoder(os.Stdout).Encode(s); err != nil {
 			fmt.Fprintln(os.Stderr, "bench:", err)
 			os.Exit(1)
@@ -89,40 +96,35 @@ func main() {
 	fmt.Println("| What | Phase | Time | MB/s | Allocs | MB allocated |")
 	fmt.Println("|---|---|---:|---:|---:|---:|")
 
-	// Warm everything up once so the warm rows do not pay for the DFA build.
-	for _, name := range phaseOrder {
-		pass(files, phases[name], true)
+	all := make([]string, len(files))
+	for i, f := range files {
+		all[i] = abs(f.Path)
 	}
 	for _, f := range corpus.Largest(files, *top) {
-		one := []corpus.File{f}
 		for _, name := range phaseOrder {
 			row(fmt.Sprintf("`%s` (%d lines), warm", f.Name, strings.Count(f.Src, "\n")), name,
-				warm(one, phases[name], false))
+				inChild(1, name, false, true, []string{abs(f.Path)}))
 		}
 	}
 	for _, name := range phaseOrder {
-		row("corpus, warm, 1 goroutine", name, warm(files, phases[name], false))
+		row("corpus, warm, 1 goroutine", name, inChild(1, name, false, true, all))
 	}
 	for _, name := range phaseOrder {
-		row("corpus, warm, parallel", name, warm(files, phases[name], true))
+		row("corpus, warm, parallel", name, inChild(1, name, true, true, all))
 	}
 	if *coldRuns == 0 {
 		return
 	}
 	for _, f := range corpus.Largest(files, *top) {
 		for _, name := range phaseOrder {
-			row(fmt.Sprintf("`%s`, cold", f.Name), name, cold(*coldRuns, name, false, []string{abs(f.Path)}))
+			row(fmt.Sprintf("`%s`, cold", f.Name), name, inChild(*coldRuns, name, false, false, []string{abs(f.Path)}))
 		}
 	}
-	all := make([]string, len(files))
-	for i, f := range files {
-		all[i] = abs(f.Path)
+	for _, name := range phaseOrder {
+		row("corpus, cold, 1 goroutine", name, inChild(*coldRuns, name, false, false, all))
 	}
 	for _, name := range phaseOrder {
-		row("corpus, cold, 1 goroutine", name, cold(*coldRuns, name, false, all))
-	}
-	for _, name := range phaseOrder {
-		row("corpus, cold, parallel", name, cold(*coldRuns, name, true, all))
+		row("corpus, cold, parallel", name, inChild(*coldRuns, name, true, false, all))
 	}
 }
 
@@ -187,10 +189,10 @@ func best(n int, m func() sample) sample {
 	return slices.MinFunc(samples, func(a, b sample) int { return int(a.Elapsed - b.Elapsed) })
 }
 
-// cold runs the phase in n fresh child processes and keeps the fastest.
-// The files are passed in a list file, as a corpus can exceed the command
-// line limit.
-func cold(n int, phase string, parallel bool, paths []string) sample {
+// inChild times the phase in n fresh child processes, its warm passes or its
+// first pass, and keeps the fastest. The files are passed in a list file, as
+// a corpus can exceed the command line limit.
+func inChild(n int, phase string, parallel, warm bool, paths []string) sample {
 	list, err := os.CreateTemp("", "bench-files-*")
 	check(err)
 	defer os.Remove(list.Name())
@@ -200,7 +202,7 @@ func cold(n int, phase string, parallel bool, paths []string) sample {
 	self, err := os.Executable()
 	check(err)
 	return best(n, func() sample {
-		cmd := exec.Command(self, "-child="+phase, fmt.Sprintf("-parallel=%t", parallel), "-list="+list.Name())
+		cmd := exec.Command(self, "-child="+phase, fmt.Sprintf("-parallel=%t", parallel), fmt.Sprintf("-warm=%t", warm), "-list="+list.Name())
 		cmd.Stderr = os.Stderr
 		out, err := cmd.Output()
 		check(err)

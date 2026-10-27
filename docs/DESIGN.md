@@ -49,12 +49,19 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
   quantifier puts the exit first; a block of single-token alternatives is a set, not
   a decision.
 - **Prediction** picks the alternative ANTLR's prediction picks on every input ANTLR
-  parses without a syntax error. Two mechanisms, chosen per decision by the analysis:
+  parses without a syntax error. Three mechanisms, chosen per decision by the analysis:
   1. *Static lookahead.* If the alternatives' lookahead languages (computed with
      global FOLLOW, i.e. any calling context) are disjoint within K ≤ 3 tokens, the
      decision is a `switch` on `LA(1)`, then `LA(2)`… Only one alternative can be
      viable on that lookahead in any context, so this agrees with ANTLR.
-  2. *Adaptive prediction*, for the decisions static lookahead cannot settle. This is
+  2. *A guessing first pass*, for the decisions static lookahead cannot settle, in
+     grammars whose parses may be repaired: the first pass takes the smallest
+     alternative that automata built at generation time do not rule out, and a
+     pass that reaches EOF has built ANTLR's tree; a failed one is searched by
+     replaying it with the next guesses in ANTLR's order (see
+     [Guessing first pass and search](#guessing-first-pass-and-search)).
+  3. *Adaptive prediction*, where the first pass does not guess and after a first
+     pass that the search does not settle. This is
      ANTLR's own prediction (its Go runtime 4.13.1, quirks included) run over the
      ATN, which generated parsers carry as Go literal tables:
      - **SLL first.** The calling context is a wildcard: a rule's end continues
@@ -142,9 +149,11 @@ example lookahead. It is the grammar lint the roadmap describes.
 ### Runtime prediction
 
 Static lookahead settles most decisions (86 of `gala.g4`'s 107). The rest are
-predicted while the parser runs, by ANTLR's own algorithm over tables compiled
-into the generated file, or guessed and checked, so every answer is ANTLR's.
-Five additions keep those answers and cut what they cost:
+guessed by the first pass from automata built ahead of time, and checked by
+finishing the parse; ANTLR's own algorithm, over tables compiled into the
+generated file, predicts them only where the first pass does not guess, after a
+search that does not settle a failed first pass, and to report errors. Every
+answer is ANTLR's. Five additions keep those answers and cut what they cost:
 
 ```mermaid
 flowchart TD
@@ -253,8 +262,9 @@ built lazily and shared by all parses, as before.
 
 On the GALA corpus the abstract DFA has about 1,000 states where the SLL DFA
 had 13,500 (30,000 on the held-out code of gala_team, gala_tui and
-gala-server, against about 1,100), so a fresh process builds a tenth of the
-cache.
+gala-server, against about 1,100), so runtime prediction over groups builds a
+tenth of the cache. With the guessing first pass below, a parse that the first
+pass or the search settles builds none.
 
 ### Guessing first pass and search
 
@@ -778,26 +788,30 @@ driven as the GALA compiler drives it, SLL then LL; galop repairing a failed
 SLL parse), Go 1.25 on Windows, one machine with 32 hardware threads that other
 work shared during the run, so compare columns rather than runs.
 `-Xno-brackets` is the native flavor generated without bracket abstraction.
+Each row is measured in its own process, so warm passes don't pay for the
+garbage collector scanning another parser's heap, such as ANTLR's DFA caches.
+(Earlier tables timed every warm row in one shared process, which inflated
+them: the native flavor's warm pass took 70 ms there and 44 ms on its own.)
 
 GALA corpus (723 files, 1.8 MB):
 
 | | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` | `native`, `-Xno-brackets` |
 |---|---:|---:|---:|---:|
-| Warm, 1 goroutine | 797 ms | 242 ms | 64 ms | 67 ms |
-| Warm, 32 goroutines | 436 ms | 52 ms | 10.6 ms | 10.3 ms |
-| Fresh process, 1 goroutine | 1.47 s | 190 ms | 75 ms | 224 ms |
-| Fresh process, 32 goroutines | 766 ms | 72 ms | 44 ms | 215 ms |
-| Allocations per warm pass | 6.84 M, 526 MB | 3.75 M, 298 MB | 19 k, 73 MB | 18 k, 71 MB |
+| Warm, 1 goroutine | 466 ms | 163 ms | 43.8 ms | 39.9 ms |
+| Warm, 32 goroutines | 325 ms | 45.2 ms | 7.7 ms | 4.9 ms |
+| Fresh process, 1 goroutine | 1.48 s | 174 ms | 48.9 ms | 154 ms |
+| Fresh process, 32 goroutines | 773 ms | 66.5 ms | 11.7 ms | 145 ms |
+| Allocations per warm pass | 6.84 M, 526 MB | 4.13 M, 325 MB | 23 k, 75 MB | 22 k, 73 MB |
 
-Held-out code (gala_team, gala_tui and gala-server; 247 files, 3.6 MB, not
+Held-out code (gala_team, gala_tui and gala-server; 247 files, 3.5 MB, not
 used to tune galop):
 
 | | ANTLR 4.13.1 | galop, `antlr` flavor | galop, `native` | `native`, `-Xno-brackets` |
 |---|---:|---:|---:|---:|
-| Warm, 1 goroutine | 5.18 s | 363 ms | 96 ms | 103 ms |
-| Warm, 32 goroutines | 2.89 s | 95 ms | 20.5 ms | 20.6 ms |
-| Fresh process, 1 goroutine | 6.58 s | 357 ms | 181 ms | 479 ms |
-| Fresh process, 32 goroutines | 2.82 s | 194 ms | 140 ms | 496 ms |
+| Warm, 1 goroutine | 5.76 s | 227 ms | 59.3 ms | 57.2 ms |
+| Warm, 32 goroutines | 3.26 s | 60.8 ms | 11.4 ms | 9.3 ms |
+| Fresh process, 1 goroutine | 6.79 s | 239 ms | 59.4 ms | 276 ms |
+| Fresh process, 32 goroutines | 2.89 s | 72.2 ms | 15.5 ms | 256 ms |
 
 Where the `antlr` flavor's warm time goes (profiled on one goroutine): about
 half builds ANTLR's context objects, their child slices and terminal nodes, and
@@ -806,24 +820,23 @@ are the costs the `native` flavor drops. What is left in it is the lexer and
 the line-break rule, the cached prediction walks and the static decisions, and
 building the tree.
 
-A fresh process pays for the runtime prediction cache. Over tokens alone that
-was about 13,500 DFA states for the GALA corpus, mostly for decisions that scan
-whole operands; with bracketed groups read as one symbol it is about a tenth of
-that, which is what the fresh-process columns show.
+A fresh process used to pay for the runtime prediction cache: over tokens alone
+about 13,500 DFA states for the GALA corpus, mostly for decisions that scan whole
+operands, and with bracketed groups read as one symbol about a tenth of that.
+The [guessing first pass](#guessing-first-pass-and-search) builds no cache at
+all. A fresh process now builds 271 SLL DFA states for the whole GALA corpus,
+all in the two files the search does not settle (one of them is the file ANTLR
+rejects), and none for the held-out corpus.
 
-The price of reading groups is precision. Where the groups hide what decides an
-alternative, prediction takes the smallest one and a few files fail their first
-pass where prediction over tokens would not, chiefly composite literals
+Guesses read bracketed groups as one symbol, and where a group hides what
+decides an alternative the first pass guesses wrong, chiefly composite literals
 (`Home{Name: "flat"}`, where only the group's content tells it from an
 identifier followed by a block) and tuple patterns after `case`
 (`case (true, code) =>`, which reads like a lambda until the group's content).
-Such a file is parsed again over tokens and repaired as without brackets: 34 of
-the GALA corpus's 723 files take that extra pass (against 15 that fail their
-first pass over tokens), and 8 of the 247 held-out files (against 3). Each
-costs one more pass, over tokens; the full-context checks of the repair are the
-same. Invalid input costs no more than without brackets, apart from one pass
-over tokens where the first pass met no conflict. On 32 goroutines the extra pass can lengthen the
-slowest file, which is why that warm column is no faster.
+36 of the GALA corpus's 723 files and 9 of the 247 held-out files fail their
+first pass. The search settles 34 and 9 of them by replaying, without runtime
+prediction; the other two take the fallback (the first pass again, predicting,
+then repair).
 
 ## Concurrency
 

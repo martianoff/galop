@@ -6,16 +6,24 @@
 It reads the grammar you already have and works out parsing decisions when it
 generates the parser, not while the parser runs. The output is plain
 recursive-descent code with a `switch` on the next tokens wherever a few tokens of
-lookahead decide. Only decisions that need unbounded lookahead run ANTLR's
-prediction algorithm, over tables compiled into the generated file, so the parser
-picks exactly what ANTLR would pick. It needs no grammar file at runtime and no
-deserialization.
+lookahead decide. Decisions that need unbounded lookahead are settled ahead of
+time too: the parser guesses from small automata computed at generation time,
+and finishing the parse proves the guess, so it picks exactly what ANTLR would
+pick while its first pass predicts nothing at runtime. ANTLR's prediction
+algorithm, compiled into the generated file, runs only to recover from a guess
+that replaying cannot settle and to report a syntax error; grammars with
+actions, predicates or left recursion do not guess and predict as before. It
+needs no grammar file at runtime and no deserialization.
+
+**Every decision of the first pass is made at generation time: no warm-up.
+ANTLR's prediction runs only when replaying cannot settle a wrong guess, and to
+report a syntax error.**
 
 > **Status: early development.** galop generates a Go lexer and parser for the
 > GALA compiler's grammar that produce exactly ANTLR's tokens and trees on the
 > whole GALA source corpus (722 of 722 files ANTLR accepts) and on code it was
-> not tuned on, in two flavors: its own compact tree (the default, 12× to 140×
-> faster than ANTLR) or ANTLR's tree types (3× to 30×).
+> not tuned on, in two flavors: its own compact tree (the default, 11× to 290×
+> faster than ANTLR) or ANTLR's tree types (3× to 50×).
 > Other grammars work as far as their features are supported (see below); see the
 > [roadmap](docs/ROADMAP.md).
 
@@ -28,22 +36,24 @@ Go 1.25 on Windows, one machine with 32 hardware threads:
 | | ANTLR 4.13.1 | galop, `native` (default) | galop, `antlr` flavor |
 |---|---:|---:|---:|
 | **GALA compiler** (723 files, 1.8 MB) | | | |
-| Warm, one goroutine | 797 ms | 64 ms (12×) | 242 ms (3.3×) |
-| Warm, 32 goroutines | 436 ms | 11 ms (41×) | 52 ms (8.5×) |
-| Fresh process, one goroutine | 1.47 s | 75 ms (20×) | 190 ms (7.7×) |
-| Fresh process, 32 goroutines | 766 ms | 44 ms (18×) | 72 ms (11×) |
-| Allocations per warm pass | 6.8 M, 526 MB | 19 k, 73 MB | 3.7 M, 298 MB |
-| **Code galop was not tuned on** (gala_team, gala_tui, gala-server: 247 files, 3.6 MB) | | | |
-| Warm, one goroutine | 5.18 s | 96 ms (54×) | 363 ms (14×) |
-| Warm, 32 goroutines | 2.89 s | 21 ms (141×) | 95 ms (30×) |
-| Fresh process, one goroutine | 6.58 s | 181 ms (36×) | 357 ms (18×) |
-| Fresh process, 32 goroutines | 2.82 s | 140 ms (20×) | 194 ms (15×) |
+| Warm, one goroutine | 466 ms | 44 ms (11×) | 163 ms (2.9×) |
+| Warm, 32 goroutines | 325 ms | 7.7 ms (42×) | 45 ms (7.2×) |
+| Fresh process, one goroutine | 1.48 s | 49 ms (30×) | 174 ms (8.5×) |
+| Fresh process, 32 goroutines | 773 ms | 12 ms (66×) | 67 ms (12×) |
+| Allocations per warm pass | 6.8 M, 526 MB | 23 k, 75 MB | 4.1 M, 325 MB |
+| **Code galop was not tuned on** (gala_team, gala_tui, gala-server: 247 files, 3.5 MB) | | | |
+| Warm, one goroutine | 5.76 s | 59 ms (97×) | 227 ms (25×) |
+| Warm, 32 goroutines | 3.26 s | 11 ms (286×) | 61 ms (54×) |
+| Fresh process, one goroutine | 6.79 s | 59 ms (114×) | 239 ms (28×) |
+| Fresh process, 32 goroutines | 2.89 s | 15 ms (187×) | 72 ms (40×) |
 
 The `native` flavor is the default; the `antlr` flavor is for programs already
 written against ANTLR's trees, and spends most of its time building ANTLR's
 token and tree objects. Most of ANTLR's time on the second corpus goes to two
 large files where its fast pass fails and it parses the whole file again in its
-slow mode; galop fixes such a pass in place (see [design](docs/DESIGN.md#runtime-prediction)).
+slow mode. galop's first pass predicts nothing at runtime and settles a wrong
+guess by replaying, so a fresh process costs about what a warm pass does (see
+[design](docs/DESIGN.md#guessing-first-pass-and-search)).
 
 On more than 60,000 broken files from both corpora, galop's first syntax error
 has the same message, line and column as ANTLR's when ANTLR parses that input in
@@ -66,16 +76,20 @@ flowchart LR
   g4[".g4 grammar"] --> galop["galop"]
   galop --> a["Settled by the next few tokens:<br/>a plain switch"]
   galop --> b["Needs a little more lookahead:<br/>a small precomputed state machine"]
-  galop --> c["Needs unlimited lookahead:<br/>ANTLR's own algorithm, prepared in advance"]
+  galop --> c["Needs unlimited lookahead:<br/>a guess from automata built ahead of time,<br/>proved by finishing the parse"]
 ```
 
 In the GALA grammar, 86 of 107 choices land in the first group, so most of the
-parser is the kind of code you would write by hand. The rare hard cases still
-run ANTLR's algorithm, so the parser always picks exactly what ANTLR would. That
-part runs faster than ANTLR's too: it steps over a bracketed group like `( … )` in one go
-rather than reading every token inside, and when a guess turns out wrong it
-fixes that one choice instead of parsing the whole file again. The lexer is
-built entirely ahead of time.
+parser is the kind of code you would write by hand. The other 21 are guessed: a
+loop of operators goes on, a long shared prefix is scanned once to see which
+token follows it, and the rest read a small automaton over the next tokens, with
+every bracketed group like `( … )` read as one step. A guess only rules
+alternatives out, so when the parse reaches the end of the input it has built
+ANTLR's own tree. A wrong guess makes the parse fail; the parser then replays it
+with the next guesses, in ANTLR's order, and only if that cannot settle it does
+it fall back to ANTLR's algorithm. On the GALA corpus and on code galop was not
+tuned on, the first pass never predicts at runtime. The lexer is built entirely
+ahead of time.
 
 What you keep:
 

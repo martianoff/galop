@@ -43,11 +43,15 @@ annotations, so a grammar keeps working with ANTLR and its editor tooling.
 
 **Analysis, at generation time.**
 - FIRST/FOLLOW sets; each decision is classified as LL(1), LL(k ≤ 3), or adaptive.
-- Adaptive decisions run ANTLR's own prediction at runtime, over static ATN tables and
-  the parser's real call stack, so they pick exactly the alternative ANTLR picks. There
-  is no warm-up: the tables are compiled in. (An earlier plan used ordered-choice
-  speculation; it cannot match ANTLR where the choice depends on the calling context,
-  such as `case (a, b) =>`.) See [DESIGN.md](DESIGN.md).
+- Adaptive decisions are settled ahead of time too. The first pass guesses each one
+  from automata built at generation time (a go-on-or-stop loop goes on, a long shared
+  prefix is scanned, the rest read a small automaton over the next tokens), and a
+  pass that reaches EOF has built ANTLR's tree; a wrong guess is searched by replaying
+  in ANTLR's order. Only then, and to report a syntax error, does ANTLR's own
+  prediction run, over static ATN tables and the parser's real call stack, so every
+  answer is ANTLR's. For `gala.g4`, the first pass never predicts at runtime. (An earlier plan
+  used ordered-choice speculation; it cannot match ANTLR where the choice depends on
+  the calling context, such as `case (a, b) =>`.) See [DESIGN.md](DESIGN.md).
 - A **conflict report** names every adaptive decision. Its six known slow spots for
   `gala.g4` are:
   1. `(a, b) => …` lambda vs `(a, b)` tuple
@@ -78,7 +82,7 @@ back to ANTLR on a syntax error.
 |---|---|---|---|
 | M0 | Repo, CI, pinned GALA; `.g4` reader for `gala.g4`'s subset | `gala.g4` round-trips through the grammar model | **done** |
 | M1 | Analysis and conflict report | The report names every decision static lookahead cannot settle, including the six above | **done**: gala.g4 has 107 decisions, 86 static (LL(1)–LL(3)) and 21 adaptive |
-| M2 | Codegen spike | Within 2× of the hand-written parser, and at least 2× faster than ANTLR warm | **done**, and past the 10× goal: the native flavor parses the GALA corpus 12× faster than ANTLR warm (64 ms vs 797 ms) and 20× in a fresh process (75 ms vs 1.47 s); on code it was not tuned on, 54× and 36×. `array.gala` takes 1.08 ms warm, against 0.74 ms for the hand-written parser measured earlier on the same machine (1.5×). The antlr flavor is 3.3× and 7.7× on the corpus. See the [README](../README.md) for the full table |
+| M2 | Codegen spike | Within 2× of the hand-written parser, and at least 2× faster than ANTLR warm | **done**, and past the 10× goal: the native flavor parses the GALA corpus 11× faster than ANTLR warm (44 ms vs 466 ms) and 30× in a fresh process (49 ms vs 1.48 s); on code it was not tuned on, 97× and 114×. `array.gala` takes 0.73 ms warm, as fast as the hand-written parser measured earlier on the same machine (0.74 ms). The antlr flavor is 2.9× and 8.5× on the corpus. See the [README](../README.md) for the full table |
 | M3 | Codegen: all of `gala.g4`, recognizer and tree | Every corpus file gives a tree identical to ANTLR's | **done**: 722/722 (ANTLR rejects the 723rd), checked in CI by the Bazel differential test |
 | B1 | Bazel: a `galop_parser` rule in rules_gala, using galop's release binaries | A Bazel build generates the same files as the CLI, with no GALA toolchain needed to run galop | **done**: rules_gala 0.5.0 with galop 0.1.0 (`galop.toolchain(version = "0.1.0")`) |
 | M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | errors ready: a failed parse reports ANTLR's first syntax error (message, line and column), so the fallback is needed only for errors after the first |
