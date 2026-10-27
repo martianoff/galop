@@ -64,7 +64,10 @@ jobs:
         timeout-minutes: ${{ github.event_name == 'pull_request' && 8 || 25 }}
         run: |
           echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
-          bazel test //... --jobs=2
+          # Go compiles of galop packages peak at 7-9 GB at the default GOGC
+          # (gala#872), and two at once can exhaust the runner. GOGC=25, as in
+          # the gala test lane, keeps each compile near 4 GB.
+          bazel test //... --jobs=2 --action_env=GOGC=25
 
       # BUILD files are generated; a stale one means someone added or removed a
       # .gala file without running gazelle.
