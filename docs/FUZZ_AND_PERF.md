@@ -156,8 +156,10 @@ To keep the ratios stable on a shared runner:
   is the median over rounds of that round's ratio, so a slow stretch slows both sides
   alike.
 - Warm samples repeat a pass until it lasts 50 ms.
-- A ratio fails only when it exceeds its baseline by more than its rule's tolerance
-  (30%).
+- A ratio fails only when it exceeds its baseline by more than its rule's tolerance:
+  30%, and 50% on 32 goroutines, which vary most on the CI runner's four cores (two
+  runs of the same code differed by up to 31% there, and by up to 25% on one
+  goroutine).
 
 The gaps (first pass minus warm) are reported for galop and for the lexer. The
 lexer's gap is the floor any Go program pays.
@@ -210,6 +212,7 @@ How each number is judged is policy, kept in the baseline file rather than in co
   {"pattern": "*/*/accepted", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/allocs-per-pass", "tolerance": 0.01},
   {"pattern": "*/w32/*/galop-vs-lexer", "tolerance": 0, "report_only": true},
+  {"pattern": "*/w32/*/*", "tolerance": 0.5},
   {"pattern": "*/*/*/*", "tolerance": 0.3}
 ]
 ```

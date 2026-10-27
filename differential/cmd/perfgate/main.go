@@ -66,7 +66,8 @@ var flavors = []string{"native", "antlrflavor"}
 
 // defaultRules judge a baseline written without rules: counters exactly but
 // allocations within 1% (the Go runtime's own background allocations move
-// them by a few), ratios within 30%, and galop over the lexer on 32
+// them by a few), ratios within 30% (50% on 32 goroutines, which the CI
+// runner's four cores make noisier), and galop over the lexer on 32
 // goroutines only reported (a lexer pass there is well under a millisecond).
 // The input's size and how much of it parses are reported, not judged: fewer
 // accepted files is not "better", and the parity tests check acceptance.
@@ -75,6 +76,7 @@ var defaultRules = []perf.Rule{
 	{Pattern: "*/*/accepted", ReportOnly: true},
 	{Pattern: "*/*/allocs-per-pass", Tolerance: 0.01},
 	{Pattern: "*/w32/*/galop-vs-lexer", ReportOnly: true},
+	{Pattern: "*/w32/*/*", Tolerance: 0.5},
 	{Pattern: "*/*/*/*", Tolerance: 0.3},
 }
 
