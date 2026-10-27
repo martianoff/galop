@@ -677,8 +677,8 @@ type PFXDFAState struct {
 	conflict int32
 	// alts are a conflict's alternatives (bit a for alternative a), 0 when
 	// one is past 63.
-	alts     uint64
-	edges    []atomic.Pointer[PFXDFAState]
+	alts  uint64
+	edges []atomic.Pointer[PFXDFAState]
 }
 
 // PFXDFA holds every decision's cached SLL DFA. Its context pool is never
