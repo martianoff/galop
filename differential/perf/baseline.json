@@ -112,5 +112,5 @@
       "tolerance": 0.3
     }
   ],
-  "note": "measured by perfgate on windows/amd64, GOMAXPROCS=32"
+  "note": "counters: perfgate on main e984323 (the same on any machine); ratios: the CI runner (ubuntu-latest, GOMAXPROCS=4), run 40506558701, before #25"
 }

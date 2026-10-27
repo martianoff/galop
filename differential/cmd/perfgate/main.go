@@ -235,10 +235,11 @@ func report(r perf.Report) int {
 			rules = defaultRules
 		}
 		written := r
+		note := fmt.Sprintf("measured by perfgate on %s/%s, GOMAXPROCS=%d", runtime.GOOS, runtime.GOARCH, runtime.GOMAXPROCS(0))
 		if !*times {
 			written.Ratios = b.Ratios
+			note = fmt.Sprintf("counters %s; ratios kept from the previous baseline (%s)", note, b.Note)
 		}
-		note := fmt.Sprintf("measured by perfgate on %s/%s, GOMAXPROCS=%d", runtime.GOOS, runtime.GOARCH, runtime.GOMAXPROCS(0))
 		check(perf.WriteBaseline(path, written, rules, note))
 		fmt.Println("wrote", path)
 	}
