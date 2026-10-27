@@ -47,6 +47,11 @@ var cases = []struct {
 	{"s8", []string{"c x y z", "x y y z", "c x z"}, 1},
 	// Over groups the parse would stop after x; the tokens say otherwise.
 	{"s9", []string{"x ( ( ( ( b ) ) ) )", "x ( b )", "x", "x ( ( q ) )"}, 0},
+	// The first pass guesses that l10 goes on; c inputs need it to stop.
+	{"s10", []string{"c a x " + parens(3) + " x " + parens(3) + " q", "c a x " + parens(3) + " q", "r a x " + parens(3) + " x " + parens(3),
+		"c a x " + parens(3) + " x " + parens(3) + " x " + parens(3) + " q", "c a q", "c a x " + parens(3) + " x " + parens(3), "r a x"}, 0},
+	// Twenty and a hundred items, each a wrong guess: past the search's budget.
+	{"s11", []string{wrongGuesses(20), wrongGuesses(100), strings.Repeat("c a x " + parens(3) + " q ; ", 3) + "c a q ;"}, 0},
 }
 
 func TestRepairMatchesANTLR(t *testing.T) {
@@ -155,4 +160,22 @@ func antlrFirstError(rule, src string) string {
 		}
 	}
 	return msg
+}
+
+// wrongGuesses is an s11 input of k items on which the first pass guesses
+// wrong k times: each item's l10 loop guesses going on and must stop.
+func wrongGuesses(k int) string {
+	return strings.Repeat("c a x "+parens(3)+" x "+parens(3)+" q ; ", k)
+}
+
+// BenchmarkWrongGuesses parses an input with many wrong guesses: the search
+// gives up within its budget, and the parse costs at most a few passes more
+// than without guessing.
+func BenchmarkWrongGuesses(b *testing.B) {
+	src := wrongGuesses(100)
+	for b.Loop() {
+		if _, err := rn.Entries["s11"].Parse(rn.RepairLex(src)); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -667,6 +667,9 @@ type PFXDFAState struct {
 	configs  []PFXConfig
 	alt      int32
 	conflict int32
+	// alts are a conflict's alternatives (bit a for alternative a), 0 when
+	// one is past 63.
+	alts     uint64
 	edges    []atomic.Pointer[PFXDFAState]
 }
 
@@ -772,10 +775,20 @@ func PFXDFANext(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAS
 	} else if _, oneAlt := pr.subsets(next); PFXAllInStop(next.list) || (pr.multi && !oneAlt) {
 		// An SLL conflict: ANTLR's SLL answer is the lowest conflicting alternative.
 		low := next.list[0].alt
+		var alts uint64
+		wide := false
 		for _, c := range next.list {
 			low = min(low, c.alt)
+			if c.alt > 63 {
+				wide = true
+			} else {
+				alts |= 1 << c.alt
+			}
 		}
-		st = &PFXDFAState{conflict: low}
+		if wide {
+			alts = 0
+		}
+		st = &PFXDFAState{conflict: low, alts: alts}
 	} else {
 		st = PFXDFAIntern(d, next)
 	}
@@ -821,7 +834,7 @@ func (p *PARSER) adaptivePredict(d int) int {
 		case next.alt > 0:
 			return int(next.alt)
 		case next.conflict > 0:
-			return p.onConflict(d, int(next.conflict))
+			return p.onConflict(d, int(next.conflict), next.alts)
 		}
 		st = next
 	}

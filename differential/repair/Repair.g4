@@ -50,6 +50,17 @@ r9 : 'x' | 'x' '(' f9 ')' ;
 f9 : '(' f9 ')' | B ;
 e9 : '(' e9 ')' | Q ;
 
+// A greedy loop the first pass guesses without predicting: it goes on. In
+// s10's 'c' context the loop must stop before its last item, which only the
+// Q after that item shows (n nests deeper than static lookahead follows), so
+// the guess fails and the search replays the parse with the loop stopping.
+s10 : 'c' l10 'x' n Q EOF | 'r' l10 EOF ;
+l10 : A ('x' n)* ;
+
+// More such loops than the search may replay: the failed first pass is
+// repaired instead.
+s11 : ('c' l10 'x' n Q ';')+ EOF ;
+
 A : 'a' ;
 B : 'b' ;
 Q : 'q' ;

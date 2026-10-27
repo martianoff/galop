@@ -139,6 +139,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 brackets = an.Brackets,
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
+                guessed = guessDecisions(compiled.Rules, an.Plans),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"
