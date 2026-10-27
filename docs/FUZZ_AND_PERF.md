@@ -56,14 +56,14 @@ galop-sample [-n count] [-seed n] [-nesting n] [-tokens n] [-start rule] -o out 
 - **Output format.** Each sentence is written as its byte length on its own line,
   then the sentence and a newline.
 
-The Bazel targets `//differential:samples`, `:samples_deep` and `:samples_large`
-generate three fixed sets from `gala.g4`:
+The Bazel targets `//differential:samples`, `:samples_deep` and `:samples_large_1`
+to `_4` generate fixed sets from `gala.g4`:
 
 | Target | Sentences | Nesting | Max tokens | Used by |
 |---|---:|---:|---:|---|
 | `samples` | 600 | 2 | 300 | `generated_test`, `perfgate` |
 | `samples_deep` | 200 | 4 | 800 | `generated_deep_test` |
-| `samples_large` | 4,000 | 3 | 600 | `generated_large_test` (runs on main) |
+| `samples_large_1` … `_4` | 4 × 1,000 | 3 | 600 | `generated_large_1_test` … `_4_test` (run on main) |
 
 Keep `-nesting` at 4 or below for `gala.g4`. Lambdas and if-expressions nest without
 brackets, and at six levels some 2 KB sentences take ANTLR's own prediction minutes,
@@ -72,7 +72,9 @@ against 0.1 s for galop. The oracle would time out, not galop.
 ## Parity tests
 
 The tests are `//differential/diff:generated_test` and `:generated_deep_test`, run on
-every PR, plus `:generated_large_test`, run on pushes to main. Each one runs three
+every PR, plus `:generated_large_1_test` to `_4_test`, run on pushes to main. The
+large set is split in four because ANTLR's caches grow with every deep sentence, to
+about 7 GB per test process. Each one runs three
 checks on its sample set, for both flavors:
 
 - **`TestGeneratedMatchesANTLR`** runs every generated sentence:
@@ -95,7 +97,7 @@ and the large runs), pointed at the generated input with `-samples` instead of
 
 ```sh
 bazel test //differential/diff:generated_test //differential/diff:generated_deep_test
-bazel test //differential/diff:generated_large_test     # the large run (manual)
+bazel test //differential/diff:generated_large_1_test   # one of the four large runs (manual)
 ```
 
 ## The performance gate: `perfgate`

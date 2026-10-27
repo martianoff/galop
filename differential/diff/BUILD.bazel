@@ -99,9 +99,11 @@ go_test(
         "-mutants=150",
         "-error_mutants=100",
     ]),
-    ("generated_large_test", "//differential:samples_large", "enormous", ["manual"], [
-        "-mutants=10000",
-        "-error_mutants=3000",
+] + [
+    ("generated_large_%d_test" % i, "//differential:samples_large_%d" % i, "enormous", ["manual"], [
+        "-mutants=2500",
+        "-error_mutants=750",
         "-mutant_seed=2",
-    ]),
+    ])
+    for i in range(1, 5)
 ]]

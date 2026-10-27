@@ -115,8 +115,8 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
   `TestSyntaxErrors` on random sentences of `gala.g4` that `galop-sample` generated with a
   fixed seed (`//differential:samples`, `:samples_deep`): valid code no corpus has, and
   mutated copies of it. Both flavors must give ANTLR's verdict, ANTLR's tree on accepted
-  input and ANTLR's first error on rejected input. `generated_large_test` (tagged `manual`)
-  checks 4,000 sentences and 10,000 mutants; CI runs it on pushes to `main`. See
+  input and ANTLR's first error on rejected input. `generated_large_1_test` to `_4_test`
+  (tagged `manual`) check 4,000 sentences and 10,000 mutants in four processes; CI runs it on pushes to `main`. See
   [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md).
 - `//differential/errors:errors_test` checks both flavors' syntax errors against
   ANTLR's on mutations of programs in [`errors/Errors.g4`](errors/Errors.g4), a

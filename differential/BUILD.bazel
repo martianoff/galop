@@ -22,8 +22,9 @@ corpus_manifest(
 # derivations of the grammar with a fixed seed, so every run checks the same
 # input. The diff tests compare galop with ANTLR on them and on mutated copies
 # of them. `samples` holds many short sentences, `samples_deep` fewer that nest
-# expressions four deep and run to 800 tokens, and `samples_large` (for the
-# runs on main) many in between. Deeper nesting makes ANTLR's own prediction
+# expressions four deep and run to 800 tokens, and `samples_large_1` to `_4`
+# (for the runs on main) 4,000 in between, in four sets so that each test
+# process stays in memory: ANTLR's caches grow with every deep sentence. Deeper nesting makes ANTLR's own prediction
 # blow up: at six levels some 2 KB sentences take ANTLR minutes (galop: 0.1 s).
 # galop-sample is a source, not a tool, like galop in the genrules that run it
 # (see testdata/grammars).
@@ -39,5 +40,7 @@ corpus_manifest(
 ) for name, flags in [
     ("samples", "-n 600 -seed 1 -nesting 2 -tokens 300"),
     ("samples_deep", "-n 200 -seed 2 -nesting 4 -tokens 800"),
-    ("samples_large", "-n 4000 -seed 3 -nesting 3 -tokens 600"),
+] + [
+    ("samples_large_%d" % i, "-n 1000 -seed %d -nesting 3 -tokens 600" % (i + 2))
+    for i in range(1, 5)
 ]]

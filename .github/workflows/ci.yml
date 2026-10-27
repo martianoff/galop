@@ -148,7 +148,12 @@ jobs:
       - name: Mutation fuzz
         run: |
           echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
-          bazel test //differential/diff:mutations_large_test //differential/diff:heldout_mutations_large_test //differential/diff:generated_large_test --jobs=2
+          bazel test //differential/diff:mutations_large_test //differential/diff:heldout_mutations_large_test --jobs=2
+
+      # One test process at a time: ANTLR's caches grow with every deep
+      # generated sentence, to about 7 GB per process.
+      - name: Generated-input fuzz
+        run: bazel test //differential/diff:generated_large_1_test //differential/diff:generated_large_2_test //differential/diff:generated_large_3_test //differential/diff:generated_large_4_test --jobs=2 --local_test_jobs=1
 
       - name: Performance sweep (report only)
         run: bazel run //differential/cmd/perfgate --jobs=2 -- -baseline= -every=1 -mutants=300 -runs=7 -passes=7
