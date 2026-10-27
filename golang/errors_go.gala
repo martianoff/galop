@@ -87,9 +87,6 @@ type PFXEmu struct {
 	p       *PARSER
 	pending *PFXEmuError
 	sll     PFXSLLFailure
-	// predicted lists the adaptive predictions made so far, as decision and
-	// token, in order.
-	predicted [][2]int32
 }
 
 // antlrError replaces err, the final parse's syntax error, with the first
@@ -341,7 +338,7 @@ func (e *PFXEmu) predict(d int) (int, *PFXEmuError) {
 		return p.adaptivePredict(d), true
 	}()
 	p.pos = pos
-	e.predicted = append(e.predicted, [2]int32{int32(d), int32(pos)})
+	e.sll.note(d, pos)
 	if !ok {
 		// A failed full-context stage rewinds the input before ANTLR builds
 		// its error, so the error is at the decision's first token.
@@ -367,15 +364,19 @@ type PFXFlagConfig struct {
 	left            bool
 }
 
-// PFXFlagSet is a set of PFXFlagConfig, one per state and alternative.
+// PFXFlagSet is a set of PFXFlagConfig, one per state and alternative. dips
+// is ANTLR's dipsIntoOuterContext: building the set followed a rule's end
+// with no caller known.
 type PFXFlagSet struct {
 	list []PFXFlagConfig
 	at   PFXMap
+	dips bool
 }
 
 func (s *PFXFlagSet) reset() {
 	s.list = s.list[:0]
 	s.at.reset()
+	s.dips = false
 }
 
 func (s *PFXFlagSet) add(c PFXFlagConfig, cp *PFXCtxPool) {
@@ -403,13 +404,26 @@ type PFXSLLFailure struct {
 	pool      PFXCtxPool
 	busy      PFXMap
 	cur, next PFXFlagSet
-	// dips is ANTLR's dipsIntoOuterContext of the set being built: some
-	// configuration followed a rule's end with no caller known.
-	dips bool
-	// built holds the flags of each DFA state ANTLR has built for the
-	// decision, by the state's key (see share).
+	// history lists, per decision, the tokens the replay predicted it at;
+	// walked counts those whose states built holds already.
+	history [][]int32
+	walked  []int
+	// built holds the flags of each DFA state ANTLR has built, by the
+	// state's key (see share). It and pool last for the whole replay.
 	built map[string][]bool
 	key   []byte
+	// Scratch for settled.
+	pr   PFXPredictor
+	view []PFXConfig
+}
+
+// note records that the replay predicted decision d at token pos.
+func (m *PFXSLLFailure) note(d, pos int) {
+	if m.history == nil {
+		m.history = make([][]int32, len(PFXDecisionState))
+		m.walked = make([]int, len(PFXDecisionState))
+	}
+	m.history[d] = append(m.history[d], int32(pos))
 }
 
 func (m *PFXSLLFailure) closure(c PFXFlagConfig, out *PFXFlagSet) {
@@ -462,7 +476,7 @@ func (m *PFXSLLFailure) follow(c PFXFlagConfig, out *PFXFlagSet) {
 		out.add(c, &m.pool)
 		return
 	}
-	m.dips = true
+	out.dips = true
 	for i := PFXFollowStart[rule]; i < PFXFollowStart[rule+1]; i++ {
 		m.closure(PFXFlagConfig{PFXFollowState[i], c.alt, c.ctx, c.left}, out)
 	}
@@ -474,46 +488,41 @@ func (m *PFXSLLFailure) follow(c PFXFlagConfig, out *PFXFlagSet) {
 // decision's rule by then, or one at a rule's end with nothing left on its
 // stack (0 for none): ANTLR predicts that alternative instead of failing.
 //
-// ANTLR keeps every state its SLL prediction builds in the decision's DFA,
-// and a later set equal to a kept state is that state. Equality ignores the
-// flags, so the kept state's flags win. The replay therefore first rebuilds
-// the states that this parse's earlier predictions of d built, in order.
-// (ANTLR's DFA also outlives a parse; the replay assumes it starts empty.)
+// The flags depend on the DFA states ANTLR already holds (see share), so the
+// replay first builds the states of this parse's earlier predictions of d
+// that it has not built yet, in order.
 func (e *PFXEmu) sllFailure(d int) (offending int, alt int) {
 	m := &e.sll
-	m.pool.reset(true)
-	clear(m.built)
 	if m.built == nil {
+		m.pool.reset(true)
 		m.built = map[string][]bool{}
 	}
-	last := len(e.predicted) - 1
-	for _, pr := range e.predicted[:last] {
-		if int(pr[0]) == d {
-			m.walk(e.p.types, d, int(pr[1]))
-		}
+	h := m.history[d]
+	for _, pos := range h[m.walked[d] : len(h)-1] {
+		m.walk(e.p.types, d, int(pos))
 	}
-	return m.walk(e.p.types, d, int(e.predicted[last][1]))
+	m.walked[d] = len(h)
+	offending, alt, _ = m.walk(e.p.types, d, e.p.pos)
+	return offending, alt
 }
 
-// walk runs SLL prediction of decision d from token from as ANTLR builds its
-// DFA states (see share). If prediction fails, it returns the token where it
-// failed and the alternative ANTLR falls back on (see sllFailure); otherwise
-// alt is -1.
-func (m *PFXSLLFailure) walk(types []int32, d int, from int) (offending int, alt int) {
+// walk runs SLL prediction of decision d from token from, building ANTLR's
+// DFA states (see share). It reports whether prediction failed, and if so
+// the token where it failed and the alternative ANTLR falls back on (see
+// sllFailure).
+func (m *PFXSLLFailure) walk(types []int32, d int, from int) (offending int, alt int, failed bool) {
 	cur, next := &m.cur, &m.next
 	cur.reset()
 	m.busy.reset()
-	m.dips = false
 	s := PFXDecisionState[d]
 	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
 		m.closure(PFXFlagConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, 0, false}, cur)
 	}
-	m.share(cur)
+	m.share(d, cur)
 	for pos := from; ; pos++ {
 		t := types[pos]
 		next.reset()
 		m.busy.reset()
-		m.dips = false
 		for _, c := range cur.list {
 			for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
 				k := PFXTransKind[i]
@@ -531,62 +540,40 @@ func (m *PFXSLLFailure) walk(types []int32, d int, from int) (offending int, alt
 					best = c.alt
 				}
 			}
-			return pos, int(best)
+			return pos, int(best), true
 		}
 		if m.settled(next.list) {
-			return pos, -1
+			return pos, 0, false
 		}
-		m.share(next)
+		m.share(d, next)
 		cur, next = next, cur
 	}
 }
 
-// settled reports whether SLL prediction stops at a set: it has one
-// alternative left, or an SLL conflict (see PFXDFANext).
+// settled reports whether SLL prediction stops at a set, as PFXDFANext does:
+// one alternative is left, or an SLL conflict.
 func (m *PFXSLLFailure) settled(list []PFXFlagConfig) bool {
-	unique, allStop, multi := true, true, false
-	groups := map[[2]int32]bool{}
-	alts := map[int32]int32{} // per state: its one alternative, or 0
+	v := m.view[:0]
 	for _, c := range list {
-		unique = unique && c.alt == list[0].alt
-		allStop = allStop && PFXStateIsStop[c.state]
-		// One configuration per state and alternative: a second one in the
-		// same state and context has another alternative.
-		g := [2]int32{c.state, c.ctx}
-		multi = multi || groups[g]
-		groups[g] = true
-		if a, ok := alts[c.state]; !ok {
-			alts[c.state] = c.alt
-		} else if a != c.alt {
-			alts[c.state] = 0
-		}
+		v = append(v, PFXConfig{c.state, c.alt, c.ctx})
 	}
-	if unique || allStop {
-		return true
-	}
-	if !multi {
-		return false
-	}
-	for _, a := range alts {
-		if a != 0 {
-			return false
-		}
-	}
-	return true
+	m.view = v
+	return PFXUniqueAlt(v) != 0 || m.pr.conflict(v)
 }
 
-// share makes set ANTLR's DFA state for it: the state an earlier walk built
-// for an equal set, whose flags set takes, or a new one. ANTLR's states are
-// equal when they hold the same configurations in the same order, flags
-// aside, and agree on dipsIntoOuterContext.
-func (m *PFXSLLFailure) share(set *PFXFlagSet) {
-	k := m.key[:0]
+// share turns set into ANTLR's DFA state of decision d for it. ANTLR keeps
+// each state SLL prediction builds and reuses it for a later set with the same
+// configurations in the same order (unlike PFXInternState, order counts) and
+// the same dipsIntoOuterContext. The flags do not count, so a reused state's
+// flags replace set's; a new state records set's.
+func (m *PFXSLLFailure) share(d int, set *PFXFlagSet) {
+	k := binary.LittleEndian.AppendUint32(m.key[:0], uint32(d))
 	for _, c := range set.list {
 		k = binary.LittleEndian.AppendUint32(k, uint32(c.state))
 		k = binary.LittleEndian.AppendUint32(k, uint32(c.alt))
 		k = binary.LittleEndian.AppendUint32(k, uint32(c.ctx))
 	}
-	if m.dips {
+	if set.dips {
 		k = append(k, 1)
 	}
 	m.key = k
