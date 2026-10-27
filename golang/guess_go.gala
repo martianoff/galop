@@ -155,3 +155,10 @@ func guessesGoOn(e env) bool = e.guessPlan.Decisions.Values().ToArray().Exists((
 
 // allAlts are decision d's alternatives.
 func allAlts(e env, d int) Array[int] = ArrayTabulate(e.parser.Decisions.Get(d).AltCount, (i) => i + 1)
+
+// readsAutomata says some decision of e's plan is scanned or reads a bounded
+// automaton (and needs scanSource).
+func readsAutomata(e env) bool = e.guessPlan.Decisions.Values().ToArray().Exists((g) => g match {
+    case guess.GoOn() => false
+    case _ => true
+})

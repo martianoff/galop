@@ -157,10 +157,13 @@ func choicesOf(steps Array[atn.Step], d int) Array[Tuple[int, Array[atn.Step]]] 
     case _ => EmptyArray[Tuple[int, Array[atn.Step]]]()
 })
 
+// unfoldDepth bounds how many rule calls unfold looks through.
+val unfoldDepth = 4
+
 // unfold replaces an alternative that is only a call of a rule with one
 // alternative by that alternative, a few levels deep.
 func unfold(rules Array[atn.RuleIR], steps Array[atn.Step], depth int) Array[atn.Step] = steps match {
-    case Array(atn.CallRule(r, _, _)) if depth < 4 && rules.Get(r).Alts.Size() == 1 => unfold(rules, rules.Get(r).Alts.Get(0).Steps, depth + 1)
+    case Array(atn.CallRule(r, _, _)) if depth < unfoldDepth && rules.Get(r).Alts.Size() == 1 => unfold(rules, rules.Get(r).Alts.Get(0).Steps, depth + 1)
     case _ => steps
 }
 
@@ -196,8 +199,7 @@ func rulesOf(steps Array[ScanStep]) Array[int] = steps.FlatMap((s) => s match {
     case ScanToken(_) => EmptyArray[int]()
 })
 
-// holds checks that requirement r is sound, and fills in the first symbols of
-// its optional blocks: scanned from the decision, its steps stop exactly
+// holds checks that requirement r is sound: scanned from the decision, its steps stop exactly
 // where a derivation of them stops (see ScanDFA), so an alternative whose
 // scan stops elsewhere than at End is not viable. Each rule's derivation must
 // be followed by symbols that are no move from a state where the rule can end
@@ -266,8 +268,7 @@ func regionFollows(a atn.ATN, edges Array[Array[edge]], root int) Array[Array[in
             }
         })
     }
-    val all = ArrayFromSlice(calls.ToGoSlice())
-    ArrayTabulate(a.RuleNames.Size(), (r) => all.Collect({ case (rule, f) if rule == r => f }).Distinct())
+    byRule(a.RuleNames.Size(), ArrayFromSlice(calls.ToGoSlice()))
 }
 
 // subset is a DFA under construction: the configuration sets of its states,
@@ -300,9 +301,9 @@ func buildScan(a atn.ATN, al Alphabet, edges Array[Array[edge]], rule int) Optio
     // A worklist: expanding a state may add states.
     for st < b.sets.Size() && st < scanStateLimit {
         val configs = b.sets.Get(st).Configs
-        val row = ArrayTabulate(al.Size(), (_) => -1)
-        val moves = en.symbolsOut(configs).Map((sym) => (sym, b.add(en.step(configs, sym))))
-        moves.FoldLeft(row, (r, mv) => r.Updated(mv.V1, mv.V2)).ForEach((v) => next.Append(v))
+        val row = m.ArrayTabulate(al.Size(), (_) => -1)
+        en.symbolsOut(configs).ForEach((sym) => row.Set(sym, b.add(en.step(configs, sym))))
+        row.ForEach((v) => next.Append(v))
         st = st + 1
     }
     When(b.sets.Size() <= scanStateLimit, ScanDFA(rule, ArrayFromSlice(next.ToGoSlice()),
@@ -332,18 +333,18 @@ func buildGuess(a atn.ATN, al Alphabet, edges Array[Array[edge]], follows Array[
     // A worklist: expanding a state may add states; leaves are not expanded.
     for st < b.sets.Size() {
         val configs = b.sets.Get(st).Configs
-        val row = ArrayTabulate(al.Size(), (_) => -1)
+        val row = m.ArrayTabulate(al.Size(), (_) => -1)
         if !leaf(st) {
-            val moves = en.symbolsOut(configs).Map((sym) => {
+            en.symbolsOut(configs).ForEach((sym) => {
                 val r = en.step(configs, sym)
                 val alts = r.Configs.Map(altOf).Distinct()
                 val target = if (alts.IsEmpty()) -1 else if (alts.Size() == 1) -2 - alts.Head() else b.add(r)
                 if (sym == 0 && target >= 0) {
                     atEOF.Add(target)
                 }
-                (sym, target)
+                row.Set(sym, target)
             })
-            moves.FoldLeft(row, (r, mv) => r.Updated(mv.V1, mv.V2)).ForEach((v) => next.Append(v))
+            row.ForEach((v) => next.Append(v))
         } else if st < guessStateLimit {
             // A leaf reached on EOF keeps its row, so rows stay indexed by
             // state; the leaves past the limit have none (a leaf's row is never read).

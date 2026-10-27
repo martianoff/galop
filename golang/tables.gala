@@ -8,6 +8,7 @@ import (
     "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/guess"
 )
 
 // Transition kinds in the emitted tables. Actions and predicates are epsilon
@@ -133,7 +134,8 @@ func bracketTables(e env, transitions int, starts Array[int]) Array[string] {
     val x = e.pfx
     val families = e.brackets.Families
     val openers = families.FlatMap((f) => f.Openers.Values().Map((o) => (o, f.Closer)))
-    val index = HashMapFromSlice(openers.ZipWithIndex().Map((p) => (p.V1.V1, p.V2)).ToGoSlice())
+    // The guessing automata (guess.Alphabet) number group symbols the same way.
+    val index = guess.AlphabetOf(e.vocab.MaxType(), e.brackets).OpenerIndex
     val closers = families.Map(_.Closer)
     val sites = HashMapFromSlice(e.brackets.Sites.Map((s) => (starts.Get(s.State) + s.Index, s.After)).ToGoSlice())
     val after = if (families.IsEmpty()) EmptyArray[Array[int]]()

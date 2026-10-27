@@ -99,7 +99,7 @@ func predictor(e env) string {
         case NativeFlavor(x) => (nativeErrorHelpers, x + "EOF")
         case ANTLRFlavor() => (antlrErrorHelpers, "antlr.TokenEOF")
     }
-    val code = fill(predictorSource + repairSource + guessSource + (if (guessesGoOn(e)) guessOrSource else "") + (if (guessCode(e) == "") "" else scanSource) + fullCacheSource + errorsSource + helpers,
+    val code = fill(predictorSource + repairSource + guessSource + (if (guessesGoOn(e)) guessOrSource else "") + (if (readsAutomata(e)) scanSource else "") + fullCacheSource + errorsSource + helpers,
         "@RULE@", ruleFuncType(e), "@ROOT@", root, "@ZERO@", zero, "@SYNTAXERROR@", syntaxError, "@EOF@", eof,
         "PARSER", e.parserType, "PFX", e.pfx)
     strings.TrimPrefix(code, "\n")
