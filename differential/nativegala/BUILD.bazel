@@ -35,11 +35,15 @@ exports_files([
     "tokens.go",
 ])
 
-# The guessing first pass's plan against the runtime predictor, on both corpora.
+# The guessing first pass's plan against the runtime predictor, and the
+# bounded SLL DFA cache, on both corpora.
 [go_test(
     name = name,
     size = "medium",
-    srcs = ["guess_test.go"],
+    srcs = [
+        "cache_test.go",
+        "guess_test.go",
+    ],
     args = ["-manifest=$(rlocationpath %s)" % corpus],
     data = [corpus],
     embed = [":nativegala"],

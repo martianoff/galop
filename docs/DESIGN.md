@@ -697,6 +697,21 @@ The one shared structure is the SLL DFA cache of adaptive decisions (see
 [Compatibility](#compatibility-with-antlr)): reading it takes no lock, adding a
 state takes one.
 
+The SLL DFA cache is bounded, so a long-lived process such as a language
+server does not grow it without end. Its states and their contexts make up a
+generation; once the current one holds 65,536 states or 2^21 contexts, it is
+replaced by an empty one. A prediction keeps walking and extending the
+generation it started in, so a state is never read against another
+generation's contexts, and an old generation is freed when no prediction holds
+it. Starting over changes no answer, only speed. The bounds are three to four
+times what parsing the GALA corpus and the held-out code over tokens alone
+(`-Xno-brackets`) leaves in the cache (about 16,000 states and 740,000
+contexts, 100 MB); with bracketed groups, valid code leaves a few hundred
+states. On 2,000 deeply nested generated sentences the cache now stays near
+350 MB, where it reached 0.9 GB (3 GB over tokens alone).
+`PFXDFAMaxStates` and `PFXDFAMaxContexts` set the bounds, and `PFXDFAStats`
+reports the current states, the most any generation held, and the resets.
+
 ## Command line (`cmd/galop`)
 
 `galop` behaves like the `antlr4` tool:

@@ -676,9 +676,9 @@ func PFXAllInStop(list []PFXConfig) bool {
 	return true
 }
 
-// PFXDFAState is a state of a decision's SLL lookahead DFA, cached for the
-// life of the process as ANTLR caches its DFA. Walking existing edges takes
-// no lock; new states are computed under PFXDFA.mu.
+// PFXDFAState is a state of a decision's SLL lookahead DFA, cached across
+// parses as ANTLR caches its DFA. Walking existing edges takes no lock; new
+// states are computed under PFXDFA.mu.
 type PFXDFAState struct {
 	configs  []PFXConfig
 	alt      int32
@@ -689,28 +689,78 @@ type PFXDFAState struct {
 	edges []atomic.Pointer[PFXDFAState]
 }
 
-// PFXDFA holds every decision's cached SLL DFA. Its context pool is never
-// reset, so cached configurations keep meaning the same contexts.
-var PFXDFA struct {
-	mu     sync.Mutex
+// PFXDFAGen is one generation of the SLL DFA cache: every decision's start
+// state, the states by configurations, and the predictor whose context pool
+// gives the configurations' contexts their meaning. Its pool is never reset,
+// so cached configurations keep meaning the same contexts; the cache starts
+// over by replacing the whole generation.
+type PFXDFAGen struct {
 	starts []atomic.Pointer[PFXDFAState]
 	states map[string]*PFXDFAState
 	pr     PFXPredictor
 	key    []byte
 }
 
+// PFXDFA is the process's SLL DFA cache. A prediction walks the generation
+// current when it started, and extends only that one, so a reset never mixes
+// generations. Once the current generation holds PFXDFAMaxStates states or
+// PFXDFAMaxContexts contexts, it is replaced by an empty one: the cache only
+// saves work, so starting over changes no answer. peak is the most states a
+// replaced generation held, and resets counts replacements.
+var PFXDFA struct {
+	mu     sync.Mutex
+	gen    atomic.Pointer[PFXDFAGen]
+	peak   int
+	resets int
+}
+
+// PFXDFAMaxStates and PFXDFAMaxContexts bound the SLL DFA cache. They are
+// read under PFXDFA.mu; set them before parsing starts, if at all. The
+// defaults are three to four times what parsing the GALA compiler's sources and
+// other GALA code over tokens alone (-Xno-brackets) leaves in the cache: about
+// 16,000 states and 740,000 contexts, some 100 MB.
+var (
+	PFXDFAMaxStates   = 1 << 16
+	PFXDFAMaxContexts = 1 << 21
+)
+
 // PFXDFAError marks an edge on which no alternative is viable.
 var PFXDFAError = &PFXDFAState{}
 
-func init() {
-	PFXDFA.starts = make([]atomic.Pointer[PFXDFAState], len(PFXDecisionState))
-	PFXDFA.states = map[string]*PFXDFAState{}
-	PFXDFA.pr.pool.reset(true)
+func PFXNewDFAGen() *PFXDFAGen {
+	g := &PFXDFAGen{starts: make([]atomic.Pointer[PFXDFAState], len(PFXDecisionState)), states: map[string]*PFXDFAState{}}
+	g.pr.pool.reset(true)
+	return g
 }
 
-// PFXDFAIntern returns decision d's cached state for the configurations in set.
-func PFXDFAIntern(d int, set *PFXConfigSet) *PFXDFAState {
-	return PFXInternState(PFXDFA.states, &PFXDFA.pr, &PFXDFA.key, d, set, PFXEdges)
+func init() {
+	PFXDFA.gen.Store(PFXNewDFAGen())
+}
+
+// PFXDFAStats reports the SLL DFA cache: the states of the current
+// generation, the most states any generation held, and how many times the
+// cache started over.
+func PFXDFAStats() (states, peak, resets int) {
+	PFXDFA.mu.Lock()
+	defer PFXDFA.mu.Unlock()
+	states = len(PFXDFA.gen.Load().states)
+	return states, max(PFXDFA.peak, states), PFXDFA.resets
+}
+
+// PFXDFACheckFull starts the cache over when g, the current generation, has
+// reached its bound. Call it under PFXDFA.mu.
+func PFXDFACheckFull(g *PFXDFAGen) {
+	if g != PFXDFA.gen.Load() || len(g.states) < PFXDFAMaxStates && len(g.pr.pool.kind) < PFXDFAMaxContexts {
+		return
+	}
+	PFXDFA.peak = max(PFXDFA.peak, len(g.states))
+	PFXDFA.resets++
+	PFXDFA.gen.Store(PFXNewDFAGen())
+}
+
+// intern returns decision d's state in g for the configurations in set.
+func (g *PFXDFAGen) intern(d int, set *PFXConfigSet) *PFXDFAState {
+	return PFXInternState(g.states, &g.pr, &g.key, d, set, PFXEdges)
 }
 
 // PFXInternState returns the state in states for the configurations in set,
@@ -744,14 +794,14 @@ func PFXInternState(states map[string]*PFXDFAState, pr *PFXPredictor, key *[]byt
 	return st
 }
 
-// PFXDFAStart returns decision d's start state, computing it once.
-func PFXDFAStart(d int) *PFXDFAState {
+// start returns decision d's start state in g, computing it once.
+func (g *PFXDFAGen) start(d int) *PFXDFAState {
 	PFXDFA.mu.Lock()
 	defer PFXDFA.mu.Unlock()
-	if st := PFXDFA.starts[d].Load(); st != nil {
+	if st := g.starts[d].Load(); st != nil {
 		return st
 	}
-	pr := &PFXDFA.pr
+	pr := &g.pr
 	pr.full = false
 	cur := &pr.sets[0]
 	cur.reset()
@@ -760,21 +810,22 @@ func PFXDFAStart(d int) *PFXDFAState {
 	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
 		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, 0}, cur, false)
 	}
-	st := PFXDFAIntern(d, cur)
-	PFXDFA.starts[d].Store(st)
+	st := g.intern(d, cur)
+	g.starts[d].Store(st)
+	PFXDFACheckFull(g)
 	return st
 }
 
-// PFXDFANext computes and caches the edge of from on symbol sym (ANTLR's
-// computeTargetState in SLL mode): token t, or with group set the bracketed
-// group t opens.
-func PFXDFANext(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAState {
+// next computes and caches the edge of from, a state of g, on symbol sym
+// (ANTLR's computeTargetState in SLL mode): token t, or with group set the
+// bracketed group t opens.
+func (g *PFXDFAGen) next(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAState {
 	PFXDFA.mu.Lock()
 	defer PFXDFA.mu.Unlock()
 	if st := from.edges[sym].Load(); st != nil {
 		return st
 	}
-	pr := &PFXDFA.pr
+	pr := &g.pr
 	pr.full = false
 	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
 	cur.reset()
@@ -806,9 +857,10 @@ func PFXDFANext(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAS
 		}
 		st = &PFXDFAState{conflict: low, alts: alts}
 	} else {
-		st = PFXDFAIntern(d, next)
+		st = g.intern(d, next)
 	}
 	from.edges[sym].Store(st)
+	PFXDFACheckFull(g)
 	return st
 }
 
@@ -821,9 +873,10 @@ func PFXDFANext(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAS
 // succeeds with such choices is ANTLR's LL parse, and a wrong one is repaired.
 func (p *PARSER) adaptivePredict(d int) int {
 	p.stats.Predictions++
-	st := PFXDFA.starts[d].Load()
+	g := PFXDFA.gen.Load()
+	st := g.starts[d].Load()
 	if st == nil {
-		st = PFXDFAStart(d)
+		st = g.start(d)
 	}
 	// The tokens end with EOF: the native flavor's run rejects a slice without
 	// it, and the antlr flavor's NewPARSER reads its stream up to EOF. EOF never
@@ -843,7 +896,7 @@ func (p *PARSER) adaptivePredict(d int) int {
 		}
 		next := st.edges[sym].Load()
 		if next == nil {
-			next = PFXDFANext(d, st, sym, t, isGroup)
+			next = g.next(d, st, sym, t, isGroup)
 		}
 		switch {
 		case next == PFXDFAError:
