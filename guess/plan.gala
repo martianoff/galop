@@ -16,11 +16,14 @@ import (
 // reads symbols until the automaton has no move: on input in the language,
 // a derivation of the rule followed by a symbol that is no move from any
 // state where the rule can end makes the scan stop exactly after it.
-struct ScanDFA(Rule int, Next Array[int], Ends Array[bool])
+// First are the symbols a scan can start with, and EndMoves the symbols that
+// are moves from some state where the rule can end.
+struct ScanDFA(Rule int, Next Array[int], Ends Array[bool], First HashSet[int], EndMoves HashSet[int])
 
 // GuessDFA is a decision's bounded abstract automaton. Next holds, for each
-// state that is not a leaf, what each symbol leads to (row state*Size): a state (>= 0), nothing
-// (-1, a syntax error), or the only alternative left (-2-alt). A Leaf state is
+// state that is not a leaf, what each symbol leads to (row state*Size): a
+// state (>= 0), nothing (-1, a syntax error), or the only alternative left
+// (-2-alt). A Leaf state is
 // not expanded: the parse guesses among its Alts (bit a for alternative a).
 struct GuessDFA(Next Array[int], Leaf Array[bool], Alts Array[uint64])
 
@@ -42,8 +45,9 @@ struct Requirement(Alt int, Steps Array[ScanStep], End atn.IntervalSet)
 sealed type DecisionGuess {
     // GoOn takes the smallest alternative left: go on.
     case GoOn()
-    // Scanned rules alternatives out by Requirements.
-    case Scanned(Requirements Array[Requirement])
+    // Scanned rules alternatives out by Requirements, and by Automaton when
+    // some alternative has no requirement.
+    case Scanned(Requirements Array[Requirement], Automaton Option[GuessDFA])
     // Bounded reads Automaton.
     case Bounded(Automaton GuessDFA)
 }
@@ -73,8 +77,16 @@ val guessStackDepth = 64
 // PlanFor plans the runtime decisions of parser a (rule IR rules, analysis
 // plans, bracket families b): go-on-or-stop decisions guess (GoOn); the
 // others are scanned where some alternative has a requirement whose scans
-// pass their check, and read a bounded automaton otherwise.
+// pass their check (and also read a bounded automaton when some alternative
+// has none), and read a bounded automaton otherwise. A decision with more
+// than 63 alternatives, or whose alternatives consume at the decision state
+// itself, is left to runtime prediction; so is every decision of a parser
+// with 2^20 states or more.
 func PlanFor(a atn.ATN, rules Array[atn.RuleIR], plans Array[analysis.DecisionPlan], b brackets.Brackets) Plan {
+    // pack gives states 20 bits.
+    if a.States.Size() >= 1 << 20 {
+        return NoPlan()
+    }
     val al = AlphabetOf(a.Vocab.MaxType(), b)
     val edges = abstractEdges(a, al, b)
     val runtime = plans.Collect({ case p if analysis.NeedsRuntime(p.Lookahead) => p.Decision.Id })
@@ -92,16 +104,17 @@ func PlanFor(a atn.ATN, rules Array[atn.RuleIR], plans Array[analysis.DecisionPl
     val checked = others.FoldLeft(EmptyHashMap[int, Array[Requirement]](), (acc, d) =>
         acc.Put(d, reqs.Get(d).GetOrElse(EmptyArray[Requirement]()).Filter((r) => holds(al, scans, r))))
     val follows = globalFollows(a)
-    val bounded = concurrent.Traverse(others.Filter((d) => checked.GetOrElse(d, EmptyArray[Requirement]()).IsEmpty()), (d) =>
+    // A decision reads an automaton when some alternative has no requirement.
+    val uncovered = (d int) => ArrayTabulate(a.Decisions.Get(d).AltCount, (i) => i + 1)
+        .Exists((alt) => !checked.GetOrElse(d, EmptyArray[Requirement]()).Exists(_.Alt == alt))
+    val automata = concurrent.Traverse(others.Filter(uncovered), (d) =>
         concurrent.Future((d, buildGuess(a, al, edges, follows, a.Decisions.Get(d))))).Get()
-    val decisions = goOn.ToArray().Filter((d) => runtime.Contains(d)).FoldLeft(EmptyHashMap[int, DecisionGuess](), (acc, d) => acc.Put(d, GoOn()))
-    val withScans = others.FoldLeft(decisions, (acc, d) => checked.GetOrElse(d, EmptyArray[Requirement]()) match {
-        case Array() => acc
-        case reqs => acc.Put(d, Scanned(reqs))
-    })
-    val all = bounded.FoldLeft(withScans, (acc, dg) => dg.V2 match {
-        case Some(g) => acc.Put(dg.V1, Bounded(g))
-        case None() => acc
+        .FoldLeft(EmptyHashMap[int, GuessDFA](), (acc, dg) => dg.V2.Map((g) => acc.Put(dg.V1, g)).GetOrElse(acc))
+    val goOns = goOn.ToArray().Filter((d) => runtime.Contains(d)).FoldLeft(EmptyHashMap[int, DecisionGuess](), (acc, d) => acc.Put(d, GoOn()))
+    val all = others.FoldLeft(goOns, (acc, d) => (checked.GetOrElse(d, EmptyArray[Requirement]()), automata.Get(d)) match {
+        case (Array(), Some(g)) => acc.Put(d, Bounded(g))
+        case (Array(), None()) => acc
+        case (reqs, g) => acc.Put(d, Scanned(reqs, g))
     })
     val used = checked.Values().ToArray().FlatMap((rs) => rs.FlatMap((r) => rulesOf(r.Steps))).Distinct()
     Plan(al, all, used.FoldLeft(EmptyHashMap[int, ScanDFA](), (acc, r) => scans.Get(r).Map((s) => acc.Put(r, s)).GetOrElse(acc)))
@@ -207,7 +220,8 @@ func rulesOf(steps Array[ScanStep]) Array[int] = steps.FlatMap((s) => s match {
 // scan stops elsewhere than at End is not viable. Each rule's derivation must
 // be followed by symbols that are no move from a state where the rule can end
 // and the rule must not derive nothing; an optional block's first symbols
-// must differ from what follows it; tokens read and End must not open a bracket.
+// must differ from what follows it; tokens read and End must not open a
+// bracket, and a token read must not be EOF (the scan never reads past it).
 func holds(al Alphabet, scans HashMap[int, ScanDFA], r Requirement) bool =
     !r.End.Values().Exists(al.IsOpener) && checkSteps(al, scans, r.Steps, symbolsOfTokens(al, r.End)).IsDefined()
 
@@ -219,21 +233,15 @@ func symbolsOfTokens(al Alphabet, tokens atn.IntervalSet) HashSet[int] =
 func checkSteps(al Alphabet, scans HashMap[int, ScanDFA], steps Array[ScanStep], after HashSet[int]) Option[HashSet[int]] =
     steps.Reverse().FoldLeft(Some(after), (acc, s) => acc.FlatMap((next) => s match {
         case ScanRule(r) => scans.Get(r).FlatMap((d) =>
-            When(!d.Ends.Get(0) && d.movesAtEnds(al).ForAll((sym) => !next.Contains(sym)), d.first(al)))
-        case ScanToken(set) => When(!set.Values().Exists(al.IsOpener), symbolsOfTokens(al, set))
+            When(!d.Ends.Get(0) && d.EndMoves.ToArray().ForAll((sym) => !next.Contains(sym)), d.First))
+        case ScanToken(set) => When(!set.Values().Exists(al.IsOpener) && !set.Contains(atn.TokenEOF), symbolsOfTokens(al, set))
         case ScanOptional(inner) => checkSteps(al, scans, inner, next).FlatMap((first) =>
             When(first.ToArray().ForAll((sym) => !next.Contains(sym)), first.AddAll(next)))
     }))
 
-// first are the symbols a scan automaton can start with.
-func (d ScanDFA) first(al Alphabet) HashSet[int] = d.movesOf(al, 0)
-
-// movesAtEnds are the symbols that are moves from a state where the rule can end.
-func (d ScanDFA) movesAtEnds(al Alphabet) Array[int] =
-    d.Ends.ZipWithIndex().Collect({ case (true, st) => st }).FlatMap((st) => d.movesOf(al, st).ToArray()).Distinct()
-
-func (d ScanDFA) movesOf(al Alphabet, st int) HashSet[int] =
-    ArrayTabulate(al.Size(), (sym) => sym).FoldLeft(EmptyHashSet[int](), (s, sym) => if (d.Next.Get(st * al.Size() + sym) >= 0) s.Add(sym) else s)
+// movesOf are the symbols that are moves from state st of automaton next.
+func movesOf(next Array[int], size int, st int) HashSet[int] =
+    ArrayTabulate(size, (sym) => sym).FoldLeft(EmptyHashSet[int](), (s, sym) => if (next.Get(st * size + sym) >= 0) s.Add(sym) else s)
 
 // FirstSymbols are the symbols an optional block's scan starts with, as the
 // generated code tests them.
@@ -309,8 +317,12 @@ func buildScan(a atn.ATN, al Alphabet, edges Array[Array[edge]], rule int) Optio
         row.ForEach((v) => next.Append(v))
         st = st + 1
     }
-    When(b.sets.Size() <= scanStateLimit, ScanDFA(rule, ArrayFromSlice(next.ToGoSlice()),
-        ArrayTabulate(b.sets.Size(), (i) => b.sets.Get(i).Ends)))
+    val rows = ArrayFromSlice(next.ToGoSlice())
+    val ends = ArrayTabulate(b.sets.Size(), (i) => b.sets.Get(i).Ends)
+    val endMoves = ends.ZipWithIndex().FoldLeft(EmptyHashSet[int](), (acc, ei) =>
+        if (ei.V1) acc.AddAll(movesOf(rows, al.Size(), ei.V2)) else acc)
+    When(b.sets.Size() <= scanStateLimit && en.stacks.fits(),
+        ScanDFA(rule, rows, ends, movesOf(rows, al.Size(), 0), endMoves))
 }
 
 // buildGuess builds decision dec's bounded automaton: states past
@@ -356,6 +368,6 @@ func buildGuess(a atn.ATN, al Alphabet, edges Array[Array[edge]], follows Array[
         st = st + 1
     }
     val n = b.sets.Size()
-    Some(GuessDFA(ArrayFromSlice(next.ToGoSlice()), ArrayTabulate(n, leaf),
+    When(en.stacks.fits(), GuessDFA(ArrayFromSlice(next.ToGoSlice()), ArrayTabulate(n, leaf),
         ArrayTabulate(n, (i) => b.sets.Get(i).Configs.FoldLeft(uint64(0), (mask, k) => mask | (uint64(1) << uint64(altOf(k)))))))
 }

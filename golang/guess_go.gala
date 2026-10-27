@@ -142,7 +142,7 @@ func altMask(alts Array[int]) Option[string] =
 // plan settles the decision (see guess.PlanFor); runtime prediction otherwise.
 func runtimeChoice(e env, d int, alts Array[int]) string = (altMask(alts), e.guessPlan.Decisions.Get(d)) match {
     case (Some(m), Some(guess.GoOn())) => s"return p.guessOr($d, $m)"
-    case (Some(m), Some(guess.Scanned(_))) => s"return p.scanned$d($m)"
+    case (Some(m), Some(guess.Scanned(_, _))) => s"return p.scanned$d($m)"
     case (Some(m), Some(guess.Bounded(_))) => s"return p.bounded$d($m)"
     case _ => s"return p.adaptivePredict($d)"
 }

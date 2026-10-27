@@ -140,7 +140,9 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
                 brackets = an.Brackets,
                 flavor = f,
                 tokenLabels = HasTokenLabels(compiled.Rules),
-                guessPlan = guess.PlanFor(parser, compiled.Rules, an.Plans, an.Brackets),
+                // Only a first pass that may be repaired guesses (see groupsOn).
+                guessPlan = if (an.Repair.RepairableGrammar && an.Repair.RepairableEntries.NonEmpty())
+                    guess.PlanFor(parser, compiled.Rules, an.Plans, an.Brackets) else guess.NoPlan(),
             )
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"

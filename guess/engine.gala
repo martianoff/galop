@@ -52,6 +52,7 @@ struct edge(Symbol int, Target int)
 func pack(state int, stack int, dropped bool, alt int) int64 =
     int64(state) | (int64(stack) << 20) | (if (dropped) int64(1) << 40 else int64(0)) | (int64(alt) << 41)
 
+// stateOf, stackOf, droppedOf and altOf decode a configuration packed by pack.
 func stateOf(k int64) int = int(k & 0xFFFFF)
 
 func stackOf(k int64) int = int((k >> 20) & 0xFFFFF)
@@ -82,6 +83,10 @@ func (t stackTable) intern(frames Array[int]) int {
         }
     }
 }
+
+// fits says every stack id fits the 20 bits pack gives it; an automaton
+// whose stacks do not is not used.
+func (t stackTable) fits() bool = t.frames.Size() < 1 << 20
 
 // push is stack id with follow on top, and whether a frame was dropped to
 // stay within the limit.

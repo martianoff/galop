@@ -20,14 +20,20 @@ func planned(src string) Tuple[atn.ATN, Plan] {
     (a, PlanFor(a, c.Rules, an.Plans, an.Brackets))
 }
 
-// decisionIn is the id of the decision whose source text is text.
-func decisionIn(a atn.ATN, text string) int = a.Decisions.Find((d) => d.Text == text).Map(_.Id).GetOrElse(-1)
+// decisionIn is the decision whose source text is text.
+func decisionIn(a atn.ATN, text string) Option[int] = a.Decisions.Find((d) => d.Text == text).Map(_.Id)
 
-func kindOf(p Plan, d int) string = p.Decisions.Get(d) match {
-    case Some(GoOn()) => "go-on"
-    case Some(Scanned(rs)) => s"scanned:${rs.Map(_.Alt).MkString(",")}"
-    case Some(Bounded(_)) => "bounded"
-    case None() => "none"
+// kindOf is how the plan settles decision d: go-on, scanned (with the
+// alternatives that have requirements, and +dfa when it also reads an
+// automaton), bounded, none, or missing when there is no such decision.
+func kindOf(p Plan, d Option[int]) string = d match {
+    case Some(id) => p.Decisions.Get(id) match {
+        case Some(GoOn()) => "go-on"
+        case Some(Scanned(rs, g)) => s"scanned:${rs.Map(_.Alt).MkString(",")}" + (if (g.IsDefined()) "+dfa" else "")
+        case Some(Bounded(_)) => "bounded"
+        case None() => "none"
+    }
+    case None() => "missing"
 }
 
 // prefixGrammar has decisions whose alternatives share a long prefix (e):
@@ -44,13 +50,15 @@ WS : [ \t\r\n]+ -> skip ;
 
 func TestScanWhenTheTokenAfterThePrefixDecides(t T) T {
     val (a, p) = planned(prefixGrammar)
-    // '...' never continues e: alternative 1 is scanned.
-    Eq(t, kindOf(p, decisionIn(a, "stat : e '...' | e")), "scanned:1")
+    // '...' never continues e: alternative 1 is scanned; alternative 2 has no
+    // requirement, so the decision also reads an automaton.
+    Eq(t, kindOf(p, decisionIn(a, "stat : e '...' | e")), "scanned:1+dfa")
 }
 
 // counterexample: '!' can go on inside e (`a ! b`), so a scan of e from `a`
 // does not stop where stat's e ends; ruling out stat's first alternative by
-// the token after the scan would be wrong. The check must refuse it.
+// the token after the scan would be wrong. The check must refuse it, and the
+// decision reads a bounded automaton instead.
 val counterexample = `grammar C;
 prog : stat+ EOF ;
 stat : e '!' | e | '!' ID ;
@@ -61,23 +69,17 @@ WS : [ \t\r\n]+ -> skip ;
 
 func TestScanRefusedWhenThePrefixCanGoOnWithTheToken(t T) T {
     val (a, p) = planned(counterexample)
-    val d = decisionIn(a, "stat : e '!' | e | '!' ID")
-    val scanned = p.Decisions.Get(d) match {
-        case Some(Scanned(_)) => true
-        case _ => false
-    }
-    IsFalse(t, scanned)
+    Eq(t, kindOf(p, decisionIn(a, "stat : e '!' | e | '!' ID")), "bounded")
 }
 
 func TestScanAutomatonEndsAndStops(t T) T {
     val (a, p) = planned(prefixGrammar)
-    val e = a.RuleIndex("e").Get()
-    val d = p.Scans.Get(e)
-    val t1 = IsTrue(t, d.IsDefined())
+    val ellipsis = p.Alphabet.TokenSymbol(a.Vocab.LiteralType("'...'").GetOrElse(-5))
     // e can end after ID, and '...' is no move from there.
-    val al = p.Alphabet
-    val endSyms = d.Get().movesAtEnds(al)
-    IsFalse(t1, endSyms.Contains(al.TokenSymbol(a.Vocab.LiteralType("'...'").GetOrElse(-5))))
+    a.RuleIndex("e").FlatMap((e) => p.Scans.Get(e)) match {
+        case Some(d) => IsFalse(IsTrue(t, d.EndMoves.NonEmpty()), d.EndMoves.Contains(ellipsis))
+        case None() => Fail(t, "no scan automaton for e")
+    }
 }
 
 // walk reads syms through a decision's automaton from state st: the
@@ -98,9 +100,9 @@ func walk(g GuessDFA, size int, syms List[int], st int = 0) uint64 =
 // alternative after EOF, where nothing more is read.
 func TestAutomatonKeepsAnAlternativeEndingTheInput(t T) T {
     val (a, p) = planned(grammartest.GalaGrammar)
-    val d = a.Decisions.Find((x) => strings.HasPrefix(x.Text, "primary :")).Map(_.Id).GetOrElse(-1)
-    val id = p.Alphabet.TokenSymbol(a.Vocab.TypeOf("IDENTIFIER").Get())
-    p.Decisions.Get(d) match {
+    val d = a.Decisions.Find((x) => strings.HasPrefix(x.Text, "primary :")).Map(_.Id)
+    val id = p.Alphabet.TokenSymbol(a.Vocab.TypeOf("IDENTIFIER").GetOrElse(-5))
+    d.FlatMap((x) => p.Decisions.Get(x)) match {
         case Some(Bounded(gd)) => Eq(t, walk(gd, p.Alphabet.Size(), ListOf(id, 0)), uint64(2))
         case _ => Eq(t, kindOf(p, d), "bounded")
     }

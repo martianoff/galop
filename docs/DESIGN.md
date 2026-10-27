@@ -304,9 +304,13 @@ and the call stack keeps up to 64 return states (1 for a scan); a rule end
 with the frames below dropped continues after every call of the rule. Every
 path of the parser has a path in the simulation, so what an automaton rules out
 is ruled out for the parser, and the guesses stay exact. The tables are static
-data in the generated parser. For `gala.g4` the plan scans 7 decisions, reads a
-bounded automaton for 4 and guesses go-on for 10: no first pass predicts at
-runtime.
+data in the generated parser. A scanned decision with an alternative that has no
+requirement also reads a bounded automaton. For `gala.g4` the plan scans 7
+decisions, reads a bounded automaton for 4 and guesses go-on for 10, so no first
+pass of `gala.g4` predicts at runtime. In general a first pass still predicts a
+decision with more than 63 alternatives or whose alternatives start by
+consuming at the decision state itself, and every decision of a parser with
+2^20 states or more.
 
 **How.** Every guess point of the first pass, the guesses and the SLL
 conflicts, goes through one function that records the alternatives not ruled

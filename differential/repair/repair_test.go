@@ -181,3 +181,33 @@ func BenchmarkWrongGuesses(b *testing.B) {
 		}
 	}
 }
+
+// TestOutOfVocabularyTokens gives every entry each input with one token
+// re-typed to a type outside the vocabulary: never a panic, whatever reads
+// that token (static lookahead, a scan, a bounded automaton, runtime
+// prediction or the search), and a syntax error from every entry that ends
+// with EOF (s4 and s9 parse a prefix and may stop before the token).
+func TestOutOfVocabularyTokens(t *testing.T) {
+	for _, c := range cases {
+		for _, src := range c.inputs {
+			n := len(rn.RepairLex(src).Tokens) - 1 // not EOF
+			if n > 200 {
+				continue
+			}
+			for k := 0; k < n; k++ {
+				ts := rn.RepairLex(src)
+				ts.Tokens[k].Type = 999
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							t.Errorf("%s %q, token %d out of the vocabulary: panic %v", c.rule, src, k, r)
+						}
+					}()
+					if _, err := rn.Entries[c.rule].Parse(ts); err == nil && c.rule != "s4" && c.rule != "s9" {
+						t.Errorf("%s %q, token %d out of the vocabulary: no syntax error", c.rule, src, k)
+					}
+				}()
+			}
+		}
+	}
+}

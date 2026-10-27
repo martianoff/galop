@@ -15,9 +15,13 @@ import (
 // the EOF token constant.
 val scanSource = `
 // scanSym is the symbol at token i of the guessing automata, and the token
-// after it: a bracketed group is one symbol while the parse reads groups.
+// after it: a bracketed group is one symbol while the parse reads groups. A
+// token type outside the vocabulary is -1, which no automaton moves on.
 func (p *PARSER) scanSym(i int) (int, int) {
 	t := p.types[i]
+	if t < -1 || int(t) > PFXMaxTokenType {
+		return -1, i
+	}
 	if g := PFXOpenerSym[t+1]; p.group && g >= 0 && p.pairs[i] >= 0 {
 		return PFXMaxTokenType + 2 + int(g), int(p.pairs[i]) + 1
 	}
@@ -33,6 +37,9 @@ func (p *PARSER) scanStop(i int, next []int16) int {
 	st := 0
 	for {
 		sym, j := p.scanSym(i)
+		if sym < 0 {
+			return i
+		}
 		n := next[st*PFXSymbols+sym]
 		if n < 0 || j == i {
 			return i
@@ -51,6 +58,9 @@ func (p *PARSER) guessWalk(next []int16, leaf []uint64) uint64 {
 			return m
 		}
 		sym, j := p.scanSym(i)
+		if sym < 0 {
+			return 0
+		}
 		switch n := next[st*PFXSymbols+sym]; {
 		case n >= 0:
 			st, i = int(n), j
@@ -61,43 +71,66 @@ func (p *PARSER) guessWalk(next []int16, leaf []uint64) uint64 {
 		}
 	}
 }
+
+// PFXGuessCheck, when set (by a test), sees every scanned or bounded decision
+// of a guessing first pass with the alternatives it leaves, before the guess.
+var PFXGuessCheck func(p *PARSER, d int, alts uint64)
 `
 
-// guessCode is the code of e's guess plan: the scan automata, each scanned
-// decision's requirements and entry, and each bounded decision's automaton
-// and entry. Empty when nothing is scanned or bounded.
+// guessCode is the code of e's guess plan: the scan automata, and each
+// scanned or bounded decision's tables, requirements and entry. Empty when
+// nothing is scanned or bounded.
 func guessCode(e env) string {
     val plan = e.guessPlan
     val x = e.pfx
-    val p = e.parserType
-    val size = plan.Alphabet.Size()
     val scans = plan.Scans.Keys().ToArray().Sorted().FlatMap((r) => plan.Scans.Get(r) match {
         case Some(scan) => ArrayOf(goSlice(s"${x}Scan$r", "int16", scan.Next.Map((n) => s"$n")))
         case None() => EmptyArray[string]()
     })
     val decisions = plan.Decisions.Keys().ToArray().Sorted().FlatMap((d) => plan.Decisions.Get(d) match {
-        case Some(guess.Scanned(reqs)) => scannedCode(e, d, reqs)
-        case Some(guess.Bounded(g)) => ArrayOf(
-            goSlice(s"${x}Guess$d", "int16", g.Next.Map((n) => s"$n")),
-            goSlice(s"${x}GuessLeaf$d", "uint64", g.Leaf.ZipWithIndex().Map((li) => if (li.V1) s"0x${strconv.FormatUint(g.Alts.Get(li.V2), 16)}" else "0")),
-            s"// bounded$d settles decision $d in a guessing first pass with its bounded automaton.\nfunc (p *$p) bounded$d(alts uint64) int {\n\tif !p.first {\n\t\treturn p.adaptivePredict($d)\n\t}\n\tif alts &= p.guessWalk(${x}Guess$d, ${x}GuessLeaf$d); alts == 0 {\n\t\tp.noViableAlt($d)\n\t}\n\treturn p.guess(alts)\n}\n",
-        )
+        case Some(guess.Scanned(reqs, g)) => automatonTables(e, d, g).AppendAll(scannedCode(e, d, reqs, g.IsDefined()))
+        case Some(guess.Bounded(g)) => automatonTables(e, d, Some(g)).Append(entryCode(e, d, "bounded", "its bounded automaton", true, ""))
         case _ => EmptyArray[string]()
     })
     if (scans.IsEmpty() && decisions.IsEmpty()) ""
-    else (ArrayOf(s"// ${x}Symbols is the number of symbols of the guessing automata.\nconst ${x}Symbols = $size\n")
+    else (ArrayOf(s"// ${x}Symbols is the number of symbols of the guessing automata.\nconst ${x}Symbols = ${plan.Alphabet.Size()}\n")
         .AppendAll(scans).AppendAll(decisions)).MkString("\n")
 }
 
-// scannedCode is a scanned decision's requirements and its entry, which
-// rules out the alternatives whose requirement fails and guesses among the rest.
-func scannedCode(e env, d int, reqs Array[guess.Requirement]) Array[string] {
-    val p = e.parserType
-    val checks = reqs.Map((r) => s"\tif alts&(1<<${r.Alt}) != 0 && !p.scan${d}x${r.Alt}() {\n\t\talts &^= 1 << ${r.Alt}\n\t}\n").MkString("")
+// automatonTables are decision d's automaton as static tables, if it has one.
+func automatonTables(e env, d int, g Option[guess.GuessDFA]) Array[string] = g match {
+    case Some(a) => ArrayOf(
+        goSlice(s"${e.pfx}Guess$d", "int16", a.Next.Map((n) => s"$n")),
+        goSlice(s"${e.pfx}GuessLeaf$d", "uint64", a.Leaf.ZipWithIndex().Map((li) => if (li.V1) s"0x${strconv.FormatUint(a.Alts.Get(li.V2), 16)}" else "0")),
+    )
+    case None() => EmptyArray[string]()
+}
+
+// entryCode is decision d's entry for a guessing first pass (kind: scanned or
+// bounded; what: how it settles the decision): it keeps the alternatives its
+// automaton leaves, if walk, rules out more by checks, and guesses among the
+// rest; outside the first pass it predicts at runtime.
+func entryCode(e env, d int, kind string, what string, walk bool, checks string) string {
+    val x = e.pfx
+    val narrow = if (walk) s"\talts &= p.guessWalk(${x}Guess$d, ${x}GuessLeaf$d)\n" else ""
+    s"// $kind$d settles decision $d in a guessing first pass by $what.\nfunc (p *${e.parserType}) $kind$d(alts uint64) int {\n\tif !p.first {\n\t\treturn p.adaptivePredict($d)\n\t}\n$narrow$checks\tif alts == 0 {\n\t\tp.noViableAlt($d)\n\t}\n\tif ${x}GuessCheck != nil {\n\t\t${x}GuessCheck(p, $d, alts)\n\t}\n\treturn p.guess(alts)\n}\n"
+}
+
+// scannedCode is a scanned decision's requirements and its entry, which rules
+// out the alternatives whose requirement fails. A scan of the same rule from
+// the decision's token, the first step of several requirements, runs once.
+func scannedCode(e env, d int, reqs Array[guess.Requirement], walk bool) Array[string] {
+    val firsts = reqs.Map(firstRule).Collect({ case Some(r) => r }).Distinct()
+    val stops = firsts.Map((r) => s"\tstop$r := p.scanStop(p.pos, ${e.pfx}Scan$r)\n").MkString("")
+    val checks = stops + reqs.Map((r) => {
+        val arg = firstRule(r).Map((rule) => s"stop$rule").GetOrElse("p.pos")
+        s"\tif alts&(1<<${r.Alt}) != 0 && !p.scan${d}x${r.Alt}($arg) {\n\t\talts &^= 1 << ${r.Alt}\n\t}\n"
+    }).MkString("")
     reqs.Map((r) => {
-        val body = scanStepsCode(e, r.Steps, "\t")
-        s"// scan${d}x${r.Alt} says alternative ${r.Alt} of decision $d is not ruled out.\nfunc (p *$p) scan${d}x${r.Alt}() bool {\n\ti := p.pos\n$body\treturn ${setTest(e, r.End, "p.types[i]")}\n}\n"
-    }).Append(s"// scanned$d settles decision $d in a guessing first pass by its requirements.\nfunc (p *$p) scanned$d(alts uint64) int {\n\tif !p.first {\n\t\treturn p.adaptivePredict($d)\n\t}\n$checks\tif alts == 0 {\n\t\tp.noViableAlt($d)\n\t}\n\treturn p.guess(alts)\n}\n")
+        val rest = if (firstRule(r).IsDefined()) r.Steps.Drop(1) else r.Steps
+        val body = scanStepsCode(e, rest, "\t")
+        s"// scan${d}x${r.Alt} says alternative ${r.Alt} of decision $d is not ruled out, i being where its\n// first scan stopped (or the decision's token).\nfunc (p *${e.parserType}) scan${d}x${r.Alt}(i int) bool {\n$body\treturn ${setTest(e, r.End, "p.types[i]")}\n}\n"
+    }).Append(entryCode(e, d, "scanned", "its requirements", walk, checks))
 }
 
 // scanStepsCode is the code that reads steps from token i.
@@ -109,3 +142,9 @@ func scanStepsCode(e env, steps Array[guess.ScanStep], ind string) string = step
         s"${ind}switch s, _ := p.scanSym(i); s {\n${ind}case $first:\n" + scanStepsCode(e, inner, ind + "\t") + s"$ind}\n"
     }
 }).MkString("")
+
+// firstRule is the rule a requirement scans first, if its first step is one.
+func firstRule(r guess.Requirement) Option[int] = r.Steps.HeadOption() match {
+    case Some(guess.ScanRule(rule)) => Some(rule)
+    case _ => None[int]()
+}
