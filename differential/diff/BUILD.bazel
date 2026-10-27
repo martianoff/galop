@@ -73,3 +73,35 @@ go_test(
         "-mutant_seed=2",
     ]),
 ]]
+
+# galop and ANTLR on generated sentences of gala.g4 (//differential:samples*)
+# and on mutated copies of them: the same verdict, ANTLR's tree on accepted
+# input and ANTLR's first error on rejected input, for both flavors. The large
+# run is too slow for pull requests; CI runs it on pushes to main.
+[go_test(
+    name = name,
+    size = size,
+    srcs = DIFF_TEST_SRCS + ["generated_test.go"],
+    args = [
+        "-samples=$(rlocationpath %s)" % samples,
+        "-test.run=^(TestGeneratedMatchesANTLR|TestMutations|TestSyntaxErrors)$$",
+    ] + args,
+    data = [samples],
+    embed = [":diff"],
+    tags = tags,
+    deps = DIFF_TEST_DEPS,
+) for name, samples, size, tags, args in [
+    ("generated_test", "//differential:samples", "medium", [], [
+        "-mutants=300",
+        "-error_mutants=200",
+    ]),
+    ("generated_deep_test", "//differential:samples_deep", "medium", [], [
+        "-mutants=150",
+        "-error_mutants=100",
+    ]),
+    ("generated_large_test", "//differential:samples_large", "enormous", ["manual"], [
+        "-mutants=10000",
+        "-error_mutants=3000",
+        "-mutant_seed=2",
+    ]),
+]]

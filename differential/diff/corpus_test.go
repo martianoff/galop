@@ -13,10 +13,13 @@ import (
 	"github.com/martianoff/galop/differential/gala"
 )
 
-var manifest = flag.String("manifest", "", "corpus_manifest to read")
+var (
+	manifest = flag.String("manifest", "", "corpus_manifest to read")
+	samples  = flag.String("samples", "", "galop-sample output to read instead of the manifest (generated sentences)")
+)
 
 var loadCorpus = sync.OnceValues(func() ([]corpus.File, error) {
-	return corpus.Source{Manifest: *manifest}.Load()
+	return corpus.Source{Manifest: *manifest, Samples: *samples}.Load()
 })
 
 func files(tb testing.TB) []corpus.File {

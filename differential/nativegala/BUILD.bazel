@@ -21,6 +21,7 @@ go_library(
     name = "nativegala",
     srcs = [
         "newline.go",
+        "stats.go",
         "tokens.go",
         ":galop_native_go",
     ],

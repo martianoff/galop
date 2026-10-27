@@ -122,9 +122,10 @@ func tokenAssertions(e env) string {
 }
 
 // predictorFields are the parser's fields for runtime prediction: pairs are
-// the input's bracket pairs, and group says prediction reads bracketed groups.
+// the input's bracket pairs, group says prediction reads bracketed groups,
+// and stats counts the parse's work for the differential harness.
 func predictorFields(e env) string =
-    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses"
+    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats"
 
 // retryCode handles a failed SLL parse, whose result is in variable root.
 // With runtime prediction the parse runs in SLL mode first, as GALA does with
@@ -481,5 +482,6 @@ func groupsOn(e env) string =
     else "")
 
 // resetPass clears what one pass of a parse leaves behind (see attempt): the
-// call stack, the conflict count and the guess points met.
-val resetPass = "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0\n\tp.gs.seq = 0"
+// call stack, the conflict count and the guess points met; and it counts the
+// pass (see PFXStats).
+val resetPass = "\n\tp.stack = p.stack[:0]\n\tp.rp.seen = 0\n\tp.gs.seq = 0\n\tp.stats.Passes++"

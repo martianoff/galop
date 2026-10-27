@@ -408,6 +408,7 @@ func (g *PFXFullCache) next(from *PFXDFAState, t int32) *PFXDFAState {
 // current token, with the parser's call stack as the outer context, through
 // the cache when it can.
 func (p *PARSER) predictLL(d int) int {
+	p.stats.FullContext++
 	key := binary.LittleEndian.AppendUint32(p.llKey[:0], uint32(d))
 	for _, ret := range p.stack {
 		key = binary.LittleEndian.AppendUint32(key, uint32(ret))

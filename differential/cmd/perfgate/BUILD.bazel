@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+# The performance gate (see docs/FUZZ_AND_PERF.md):
+#   bazel run //differential/cmd/perfgate                 # report against the baseline
+#   bazel run //differential/cmd/perfgate -- -enforce     # fail on a regression
+#   bazel run //differential/cmd/perfgate -- -update=differential/perf/baseline.json
+go_binary(
+    name = "perfgate",
+    srcs = ["main.go"],
+    args = [
+        "-manifest=$(rlocationpath //differential:corpus)",
+        "-samples=$(rlocationpath //differential:samples)",
+        "-baseline=$(rlocationpath //differential/perf:baseline.json)",
+    ],
+    data = [
+        "//differential:corpus",
+        "//differential:samples",
+        "//differential/perf:baseline.json",
+    ],
+    deps = [
+        "//differential/antlrgala",
+        "//differential/corpus",
+        "//differential/gala",
+        "//differential/nativegala",
+        "//differential/perf",
+    ],
+)

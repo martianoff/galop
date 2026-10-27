@@ -96,7 +96,10 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
   `type(...)`, `channel(...)` (lexer modes are not supported yet, see [Lexer](#lexer-lexgen)).
 
 The differential harness (`differential/`) checks all of this against ANTLR
-4.13.1 on the GALA corpus.
+4.13.1 on the GALA corpus, on random sentences `galop-sample` generates from the
+grammar and on mutated copies of both; a performance gate keeps the counters of
+runtime prediction and the speed ratios from regressing (see
+[FUZZ_AND_PERF.md](FUZZ_AND_PERF.md)).
 
 ## The ATN and the rule IR (`atn`)
 

@@ -85,14 +85,52 @@ jobs:
           path: ~/.cache/bazel-disk
           key: bazel-disk-${{ github.run_id }}
 
-  # The large mutation runs compare galop with ANTLR on tens of thousands of
-  # mutated files, too slow for pull requests. They start from the Bazel disk
-  # cache an earlier run saved.
+  # The performance gate (docs/FUZZ_AND_PERF.md): counters and wall-clock
+  # ratios of galop's parsers for gala.g4, judged against
+  # differential/perf/baseline.json. It reports in the job summary and keeps
+  # its numbers as an artifact; with PERF_ENFORCE "true" a regression fails
+  # the job. Its own job, so its few minutes run beside the Bazel tests.
+  perf:
+    name: performance gate
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 30 }}
+    env:
+      PERF_ENFORCE: "false"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ github.run_id }}
+          restore-keys: bazel-disk-
+
+      - name: Performance gate
+        run: |
+          echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
+          bazel run //differential/cmd/perfgate --jobs=2 -- -enforce=$PERF_ENFORCE -json="$RUNNER_TEMP/perf.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf
+          path: ${{ runner.temp }}/perf.json
+          if-no-files-found: ignore
+
+  # The large fuzz runs compare galop with ANTLR on tens of thousands of
+  # mutated and generated files, too slow for pull requests; the wider
+  # performance sweep (the whole corpus, more runs) reports without judging.
+  # They start from the Bazel disk cache an earlier run saved.
   fuzz:
     name: mutation fuzz
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -110,7 +148,10 @@ jobs:
       - name: Mutation fuzz
         run: |
           echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
-          bazel test //differential/diff:mutations_large_test //differential/diff:heldout_mutations_large_test --jobs=2
+          bazel test //differential/diff:mutations_large_test //differential/diff:heldout_mutations_large_test //differential/diff:generated_large_test --jobs=2
+
+      - name: Performance sweep (report only)
+        run: bazel run //differential/cmd/perfgate --jobs=2 -- -baseline= -every=1 -mutants=300 -runs=7 -passes=7
 
   cli:
     name: gala test (${{ matrix.os }})

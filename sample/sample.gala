@@ -1,0 +1,250 @@
+// Package sample generates random sentences of a grammar: random derivations
+// of its parser ATN, with every token written as a text its own lexer reads
+// back as that token. The differential fuzz tests use them as input no corpus
+// holds (deep nesting, long chains, every alternative). A sentence that the
+// grammar's predicates or a token-retyping driver reject is still useful: as
+// input the reference parser rejects.
+package sample
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/lexgen"
+)
+
+// Options configure Generate.
+struct Options(
+    // Count is how many sentences to generate.
+    Count int = 100,
+    // Seed fixes every random choice: the same grammar, options and seed give the same sentences.
+    Seed int64 = 1,
+    // MaxNesting is how many times one rule may be active at once (an expression
+    // inside an expression) before every choice takes the shortest way out.
+    MaxNesting int = 3,
+    // MaxTokens is the sentence length past which every choice takes the shortest way out.
+    MaxTokens int = 400,
+    // Variants is how many texts are kept for a token type whose text varies (an identifier).
+    Variants int = 4,
+    // Separator goes between two tokens' texts.
+    Separator string = " ",
+)
+
+// unreachable is the cost of a state from which no sentence can be finished.
+val unreachable = 1 << 30
+
+// Generate returns opts.Count random sentences of parser rule start of the
+// grammar compiled as c. Token texts come from random walks of the lexer
+// rules, each kept only if lexer reads it back as exactly that token; a token
+// type with no such text (a `tokens {}` name no lexer rule produces) is never
+// generated. It fails when rule start has no sentence made of such tokens.
+// c: the compiled grammar; it must have parser and lexer rules.
+// lexer: the grammar's lexer DFA.
+// start: the parser rule to derive.
+// opts: sizes and the seed.
+func Generate(c atn.Compiled, lexer lexgen.DFA, start int, opts Options) Either[string, Array[string]] =
+    (c.Parser, c.Lexer) match {
+        case (Some(p), Some(l)) => {
+            val rand = newRng(opts.Seed)
+            val texts = tokenTexts(c.Vocab, l, lexer, rand, opts.Variants)
+            val written = (tok int) bool =>
+                tok == atn.TokenEOF || tok > 0 && tok < texts.Size() && texts.Get(tok).NonEmpty()
+            val usable = (t atn.Transition) bool => t.Symbols().Values().Exists(written)
+            val w = newWalker(p, usable, rand, opts.MaxNesting, opts.MaxTokens)
+            val first = p.RuleStart.Get(start)
+            val pick = (set atn.IntervalSet) int => {
+                val choices = set.Values().Filter(written)
+                choices.Get(rand.intn(choices.Size()))
+            }
+            if (w.Cost.Get(first) >= unreachable)
+                Left(s"rule ${p.RuleNames.Get(start)} has no sentence made of tokens the lexer can produce")
+            else Right(ArrayTabulate(opts.Count, (_) =>
+                render(w.sentence(first, pick), texts, rand, opts.Separator)))
+        }
+        case _ => Left("the grammar needs parser and lexer rules")
+    }
+
+// render writes a sentence's tokens, each with one of its texts; EOF has none.
+func render(syms Array[int], texts Array[Array[string]], rand Ptr[rng], sep string) string =
+    syms.Filter(_ != atn.TokenEOF).Map((t) => {
+        val choices = texts.Get(t)
+        choices.Get(rand.intn(choices.Size()))
+    }).MkString(sep)
+
+// tokenTexts finds up to variants texts for every token type of vocab by
+// walking the lexer rule that produces it. A set of code points that holds
+// printable ASCII is narrowed to it, so texts stay readable.
+func tokenTexts(
+    vocab atn.Vocabulary,
+    l atn.ATN,
+    lexer lexgen.DFA,
+    rand Ptr[rng],
+    variants int,
+) Array[Array[string]] {
+    val usable = (t atn.Transition) bool => t.Symbols().NonEmpty()
+    val w = newWalker(l, usable, rand, 2, 12)
+    val pick = (all atn.IntervalSet) int => {
+        val ascii = all.Intersect(atn.RangeSet(32, 126))
+        val ranges = (if (ascii.NonEmpty()) ascii else all).Ranges
+        val r = ranges.Get(rand.intn(ranges.Size()))
+        r.Lo + rand.intn(r.Hi - r.Lo + 1)
+    }
+    ArrayTabulate(vocab.MaxType() + 1, (t) => l.RuleTokenType.IndexOf(Some(t)) match {
+        case -1 => EmptyArray[string]()
+        case rule => {
+            val first = l.RuleStart.Get(rule)
+            if (w.Cost.Get(first) >= unreachable) EmptyArray[string]()
+            else ArrayTabulate(8 * variants, (_) => w.sentence(first, pick))
+                .Map((cps) => cps.Map((cp) => string(rune(cp))).MkString(""))
+                .Filter((text) => text != "" && readsAs(lexer, text, t))
+                .Distinct()
+                .Take(variants)
+        }
+    })
+}
+
+// readsAs reports whether lexer reads text as exactly one token of type t.
+func readsAs(lexer lexgen.DFA, text string, t int) bool {
+    val lexed = lexer.Tokenize(text)
+    val toks = lexed.Tokens.Filter(_.Type != atn.TokenEOF)
+    lexed.Errors.IsEmpty() && toks.Size() == 1 && toks.Head().Type == t && toks.Head().Text == text
+}
+
+// shortest is, for every state of a, the fewest symbols that take it to the
+// end of its rule, or unreachable; usable says which consuming transitions may
+// be taken. ANTLR rejects loops whose body can match nothing, so a choice of
+// least cost always makes progress.
+func shortest(a atn.ATN, usable func(atn.Transition) bool) Array[int] =
+    settle(a, usable, a.States.Map((s) => if (s.IsRuleStop()) 0 else unreachable))
+
+// settle relaxes cost until no state's cost changes.
+func settle(a atn.ATN, usable func(atn.Transition) bool, cost Array[int]) Array[int] {
+    val next = a.States.Map((s) =>
+        if (s.IsRuleStop()) 0
+        else s.Out.FoldLeft(cost.Get(s.Id), (best, t) => atn.MinInt(best, stepCost(cost, usable, t))))
+    if (next.Zip(cost).Exists((p) => p.V1 != p.V2)) settle(a, usable, next) else next
+}
+
+// stepCost is the cost of finishing a rule by taking t, given every state's cost.
+func stepCost(cost Array[int], usable func(atn.Transition) bool, t atn.Transition) int = t match {
+    case atn.RuleCall(target, _, follow) => plus(cost.Get(target), cost.Get(follow))
+    case atn.Atom(target, _) => if (usable(t)) plus(1, cost.Get(target)) else unreachable
+    case atn.SetMatch(target, _) => if (usable(t)) plus(1, cost.Get(target)) else unreachable
+    case _ => cost.Get(t.Target())
+}
+
+// plus adds two costs, staying at unreachable.
+func plus(a int, b int) int = if (a >= unreachable || b >= unreachable) unreachable else a + b
+
+// walker makes random derivations of an ATN. Every choice is among the
+// transitions that can still finish the rule: half the time one this walker
+// has taken least often from that state, so every alternative of every
+// decision comes up (a tuple pattern after `case` as well as a name),
+// otherwise a uniform one. Once a rule is active more than MaxNesting times,
+// the rule calls nest deeper than callDepthPerNesting × MaxNesting (rules
+// that call one another each have their own MaxNesting, so this bounds what
+// they multiply to), or the sentence passes MaxLen symbols, every choice
+// takes the shortest way out.
+struct walker(
+    A atn.ATN,
+    Cost Array[int],
+    Usable func(atn.Transition) bool,
+    Rand Ptr[rng],
+    MaxNesting int,
+    MaxLen int,
+    Used Ptr[usage],
+)
+
+func newWalker(
+    a atn.ATN,
+    usable func(atn.Transition) bool,
+    rand Ptr[rng],
+    maxNesting int,
+    maxLen int,
+) walker {
+    val used = &usage{counts: EmptyHashMap[int, Array[int]]()}
+    walker(a, shortest(a, usable), usable, rand, maxNesting, maxLen, used)
+}
+
+// usage counts, per state, how often each of its transitions was taken.
+type usage struct {
+    var counts HashMap[int, Array[int]]
+}
+
+// buffer collects a sentence's symbols.
+type buffer struct {
+    var syms Array[int]
+}
+
+// sentence derives the rule whose start state is from; pick chooses the
+// symbol each consuming transition matches, from its set.
+func (w walker) sentence(from int, pick func(atn.IntervalSet) int) Array[int] {
+    val out = &buffer{syms: EmptyArray[int]()}
+    w.walk(from, w.A.RuleNames.Map((_) => 0), 0, pick, out)
+    out.syms
+}
+
+// callDepthPerNesting is how many rule calls deep a walk may go per level of
+// MaxNesting.
+val callDepthPerNesting = 64
+
+// walk derives the rule whose start state is from; active counts the
+// activations of each rule around it, and depth the rule calls.
+func (w walker) walk(from int, active Array[int], depth int, pick func(atn.IntervalSet) int, out Ptr[buffer]) {
+    val rule = w.A.State(from).Rule
+    val inner = active.Updated(rule, active.Get(rule) + 1)
+    var s = from
+    for !w.A.State(s).IsRuleStop() {
+        val shortWay = inner.Get(rule) > w.MaxNesting || depth > callDepthPerNesting * w.MaxNesting ||
+            out.syms.Size() >= w.MaxLen
+        val t = w.choose(w.A.State(s), shortWay)
+        s = t match {
+            case atn.RuleCall(target, _, follow) => {
+                w.walk(target, inner, depth + 1, pick, out)
+                follow
+            }
+            case atn.Atom(target, _) => {
+                out.syms = out.syms.Append(pick(t.Symbols()))
+                target
+            }
+            case atn.SetMatch(target, _) => {
+                out.syms = out.syms.Append(pick(t.Symbols()))
+                target
+            }
+            case _ => t.Target()
+        }
+    }
+}
+
+// choose picks the transition out of st to follow; with shortWay, the one
+// that finishes the rule soonest.
+func (w walker) choose(st atn.State, shortWay bool) atn.Transition {
+    val cost = (i int) int => stepCost(w.Cost, w.Usable, st.Out.Get(i))
+    val open = ArrayTabulate(st.Out.Size(), (i) => i).Filter((i) => cost(i) < unreachable)
+    if shortWay {
+        return st.Out.Get(open.FoldLeft(open.Head(), (best, i) => if (cost(i) < cost(best)) i else best))
+    }
+    val counts = w.Used.counts.GetOrElse(st.Id, st.Out.Map((_) => 0))
+    val least = open.Map(counts.Get).FoldLeft(unreachable, atn.MinInt)
+    val pool = if (w.Rand.intn(2) == 0) open.Filter((i) => counts.Get(i) == least) else open
+    val chosen = pool.Get(w.Rand.intn(pool.Size()))
+    w.Used.counts = w.Used.counts.Put(st.Id, counts.Updated(chosen, counts.Get(chosen) + 1))
+    st.Out.Get(chosen)
+}
+
+// rng is SplitMix64: small, fast, and the same on every platform and Go release.
+type rng struct {
+    var state uint64
+}
+
+func newRng(seed int64) Ptr[rng] = &rng{state: uint64(seed)}
+
+func (r Ptr[rng]) next() uint64 {
+    r.state = r.state + 0x9e3779b97f4a7c15
+    val a = (r.state ^ (r.state >> 30)) * 0xbf58476d1ce4e5b9
+    val b = (a ^ (a >> 27)) * 0x94d049bb133111eb
+    b ^ (b >> 31)
+}
+
+// intn is a uniform int in [0, n); n must be positive.
+func (r Ptr[rng]) intn(n int) int = int(r.next() % uint64(n))

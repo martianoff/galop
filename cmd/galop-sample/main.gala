@@ -1,0 +1,108 @@
+// Command galop-sample writes random sentences of a grammar (see package
+// sample), for the differential fuzz tests:
+//
+//    galop-sample [-n count] [-seed n] [-nesting n] [-tokens n] [-start rule] -o out grammar.g4
+//
+// The output holds each sentence as its length in bytes on a line of its own,
+// then the sentence and a newline, so sentences may contain any text.
+package main
+
+import (
+    "os"
+    "strconv"
+
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/fs"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/lexgen"
+    "github.com/martianoff/galop/sample"
+)
+
+// flags is a parsed command line.
+struct flags(
+    Opts sample.Options = sample.Options(),
+    Start Option[string] = None(),
+    Out Option[string] = None(),
+    Grammar Option[string] = None(),
+)
+
+// parse reads the command line; a problem is Left.
+func parse(args List[string], f flags) Either[string, flags] = args match {
+    case List() => Right(f)
+    case List("-n", v, rest...) =>
+        intArg(v).FlatMap((n) => parse(rest, f.Copy(Opts = f.Opts.Copy(Count = n))))
+    case List("-seed", v, rest...) =>
+        intArg(v).FlatMap((n) => parse(rest, f.Copy(Opts = f.Opts.Copy(Seed = int64(n)))))
+    case List("-nesting", v, rest...) =>
+        intArg(v).FlatMap((n) => parse(rest, f.Copy(Opts = f.Opts.Copy(MaxNesting = n))))
+    case List("-tokens", v, rest...) =>
+        intArg(v).FlatMap((n) => parse(rest, f.Copy(Opts = f.Opts.Copy(MaxTokens = n))))
+    case List("-start", v, rest...) => parse(rest, f.Copy(Start = Some(v)))
+    case List("-o", v, rest...) => parse(rest, f.Copy(Out = Some(v)))
+    case List(file, rest...) if f.Grammar.IsEmpty() => parse(rest, f.Copy(Grammar = Some(file)))
+    case _ => Left(s"unexpected argument ${args.Head()}")
+}
+
+func intArg(v string) Either[string, int] = strconv.Atoi(v) match {
+    case Success(n) => Right(n)
+    case Failure(_) => Left(s"not a number: $v")
+}
+
+// generate reads, compiles and samples the grammar; the result is the output file's text.
+func generate(f flags, path string) Either[string, string] = fs.ReadFileString(path) match {
+    case Failure(e) => Left(e.Error())
+    case Success(text) => g4.Parse(text) match {
+        case Left(d) => Left(d.String())
+        case Right(g) => atn.Compile(g) match {
+            case Left(errs) => Left(errs.Map(_.String()).MkString("\n"))
+            case Right(c) => lexerOf(c, g).FlatMap((lexer) => startRule(c, f.Start).FlatMap((start) =>
+                sample.Generate(c, lexer, start, f.Opts).Map((sentences) =>
+                    sentences.Map((s) => s"${s.ByteSize()}\n$s\n").MkString(""))))
+        }
+    }
+}
+
+func lexerOf(c atn.Compiled, g g4.Grammar) Either[string, lexgen.DFA] = c.Lexer match {
+    case Some(l) => lexgen.NewModel(l, g.Channels).FlatMap((m) => lexgen.Build(m, lexgen.Options())) match {
+        case Right(d) => Right(d)
+        case Left(errs) => Left(errs.MkString("\n"))
+    }
+    case None() => Left("the grammar has no lexer rules")
+}
+
+// startRule is the index of the named parser rule, or the first one.
+func startRule(c atn.Compiled, name Option[string]) Either[string, int] = c.Parser match {
+    case None() => Left("the grammar has no parser rules")
+    case Some(p) => name match {
+        case None() => Right(0)
+        case Some(n) => p.RuleIndex(n) match {
+            case Some(i) => Right(i)
+            case None() => Left(s"no parser rule $n")
+        }
+    }
+}
+
+val usage = "usage: galop-sample [-n count] [-seed n] [-nesting n] [-tokens n] [-start rule] -o out grammar.g4"
+
+func fail(msg string) {
+    os.Stderr.WriteString(s"galop-sample: $msg\n")
+    os.Exit(2)
+}
+
+func main() {
+    parse(ArrayOf(os.Args...).Drop(1).ToList(), flags()) match {
+        case Left(msg) => fail(msg)
+        case Right(f) => (f.Grammar, f.Out) match {
+            case (Some(path), Some(out)) => generate(f, path) match {
+                case Left(msg) => fail(msg)
+                case Right(text) => fs.WriteFileString(out, text, 0o644) match {
+                    case Failure(e) => fail(e.Error())
+                    case Success(_) => {}
+                }
+            }
+            case _ => fail(usage)
+        }
+    }
+}
