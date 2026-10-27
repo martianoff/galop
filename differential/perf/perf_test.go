@@ -35,9 +35,22 @@ func TestJudge(t *testing.T) {
 		{"a report-only ratio never fails", Report{Ratios: map[string]float64{"corpus/w32/warm/galop-vs-lexer": 50}}, "reported"},
 		{"a number the baseline lacks is new", Report{Counters: map[string]int64{"native/generated/predictions": 5}}, "new"},
 	}
+	t.Run("a number the run lacks is missing", func(t *testing.T) {
+		fs := Judge(Report{}, Baseline{Report: Report{Counters: map[string]int64{"native/corpus/predictions": 1}}})
+		if len(fs) != 1 || fs[0].Verdict != "missing" || !Failed(fs) {
+			t.Fatalf("findings %+v, want one failing missing finding", fs)
+		}
+	})
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			fs := Judge(c.r, b)
+			// The baseline's other numbers come back missing; judge only the
+			// one this case measures.
+			var fs []Finding
+			for _, f := range Judge(c.r, b) {
+				if f.Verdict != "missing" {
+					fs = append(fs, f)
+				}
+			}
 			if len(fs) != 1 || fs[0].Verdict != c.verdict {
 				t.Fatalf("findings %+v, want one with verdict %q", fs, c.verdict)
 			}

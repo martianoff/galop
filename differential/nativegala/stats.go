@@ -5,14 +5,16 @@ package nativegala
 // predictions) and FullContext (full-context predictions).
 type Stats = galaGalopStats
 
-// ParseWithStats parses src as Parse does and reports the parse's work.
+// ParseWithStats parses src as Parse does (the entry's start state and
+// repair plan come from the generated tables) and reports the parse's work.
 func ParseWithStats(src string) (SourceFileNode, Stats, error) {
 	ts := Tokens(src)
 	if len(ts.Errors) > 0 {
 		return SourceFileNode{}, Stats{}, &ts.Errors[0]
 	}
 	p := newgalaGalopParser(ts)
-	t, root, err := p.run((*galaGalopParser).ruleSourceFile, galaGalopRuleStartState[GalaRULE_sourceFile], true)
+	rule := GalaRULE_sourceFile
+	t, root, err := p.run((*galaGalopParser).ruleSourceFile, galaGalopRuleStartState[rule], galaGalopRuleRepairs[rule])
 	if err != nil {
 		return SourceFileNode{}, p.stats, err
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
@@ -187,9 +188,9 @@ func FromSamples(samples string) ([]File, error) {
 	var files []File
 	for rest := string(data); rest != ""; {
 		head, body, ok := strings.Cut(rest, "\n")
-		var n int
-		if _, err := fmt.Sscan(head, &n); !ok || err != nil || n < 0 || len(body) < n+1 {
-			return nil, fmt.Errorf("%s: malformed sample %d", samples, len(files)+1)
+		n, err := strconv.Atoi(head)
+		if !ok || err != nil || n < 0 || len(body) < n+1 || body[n] != '\n' {
+			return nil, fmt.Errorf("%s: malformed sample %d (a byte count line, the sentence, a newline)", samples, len(files)+1)
 		}
 		files = append(files, File{Name: fmt.Sprintf("sample-%04d", len(files)+1), Path: path, Src: body[:n]})
 		rest = body[n+1:]

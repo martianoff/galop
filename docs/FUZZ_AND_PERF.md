@@ -147,19 +147,21 @@ ratios measured in the same job:
 
 - **`…/galop-vs-antlr`:** galop's time over ANTLR's.
 - **`…/galop-vs-lexer`:** galop's time over the lexer's warm time. The lexer's first
-  pass is too short to time well. On 32 goroutines the baseline marks this ratio
-  report-only: a lexer pass there takes well under a millisecond.
+  pass is too short to time well.
+
+The ratios on 32 goroutines are only reported. The CI runner has four cores, and two
+runs of the same code differed by up to a third there. Ratios on one goroutine moved
+by up to 25%, so they are judged within 30%.
 
 To keep the ratios stable on a shared runner:
 
 - The three operations are timed in rounds, one sample of each per round. Each ratio
   is the median over rounds of that round's ratio, so a slow stretch slows both sides
   alike.
-- Warm samples repeat a pass until it lasts 50 ms.
-- A ratio fails only when it exceeds its baseline by more than its rule's tolerance:
-  30%, and 50% on 32 goroutines, which vary most on the CI runner's four cores (two
-  runs of the same code differed by up to 31% there, and by up to 25% on one
-  goroutine).
+- Before timing, two untimed passes fill the caches. A warm pass is then timed to
+  work out how many passes make a 50 ms sample (rounded up), and each sample runs
+  passes until it has lasted at least 50 ms.
+- A ratio fails only when it exceeds its baseline by more than its rule's tolerance.
 
 The gaps (first pass minus warm) are reported for galop and for the lexer. The
 lexer's gap is the floor any Go program pays.
@@ -168,8 +170,13 @@ lexer's gap is the floor any Go program pays.
 
 | Where | What | Judged |
 |---|---|---|
-| every PR and push: job `performance gate` | `perfgate` with the defaults above (a few minutes) | against `baseline.json`; enforcing only when `PERF_ENFORCE` is `"true"` in `ci.yml` |
-| pushes to main and `workflow_dispatch`: job `mutation fuzz` | the large fuzz runs, then `perfgate -every=1 -mutants=300 -runs=7 -passes=7` | not judged: a wider report |
+| every PR and push: job `performance gate` | `perfgate` with the defaults above (about 2 minutes once built) | against `baseline.json`; enforcing only when `PERF_ENFORCE` is `"true"` in `ci.yml` |
+| pushes to main and `workflow_dispatch`: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, generated sets 1–4 | parity with ANTLR |
+| pushes to main and `workflow_dispatch`: job `performance sweep` | `perfgate -every=1 -mutants=300 -runs=7 -passes=7` | not judged: a wider report |
+
+A cold cache never turns a pull request red. The gate's build and measurement run
+under a time budget (8 minutes on a pull request), and when they run past it the job
+skips the gate with a notice and passes.
 
 The gate writes its tables to the job summary and its numbers to the `perf` artifact
 (`perf.json`).
@@ -196,9 +203,11 @@ bazel run //differential/cmd/perfgate -- -update=differential/perf/baseline.json
 ```
 
 - **Counters** come out the same on any machine.
-- **Ratios** should come from the CI runner, because they depend on the machine.
-  Download the `perf` artifact of a green run on the PR and copy its `ratios` into the
-  baseline. `-update` keeps the baseline's rules.
+- **Ratios** come from the CI runner (`ubuntu-latest`), never from a local machine:
+  they depend on it. Download the `perf` artifact of a green run on the PR and copy its
+  `ratios` into the baseline.
+- `-update` keeps the baseline's rules. With `-times=false` it measures counters only
+  and keeps the baseline's ratios.
 
 ### The baseline's rules
 
@@ -211,15 +220,18 @@ How each number is judged is policy, kept in the baseline file rather than in co
   {"pattern": "*/*/files", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/accepted", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/allocs-per-pass", "tolerance": 0.01},
-  {"pattern": "*/w32/*/galop-vs-lexer", "tolerance": 0, "report_only": true},
-  {"pattern": "*/w32/*/*", "tolerance": 0.5},
+  {"pattern": "*/w32/*/*", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/*/*", "tolerance": 0.3}
 ]
 ```
 
 - A number may exceed its baseline by `tolerance` (0.3 allows 30%) before it is
   `worse`.
-- A `report_only` number is shown and never fails the gate.
+- A `report_only` number is shown and never fails the gate. `files` and `accepted`
+  are report-only because the parity tests already fail on any difference from ANTLR
+  in what parses; fewer accepted files is a correctness failure there, not a speed-up.
+- A number the baseline has but the run doesn't measure is `missing`, which fails
+  like a regression: a renamed or dropped counter can't slip through.
 - A number no rule matches has tolerance 0: counters (`flavor/input/name`, three
   parts) are judged exactly, and the last rule matches only ratios (four parts).
 

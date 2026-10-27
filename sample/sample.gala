@@ -111,25 +111,27 @@ func readsAs(lexer lexgen.DFA, text string, t int) bool {
 }
 
 // shortest is, for every state of a, the fewest symbols that take it to the
-// end of its rule, or unreachable; usable says which consuming transitions may
-// be taken. ANTLR rejects loops whose body can match nothing, so a choice of
-// least cost always makes progress.
-func shortest(a atn.ATN, usable func(atn.Transition) bool) Array[int] =
+// end of its rule, or unreachable; usable[s][i] says whether transition i out
+// of state s may be taken. ANTLR rejects loops whose body can match nothing,
+// so a choice of least cost always makes progress.
+func shortest(a atn.ATN, usable Array[Array[bool]]) Array[int] =
     settle(a, usable, a.States.Map((s) => if (s.IsRuleStop()) 0 else unreachable))
 
 // settle relaxes cost until no state's cost changes.
-func settle(a atn.ATN, usable func(atn.Transition) bool, cost Array[int]) Array[int] {
+func settle(a atn.ATN, usable Array[Array[bool]], cost Array[int]) Array[int] {
     val next = a.States.Map((s) =>
         if (s.IsRuleStop()) 0
-        else s.Out.FoldLeft(cost.Get(s.Id), (best, t) => atn.MinInt(best, stepCost(cost, usable, t))))
+        else s.Out.ZipWithIndex().FoldLeft(cost.Get(s.Id), (best, ti) =>
+            atn.MinInt(best, stepCost(cost, usable.Get(s.Id).Get(ti.V2), ti.V1))))
     if (next.Zip(cost).Exists((p) => p.V1 != p.V2)) settle(a, usable, next) else next
 }
 
-// stepCost is the cost of finishing a rule by taking t, given every state's cost.
-func stepCost(cost Array[int], usable func(atn.Transition) bool, t atn.Transition) int = t match {
+// stepCost is the cost of finishing a rule by taking t, given every state's
+// cost; usable says whether t may be taken.
+func stepCost(cost Array[int], usable bool, t atn.Transition) int = t match {
     case atn.RuleCall(target, _, follow) => plus(cost.Get(target), cost.Get(follow))
-    case atn.Atom(target, _) => if (usable(t)) plus(1, cost.Get(target)) else unreachable
-    case atn.SetMatch(target, _) => if (usable(t)) plus(1, cost.Get(target)) else unreachable
+    case atn.Atom(target, _) => if (usable) plus(1, cost.Get(target)) else unreachable
+    case atn.SetMatch(target, _) => if (usable) plus(1, cost.Get(target)) else unreachable
     case _ => cost.Get(t.Target())
 }
 
@@ -148,7 +150,9 @@ func plus(a int, b int) int = if (a >= unreachable || b >= unreachable) unreacha
 struct walker(
     A atn.ATN,
     Cost Array[int],
-    Usable func(atn.Transition) bool,
+    // Usable is whether each transition may be taken, by state and index,
+    // worked out once.
+    Usable Array[Array[bool]],
     Rand Ptr[rng],
     MaxNesting int,
     MaxLen int,
@@ -163,7 +167,8 @@ func newWalker(
     maxLen int,
 ) walker {
     val used = &usage{counts: EmptyHashMap[int, Array[int]]()}
-    walker(a, shortest(a, usable), usable, rand, maxNesting, maxLen, used)
+    val table = a.States.Map((s) => s.Out.Map(usable))
+    walker(a, shortest(a, table), table, rand, maxNesting, maxLen, used)
 }
 
 // usage counts, per state, how often each of its transitions was taken.
@@ -219,7 +224,7 @@ func (w walker) walk(from int, active Array[int], depth int, pick func(atn.Inter
 // choose picks the transition out of st to follow; with shortWay, the one
 // that finishes the rule soonest.
 func (w walker) choose(st atn.State, shortWay bool) atn.Transition {
-    val cost = (i int) int => stepCost(w.Cost, w.Usable, st.Out.Get(i))
+    val cost = (i int) int => stepCost(w.Cost, w.Usable.Get(st.Id).Get(i), st.Out.Get(i))
     val open = ArrayTabulate(st.Out.Size(), (i) => i).Filter((i) => cost(i) < unreachable)
     if shortWay {
         return st.Out.Get(open.FoldLeft(open.Head(), (best, i) => if (cost(i) < cost(best)) i else best))

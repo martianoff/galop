@@ -74,12 +74,14 @@ type Finding struct {
 	Kind string
 	// Verdict is "ok", "better" (below the baseline by more than the
 	// tolerance: tighten it), "worse" (a regression), "new" (not in the
-	// baseline) or "reported" (a report-only number).
+	// baseline), "missing" (in the baseline but not measured: a renamed or
+	// dropped number, which fails like a regression) or "reported" (a
+	// report-only number).
 	Verdict string
 }
 
 // Judge compares r with b: a number is worse when it exceeds its baseline by
-// more than its rule's tolerance.
+// more than its rule's tolerance, and missing when b has it and r does not.
 func Judge(r Report, b Baseline) []Finding {
 	return append(judge(r.Counters, b.Counters, "counter", b), judge(r.Ratios, b.Ratios, "ratio", b)...)
 }
@@ -104,12 +106,17 @@ func judge[V int64 | float64](got, want map[string]V, kind string, b Baseline) [
 		}
 		out = append(out, f)
 	}
+	for _, name := range slices.Sorted(maps.Keys(want)) {
+		if _, ok := got[name]; !ok && !b.rule(name).ReportOnly {
+			out = append(out, Finding{Name: name, Want: float64(want[name]), Kind: kind, Verdict: "missing"})
+		}
+	}
 	return out
 }
 
-// Failed reports whether any finding is a regression.
+// Failed reports whether any finding is a regression or missing.
 func Failed(fs []Finding) bool {
-	return slices.ContainsFunc(fs, func(f Finding) bool { return f.Verdict == "worse" })
+	return slices.ContainsFunc(fs, func(f Finding) bool { return f.Verdict == "worse" || f.Verdict == "missing" })
 }
 
 var verdictText = map[string]string{
@@ -117,6 +124,7 @@ var verdictText = map[string]string{
 	"better":   "better: tighten the baseline",
 	"worse":    "**worse**",
 	"new":      "new",
+	"missing":  "**missing**",
 	"reported": "reported only",
 }
 

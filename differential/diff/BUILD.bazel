@@ -12,6 +12,7 @@ DIFF_TEST_DEPS = [
     "//differential/antlrgala",
     "//differential/corpus",
     "//differential/gala",
+    "//differential/mutate",
     "//differential/nativegala",
     "//differential/nativetokens",
     "@com_github_antlr4_go_antlr_v4//:antlr",
@@ -84,7 +85,7 @@ go_test(
     srcs = DIFF_TEST_SRCS + ["generated_test.go"],
     args = [
         "-samples=$(rlocationpath %s)" % samples,
-        "-test.run=^(TestGeneratedMatchesANTLR|TestMutations|TestSyntaxErrors)$$",
+        "-test.run=^(TestGeneratedMatchesANTLR|TestParseWithStatsMatchesParse|TestMutations|TestSyntaxErrors)$$",
     ] + args,
     data = [samples],
     embed = [":diff"],

@@ -26,17 +26,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/martianoff/galop/differential/corpus"
 	"github.com/martianoff/galop/differential/gala"
+	"github.com/martianoff/galop/differential/measure"
 	"github.com/martianoff/galop/differential/nativegala"
 	"github.com/martianoff/galop/differential/nativetokens"
 )
@@ -80,7 +79,7 @@ func main() {
 	}
 	if *child != "" {
 		do := phases[*child]
-		s := measure(files, do, *par)
+		s := once(files, do, *par)
 		if *warmChild {
 			s = warm(files, do, *par)
 		}
@@ -140,44 +139,23 @@ func warm(files []corpus.File, do func(string), parallel bool) sample {
 	return sample{Elapsed: time.Duration(r.NsPerOp()), Allocs: uint64(r.AllocsPerOp()), AllocMB: float64(r.AllocedBytesPerOp()) / 1e6, Bytes: corpus.Bytes(files)}
 }
 
-// measure times a single pass of do over files, as a fresh process sees it.
-// Allocations are counted process-wide, so they are exact only when nothing
-// else runs.
-func measure(files []corpus.File, do func(string), parallel bool) sample {
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	start := time.Now()
-	pass(files, do, parallel)
-	elapsed := time.Since(start)
-	runtime.ReadMemStats(&after)
-	return sample{Elapsed: elapsed, Allocs: after.Mallocs - before.Mallocs, AllocMB: float64(after.TotalAlloc-before.TotalAlloc) / 1e6, Bytes: corpus.Bytes(files)}
+// once times a single pass of do over files, as a fresh process sees it.
+func once(files []corpus.File, do func(string), parallel bool) sample {
+	s := measure.Once(func() { pass(files, do, parallel) })
+	return sample{Elapsed: s.Elapsed, Allocs: s.Allocs, AllocMB: s.AllocMB, Bytes: corpus.Bytes(files)}
 }
 
 // pass runs do over every file, on one goroutine or on GOMAXPROCS.
 func pass(files []corpus.File, do func(string), parallel bool) {
-	if parallel {
-		var wg sync.WaitGroup
-		next := make(chan string)
-		for range runtime.GOMAXPROCS(0) {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for src := range next {
-					do(src)
-				}
-			}()
-		}
-		for _, f := range files {
-			next <- f.Src
-		}
-		close(next)
-		wg.Wait()
-	} else {
-		for _, f := range files {
-			do(f.Src)
-		}
+	srcs := make([]string, len(files))
+	for i, f := range files {
+		srcs[i] = f.Src
 	}
+	workers := 1
+	if parallel {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	measure.Pass(srcs, do, workers)
 }
 
 // best runs m n times and keeps the fastest sample.
@@ -199,15 +177,9 @@ func inChild(n int, phase string, parallel, warm bool, paths []string) sample {
 	_, err = list.WriteString(strings.Join(paths, "\n") + "\n")
 	check(err)
 	check(list.Close())
-	self, err := os.Executable()
-	check(err)
 	return best(n, func() sample {
-		cmd := exec.Command(self, "-child="+phase, fmt.Sprintf("-parallel=%t", parallel), fmt.Sprintf("-warm=%t", warm), "-list="+list.Name())
-		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
-		check(err)
 		var s sample
-		check(json.Unmarshal(out, &s))
+		check(measure.Child(&s, "-child="+phase, fmt.Sprintf("-parallel=%t", parallel), fmt.Sprintf("-warm=%t", warm), "-list="+list.Name()))
 		return s
 	})
 }

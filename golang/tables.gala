@@ -218,6 +218,10 @@ func errorTables(e env) string {
         goSlice(s"${x}StateNext", "int32", next.Map((l) => s"${sets.IndexOf(l.Tokens)}")),
         goSlice(s"${x}StateReachesEnd", "bool", next.Map((l) => s"${l.ReachesEnd}")),
         goSlice(s"${x}RuleStartState", "int32", a.RuleStart.Map((n) => s"$n")),
+        // Whether each rule's entry point may repair a failed SLL parse, as
+        // its Parse function passes it; for callers that drive a parse
+        // themselves (the differential harness counts a parse's work).
+        goSlice(s"${x}RuleRepairs", "bool", ArrayTabulate(a.RuleStart.Size(), (r) => s"${e.repairPlan.Repairs(r)}")),
         goSlice(s"${x}DecisionKind", "uint8", a.Decisions.Map((d) => s"${decisionKindCode(d.Kind)}")),
         goSlice(s"${x}DecisionSetAfter", "int32", a.Decisions.Map((d) => s"${if (isSetDecision(e.rules, d.Id)) setAfter(a, d.State) else -1}")),
         goSlice(s"${x}DecisionLL1", "bool", ll1.Map((b) => s"$b")),

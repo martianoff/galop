@@ -10,6 +10,7 @@ go_binary(
     deps = [
         "//differential/corpus",
         "//differential/gala",
+        "//differential/measure",
         "//differential/nativegala",
         "//differential/nativetokens",
     ],

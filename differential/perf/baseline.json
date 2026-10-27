@@ -1,7 +1,7 @@
 {
   "counters": {
     "antlrflavor/corpus/accepted": 240,
-    "antlrflavor/corpus/allocs-per-pass": 1285546,
+    "antlrflavor/corpus/allocs-per-pass": 1285592,
     "antlrflavor/corpus/files": 241,
     "antlrflavor/corpus/full-context": 148,
     "antlrflavor/corpus/full-context-states": 224,
@@ -11,7 +11,7 @@
     "antlrflavor/corpus/replays-median": 2,
     "antlrflavor/corpus/sll-states": 698,
     "antlrflavor/generated/accepted": 600,
-    "antlrflavor/generated/allocs-per-pass": 892705,
+    "antlrflavor/generated/allocs-per-pass": 892710,
     "antlrflavor/generated/files": 600,
     "antlrflavor/generated/full-context": 131,
     "antlrflavor/generated/full-context-states": 2504,
@@ -20,18 +20,18 @@
     "antlrflavor/generated/replays-max": 17,
     "antlrflavor/generated/replays-median": 3,
     "antlrflavor/generated/sll-states": 6707,
-    "antlrflavor/mutants/accepted": 15,
-    "antlrflavor/mutants/allocs-per-pass": 1440042,
+    "antlrflavor/mutants/accepted": 37,
+    "antlrflavor/mutants/allocs-per-pass": 766503,
     "antlrflavor/mutants/files": 100,
-    "antlrflavor/mutants/full-context": 2628,
-    "antlrflavor/mutants/full-context-states": 2045,
-    "antlrflavor/mutants/predictions": 67224,
-    "antlrflavor/mutants/replayed-files": 85,
-    "antlrflavor/mutants/replays-max": 23,
-    "antlrflavor/mutants/replays-median": 8,
-    "antlrflavor/mutants/sll-states": 1956,
+    "antlrflavor/mutants/full-context": 1031,
+    "antlrflavor/mutants/full-context-states": 937,
+    "antlrflavor/mutants/predictions": 29557,
+    "antlrflavor/mutants/replayed-files": 71,
+    "antlrflavor/mutants/replays-max": 19,
+    "antlrflavor/mutants/replays-median": 6,
+    "antlrflavor/mutants/sll-states": 1194,
     "native/corpus/accepted": 240,
-    "native/corpus/allocs-per-pass": 7828,
+    "native/corpus/allocs-per-pass": 7873,
     "native/corpus/files": 241,
     "native/corpus/full-context": 148,
     "native/corpus/full-context-states": 224,
@@ -50,18 +50,17 @@
     "native/generated/replays-max": 17,
     "native/generated/replays-median": 3,
     "native/generated/sll-states": 6707,
-    "native/mutants/accepted": 15,
-    "native/mutants/allocs-per-pass": 13184,
+    "native/mutants/accepted": 37,
+    "native/mutants/allocs-per-pass": 18698,
     "native/mutants/files": 100,
-    "native/mutants/full-context": 2628,
-    "native/mutants/full-context-states": 2045,
-    "native/mutants/predictions": 67224,
-    "native/mutants/replayed-files": 85,
-    "native/mutants/replays-max": 23,
-    "native/mutants/replays-median": 8,
-    "native/mutants/sll-states": 1956
+    "native/mutants/full-context": 1031,
+    "native/mutants/full-context-states": 937,
+    "native/mutants/predictions": 29557,
+    "native/mutants/replayed-files": 71,
+    "native/mutants/replays-max": 19,
+    "native/mutants/replays-median": 6,
+    "native/mutants/sll-states": 1194
   },
-  "note": "counters: perfgate on main 23c6f5f (any machine); ratios: the CI runner (ubuntu-latest, GOMAXPROCS=4)",
   "ratios": {
     "corpus/w1/first/galop-vs-antlr": 0.032536338161515146,
     "corpus/w1/first/galop-vs-lexer": 5.203460862511829,
@@ -91,30 +90,27 @@
   "rules": [
     {
       "pattern": "*/*/files",
-      "report_only": true,
-      "tolerance": 0
+      "tolerance": 0,
+      "report_only": true
     },
     {
       "pattern": "*/*/accepted",
-      "report_only": true,
-      "tolerance": 0
+      "tolerance": 0,
+      "report_only": true
     },
     {
       "pattern": "*/*/allocs-per-pass",
       "tolerance": 0.01
     },
     {
-      "pattern": "*/w32/*/galop-vs-lexer",
-      "report_only": true,
-      "tolerance": 0
-    },
-    {
       "pattern": "*/w32/*/*",
-      "tolerance": 0.5
+      "tolerance": 0,
+      "report_only": true
     },
     {
       "pattern": "*/*/*/*",
       "tolerance": 0.3
     }
-  ]
+  ],
+  "note": "measured by perfgate on windows/amd64, GOMAXPROCS=32"
 }

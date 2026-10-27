@@ -76,3 +76,23 @@ func TestGeneratedMatchesANTLR(t *testing.T) {
 		t.Error("ANTLR accepted no input: the generator no longer produces valid code")
 	}
 }
+
+// TestParseWithStatsMatchesParse checks that the harness's counting entry
+// points parse as the generated ones do: the same verdict and tree, so the
+// performance gate counts the parse galop's users get.
+func TestParseWithStatsMatchesParse(t *testing.T) {
+	for _, f := range files(t) {
+		src := gala.StripBOM(f.Src)
+		want, _, wantErr := nativeResult(nativegala.Parse(src))
+		root, _, err := nativegala.ParseWithStats(src)
+		got, _, gotErr := nativeResult(root, err)
+		if got != want || (wantErr == nil) != (gotErr == nil) {
+			t.Errorf("%s: native ParseWithStats differs from Parse", f.Name)
+		}
+		ref, refErr := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).SourceFile()
+		ctx, _, err := antlrgala.ParseGalopWithStats(gala.GalopTokens(src))
+		if (refErr == nil) != (err == nil) || refErr == nil && gala.TreeString(ref) != gala.TreeString(ctx) {
+			t.Errorf("%s: ParseGalopWithStats differs from SourceFile", f.Name)
+		}
+	}
+}

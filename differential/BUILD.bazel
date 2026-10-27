@@ -36,6 +36,8 @@ corpus_manifest(
     ],
     outs = [name + ".txt"],
     cmd = "$(location //cmd/galop-sample) %s -o $@ $(location //testdata/grammars:gala.g4)" % flags,
+    # Only the large runs on main read the large sets.
+    tags = ["manual"] if name.startswith("samples_large") else [],
     visibility = ["//differential:__subpackages__"],
 ) for name, flags in [
     ("samples", "-n 600 -seed 1 -nesting 2 -tokens 300"),

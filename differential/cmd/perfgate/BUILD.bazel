@@ -21,6 +21,8 @@ go_binary(
         "//differential/antlrgala",
         "//differential/corpus",
         "//differential/gala",
+        "//differential/measure",
+        "//differential/mutate",
         "//differential/nativegala",
         "//differential/perf",
     ],

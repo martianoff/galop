@@ -17,8 +17,9 @@
 //     the lexer. Absolute times are only reported.
 //
 // The baseline file's rules say how far each number may move and which are
-// only reported. Without -enforce the gate only reports. -update writes the
-// run's numbers as the new baseline, keeping its rules.
+// only reported; a number the baseline has and the run lacks fails. Without
+// -enforce the gate only reports. -update writes the run's numbers as the new
+// baseline, keeping its rules (and its ratios when -times=false).
 package main
 
 import (
@@ -27,7 +28,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -38,24 +38,26 @@ import (
 	"github.com/martianoff/galop/differential/antlrgala"
 	"github.com/martianoff/galop/differential/corpus"
 	"github.com/martianoff/galop/differential/gala"
+	"github.com/martianoff/galop/differential/measure"
+	"github.com/martianoff/galop/differential/mutate"
 	"github.com/martianoff/galop/differential/nativegala"
 	"github.com/martianoff/galop/differential/perf"
 )
 
 var (
-	manifest  = flag.String("manifest", "", "corpus_manifest of the GALA corpus")
-	samples   = flag.String("samples", "", "galop-sample output: the generated input")
-	baseline  = flag.String("baseline", "", "baseline file, by runfiles location or path")
-	update    = flag.String("update", "", "write this run's numbers as the baseline to this path (relative to the workspace)")
-	jsonOut   = flag.String("json", "", "also write this run's numbers to this file (CI keeps it as an artifact)")
-	enforce   = flag.Bool("enforce", false, "exit 1 when a number regresses (default: report only)")
-	every     = flag.Int("every", 3, "use every Nth corpus file")
-	mutants   = flag.Int("mutants", 100, "how many mutated corpus files to measure")
-	runs      = flag.Int("runs", 5, "fresh processes per first-pass time, one per round (the median is kept)")
-	passes    = flag.Int("passes", 5, "warm samples per time, one per round (the median is kept)")
-	times     = flag.Bool("times", true, "measure wall-clock times (false: counters only)")
-	child     = flag.String("child", "", "internal: run one measurement in this fresh process (counters:<flavor> or time:<phase>:<workers>)")
-	inputFile = flag.String("input_file", "", "internal, with -child: the input to measure, in galop-sample's format")
+	manifest    = flag.String("manifest", "", "corpus_manifest of the GALA corpus")
+	samples     = flag.String("samples", "", "galop-sample output: the generated input")
+	baseline    = flag.String("baseline", "", "baseline file, by runfiles location or path")
+	update      = flag.String("update", "", "write this run's numbers as the baseline to this path (relative to the workspace)")
+	jsonOut     = flag.String("json", "", "also write this run's numbers to this file (CI keeps it as an artifact)")
+	enforce     = flag.Bool("enforce", false, "exit 1 when a number regresses (default: report only)")
+	every       = flag.Int("every", 3, "use every Nth corpus file")
+	mutantCount = flag.Int("mutants", 100, "how many mutated corpus files to measure")
+	runs        = flag.Int("runs", 5, "fresh processes per first-pass time, one per round (the median is kept)")
+	passes      = flag.Int("passes", 5, "warm samples per time, one per round (the median is kept)")
+	times       = flag.Bool("times", true, "measure wall-clock times (false: counters only)")
+	child       = flag.String("child", "", "internal: run one measurement in this fresh process (counters:<flavor> or time:<phase>:<workers>)")
+	inputFile   = flag.String("input_file", "", "internal, with -child: the input to measure, in galop-sample's format")
 )
 
 // inputNames are the measured inputs.
@@ -66,17 +68,16 @@ var flavors = []string{"native", "antlrflavor"}
 
 // defaultRules judge a baseline written without rules: counters exactly but
 // allocations within 1% (the Go runtime's own background allocations move
-// them by a few), ratios within 30% (50% on 32 goroutines, which the CI
-// runner's four cores make noisier), and galop over the lexer on 32
-// goroutines only reported (a lexer pass there is well under a millisecond).
-// The input's size and how much of it parses are reported, not judged: fewer
-// accepted files is not "better", and the parity tests check acceptance.
+// them by a few), and ratios on one goroutine within 30%. Ratios on 32
+// goroutines are only reported: on the CI runner's four cores two runs of the
+// same code differ by about a third. The input's size and how much of it
+// parses are reported, not judged: the parity tests fail on any difference
+// from ANTLR in what parses.
 var defaultRules = []perf.Rule{
 	{Pattern: "*/*/files", ReportOnly: true},
 	{Pattern: "*/*/accepted", ReportOnly: true},
 	{Pattern: "*/*/allocs-per-pass", Tolerance: 0.01},
-	{Pattern: "*/w32/*/galop-vs-lexer", ReportOnly: true},
-	{Pattern: "*/w32/*/*", Tolerance: 0.5},
+	{Pattern: "*/w32/*/*", ReportOnly: true},
 	{Pattern: "*/*/*/*", Tolerance: 0.3},
 }
 
@@ -129,7 +130,7 @@ func measureCounters(files map[string]string) map[string]int64 {
 		for _, flavor := range flavors {
 			wg.Go(func() {
 				var c map[string]int64
-				check(json.Unmarshal(childRun("counters:"+flavor, files[in]), &c))
+				check(measure.Child(&c, "-child=counters:"+flavor, "-input_file="+files[in]))
 				mu.Lock()
 				defer mu.Unlock()
 				for k, v := range c {
@@ -202,7 +203,13 @@ func report(r perf.Report) int {
 		b, err = perf.ReadBaseline(corpus.Locate(*baseline))
 		check(err)
 	}
-	findings := perf.Judge(r, b)
+	judged := b
+	if !*times {
+		// A counters-only run has no ratios: it doesn't judge them, and
+		// keeps the baseline's when it writes one.
+		judged.Ratios = nil
+	}
+	findings := perf.Judge(r, judged)
 	md := fmt.Sprintf("## galop performance gate (%s)\n\nGOMAXPROCS=%d, %s/%s, %s\n\n%s",
 		map[bool]string{true: "enforcing", false: "report only"}[*enforce],
 		runtime.GOMAXPROCS(0), runtime.GOOS, runtime.GOARCH, runtime.Version(), perf.Markdown(findings, r))
@@ -227,16 +234,20 @@ func report(r perf.Report) int {
 		if len(rules) == 0 {
 			rules = defaultRules
 		}
+		written := r
+		if !*times {
+			written.Ratios = b.Ratios
+		}
 		note := fmt.Sprintf("measured by perfgate on %s/%s, GOMAXPROCS=%d", runtime.GOOS, runtime.GOARCH, runtime.GOMAXPROCS(0))
-		check(perf.WriteBaseline(path, r, rules, note))
+		check(perf.WriteBaseline(path, written, rules, note))
 		fmt.Println("wrote", path)
 	}
 	if perf.Failed(findings) {
 		if *enforce {
-			fmt.Println("perfgate: a number regressed")
+			fmt.Println("perfgate: a number regressed or is missing")
 			return 1
 		}
-		fmt.Println("perfgate: a number regressed (report only)")
+		fmt.Println("perfgate: a number regressed or is missing (report only)")
 	}
 	return 0
 }
@@ -258,9 +269,8 @@ func runChild(srcs []string) {
 		phase, w, _ := strings.Cut(rest, ":")
 		var workers int
 		fmt.Sscan(w, &workers)
-		start := time.Now()
-		pass(srcs, phases[phase], workers)
-		check(json.NewEncoder(os.Stdout).Encode(float64(time.Since(start).Microseconds()) / 1000))
+		elapsed := measure.Once(func() { measure.Pass(srcs, phases[phase], workers) }).Elapsed
+		check(json.NewEncoder(os.Stdout).Encode(ms(elapsed)))
 	}
 }
 
@@ -300,77 +310,50 @@ func counters(flavor string, srcs []string) map[string]int64 {
 	}
 	sll, full := cacheStates()
 	c["sll-states"], c["full-context-states"] = int64(sll), int64(full)
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	for _, src := range srcs {
-		parse(src)
-	}
-	runtime.ReadMemStats(&after)
-	c["allocs-per-pass"] = int64(after.Mallocs - before.Mallocs)
+	c["allocs-per-pass"] = int64(measure.Once(func() {
+		for _, src := range srcs {
+			parse(src)
+		}
+	}).Allocs)
 	return c
 }
 
-// calibrate runs one untimed pass and returns how many passes make a warm
-// sample last at least 50 ms, so short passes (the lexer, many goroutines)
-// time well too.
+// minSample is the shortest warm sample: shorter ones are mostly timer and
+// scheduling noise.
+const minSample = 50 * time.Millisecond
+
+// calibrate warms the caches with two untimed passes, then times a warm one
+// and returns how many passes make a sample last at least minSample.
 func calibrate(srcs []string, do func(string), workers int) int {
-	start := time.Now()
-	pass(srcs, do, workers)
-	return max(1, int(50*time.Millisecond/max(time.Since(start), time.Microsecond)))
+	for range 2 {
+		measure.Pass(srcs, do, workers)
+	}
+	one := max(measure.Once(func() { measure.Pass(srcs, do, workers) }).Elapsed, time.Microsecond)
+	return int((minSample + one - 1) / one)
 }
 
-// warm is one warm pass in ms, averaged over reps passes.
+// warm is one warm pass in ms: passes run in batches of reps until they have
+// lasted at least minSample, and their time is averaged.
 func warm(srcs []string, do func(string), workers, reps int) float64 {
 	start := time.Now()
-	for range reps {
-		pass(srcs, do, workers)
+	n := 0
+	for n == 0 || time.Since(start) < minSample {
+		for range reps {
+			measure.Pass(srcs, do, workers)
+		}
+		n += reps
 	}
-	return float64(time.Since(start).Microseconds()) / 1000 / float64(reps)
+	return ms(time.Since(start)) / float64(n)
 }
 
 // first is the first pass of a fresh process over the input in file, in ms.
 func first(phase string, workers int, file string) float64 {
-	var ms float64
-	check(json.Unmarshal(childRun(fmt.Sprintf("time:%s:%d", phase, workers), file), &ms))
-	return ms
+	var v float64
+	check(measure.Child(&v, fmt.Sprintf("-child=time:%s:%d", phase, workers), "-input_file="+file))
+	return v
 }
 
-// childRun runs this program again as a fresh process for one measurement of
-// the input in file.
-func childRun(what, file string) []byte {
-	self, err := os.Executable()
-	check(err)
-	cmd := exec.Command(self, "-child="+what, "-input_file="+file)
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	check(err)
-	return out
-}
-
-// pass runs do over every source on workers goroutines.
-func pass(srcs []string, do func(string), workers int) {
-	if workers <= 1 {
-		for _, s := range srcs {
-			do(s)
-		}
-		return
-	}
-	next := make(chan string, len(srcs))
-	for _, s := range srcs {
-		next <- s
-	}
-	close(next)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Go(func() {
-			for s := range next {
-				do(s)
-			}
-		})
-	}
-	wg.Wait()
-}
+func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 
 func median(xs []float64) float64 {
 	s := slices.Clone(xs)
@@ -400,7 +383,7 @@ func loadInputs() (map[string][]string, error) {
 	for i, f := range gen {
 		generated[i] = f.Src
 	}
-	inputs := map[string][]string{"corpus": subset, "generated": generated, "mutants": mutate(subset, *mutants)}
+	inputs := map[string][]string{"corpus": subset, "generated": generated, "mutants": mutants(subset, *mutantCount)}
 	for in, srcs := range inputs {
 		if len(srcs) == 0 {
 			return nil, fmt.Errorf("input %s is empty: check -every and -mutants", in)
@@ -409,13 +392,9 @@ func loadInputs() (map[string][]string, error) {
 	return inputs, nil
 }
 
-// insertions are the text mutate inserts: stray tokens and brackets.
-var insertions = []string{"(", ")", "=>", "x", ".", ",", "=", "{", "}", "[", "]", "case (a, b) => ", "if x {", "Foo{a: 1}"}
-
-// mutate makes n mutants of the smaller sources: a token dropped, doubled or
-// preceded by stray text, at a position a fixed seed picks. It is a smaller
-// cousin of the diff tests' mutator, which lives in a test package.
-func mutate(srcs []string, n int) []string {
+// mutants makes n mutants of the smaller sources with the diff tests'
+// mutator, from a fixed seed.
+func mutants(srcs []string, n int) []string {
 	var small []string
 	for _, s := range srcs {
 		if len(s) < 20000 {
@@ -426,23 +405,9 @@ func mutate(srcs []string, n int) []string {
 		return nil
 	}
 	r := rand.New(rand.NewSource(1))
-	out := make([]string, 0, n)
-	for len(out) < n {
-		src := small[r.Intn(len(small))]
-		toks := nativegala.Tokens(src).Tokens
-		if len(toks) < 2 {
-			continue
-		}
-		tok := toks[r.Intn(len(toks)-1)]
-		off, end := int(tok.Start), int(tok.End)
-		switch r.Intn(3) {
-		case 0:
-			out = append(out, src[:off]+src[end:])
-		case 1:
-			out = append(out, src[:end]+" "+src[off:])
-		default:
-			out = append(out, src[:off]+insertions[r.Intn(len(insertions))]+" "+src[off:])
-		}
+	out := make([]string, n)
+	for i := range out {
+		out[i] = mutate.Mutate(r, small[r.Intn(len(small))])
 	}
 	return out
 }

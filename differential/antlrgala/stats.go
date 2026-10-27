@@ -10,7 +10,8 @@ type Stats = galaGalopStats
 // NewgalaGalopParser(stream).SourceFile() does, and reports the parse's work.
 func ParseGalopWithStats(stream antlr.TokenStream) (antlr.ParserRuleContext, Stats, error) {
 	p := NewgalaGalopParser(stream)
-	ctx, err := p.parse(p.ruleSourceFile, galaGalopRuleStartState[galaParserRULE_sourceFile], true)
+	rule := galaParserRULE_sourceFile
+	ctx, err := p.parse(p.ruleSourceFile, galaGalopRuleStartState[rule], galaGalopRuleRepairs[rule])
 	return ctx, p.stats, err
 }
 
