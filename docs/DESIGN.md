@@ -699,18 +699,40 @@ state takes one.
 
 The SLL DFA cache is bounded, so a long-lived process such as a language
 server does not grow it without end. Its states and their contexts make up a
-generation; once the current one holds 65,536 states or 2^21 contexts, it is
-replaced by an empty one. A prediction keeps walking and extending the
-generation it started in, so a state is never read against another
-generation's contexts, and an old generation is freed when no prediction holds
-it. Starting over changes no answer, only speed. The bounds are three to four
-times what parsing the GALA corpus and the held-out code over tokens alone
-(`-Xno-brackets`) leaves in the cache (about 16,000 states and 740,000
-contexts, 100 MB); with bracketed groups, valid code leaves a few hundred
-states. On 2,000 deeply nested generated sentences the cache now stays near
-350 MB, where it reached 0.9 GB (3 GB over tokens alone).
-`PFXDFAMaxStates` and `PFXDFAMaxContexts` set the bounds, and `PFXDFAStats`
-reports the current states, the most any generation held, and the resets.
+generation, and only the current generation grows. Once it holds 65,536
+states or 2^21 contexts, it is replaced by an empty one. A prediction that was
+walking the old generation keeps reading its cached edges, but where it would
+need a new state it finishes uncached, with the parser's own predictor; so no
+generation ever passes the bound (its contexts by at most one prediction
+step), and a state is never read against another generation's contexts. An
+old generation is freed once no prediction holds it. Each prediction holds
+one generation, so the cache keeps at most one full generation per goroutine
+that is predicting, and in practice the current one and, for a moment after
+a reset, the one before. Starting over changes no answer, only speed.
+
+The bounds are three to four times what parsing the GALA corpus and the
+held-out code over tokens alone (`-Xno-brackets`) leaves in the cache (about
+16,000 states and 740,000 contexts, 100 MB); with bracketed groups, valid code
+leaves a few hundred states. On a stream of 27,700 parses of distinct code
+(the GALA corpus, held-out code and generated sentences, each round with 200
+new deeply nested sentences and 1,000 new broken files), a whole process
+peaks at the memory below:
+
+| 1 goroutine | unbounded | starting over | stopping growth |
+|---|---:|---:|---:|
+| time per parse | 254 µs | 259 µs | 317 µs |
+| peak memory of the process | 1.6 GB | 0.8 GB | 0.8 GB |
+| time per parse, `-Xno-brackets` | 498 µs | 902 µs | 1,637 µs |
+| peak memory, `-Xno-brackets` | 4.9 GB | 0.8 GB | 0.8 GB |
+
+Over tokens alone that stream needs more states than the bound, and starting
+over costs 1.8 times the time; stopping growth, as the full-context cache
+does, costs 3.3 times, since every prediction the full cache lacks runs
+uncached. With eight goroutines, where new states wait for one lock,
+stopping growth was the faster of the two. `PFXDFAMaxStates` and
+`PFXDFAMaxContexts` set the bounds, and `PFXDFAStats` reports the current
+states, the most any generation held, and the resets.
+
 
 ## Command line (`cmd/galop`)
 

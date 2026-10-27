@@ -323,7 +323,7 @@ a : '(' a ')' | X ;
 b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;
 `, antlrDefines))
-    val t1 = IsTrue(t, strings.Contains(code, "if t < -1 || int(t) > AGalopMaxTokenType {\n\t\t\tp.noViableAlt(d)"))
+    val t1 = IsTrue(t, strings.Contains(code, "if t < -1 || int(t) > AGalopMaxTokenType {\n\t\tp.noViableAlt(d)"))
     IsTrue(t1, strings.Contains(code, "if t < -1 || int(t) > AGalopMaxTokenType {\n\t\t\tcontinue"))
 }
 

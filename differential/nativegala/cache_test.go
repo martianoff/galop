@@ -17,8 +17,11 @@ func parseResult(src string) string {
 
 // TestSLLCacheBounded parses many distinct inputs, mostly broken ones that
 // lean on runtime prediction, under a small cache bound, from several
-// goroutines at once. The cache must stay within the bound, start over many
-// times, and give every input the result it gets with the default bound.
+// goroutines at once. Every generation of the cache the test sees, replaced
+// ones included, must stay within the bound; the cache must start over many
+// times; and every input must give the result it gets with the default
+// bound. It changes the process's cache, so it must not run in parallel with
+// other tests; it restores the cache when done.
 func TestSLLCacheBounded(t *testing.T) {
 	files, err := source.Load()
 	if err != nil {
@@ -27,13 +30,13 @@ func TestSLLCacheBounded(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	var inputs []string
 	for _, f := range files {
-		if len(f.Src) > 20000 {
+		toks := Tokens(f.Src).Tokens
+		if len(f.Src) > 20000 || len(toks) < 3 {
 			continue
 		}
 		inputs = append(inputs, f.Src)
-		toks := Tokens(f.Src).Tokens
 		for range 2 {
-			// Drop a token, or a span of a few.
+			// Drop a token, or a span of a few; the last token is EOF.
 			i := r.Intn(len(toks) - 1)
 			j := min(i+1+r.Intn(3), len(toks)-1)
 			inputs = append(inputs, f.Src[:toks[i].Start]+f.Src[toks[j].Start:])
@@ -44,54 +47,66 @@ func TestSLLCacheBounded(t *testing.T) {
 		want[i] = parseResult(src)
 	}
 
-	maxStates, maxContexts := galaGalopDFAMaxStates, galaGalopDFAMaxContexts
+	const bound, contexts = 200, 1 << 14
+	galaGalopDFA.mu.Lock()
+	saved := struct {
+		gen                    *galaGalopDFAGen
+		peak, resets           int
+		maxStates, maxContexts int
+	}{galaGalopDFA.gen.Load(), galaGalopDFA.peak, galaGalopDFA.resets, galaGalopDFAMaxStates, galaGalopDFAMaxContexts}
+	galaGalopDFAMaxStates, galaGalopDFAMaxContexts = bound, contexts
+	galaGalopDFA.gen.Store(galaGalopNewDFAGen())
+	galaGalopDFA.peak, galaGalopDFA.resets = 0, 0
+	galaGalopDFA.mu.Unlock()
 	defer func() {
 		galaGalopDFA.mu.Lock()
-		galaGalopDFAMaxStates, galaGalopDFAMaxContexts = maxStates, maxContexts
-		galaGalopDFA.gen.Store(galaGalopNewDFAGen())
+		galaGalopDFA.gen.Store(saved.gen)
+		galaGalopDFA.peak, galaGalopDFA.resets = saved.peak, saved.resets
+		galaGalopDFAMaxStates, galaGalopDFAMaxContexts = saved.maxStates, saved.maxContexts
 		galaGalopDFA.mu.Unlock()
 	}()
-	const bound = 200
-	galaGalopDFA.mu.Lock()
-	galaGalopDFAMaxStates, galaGalopDFAMaxContexts = bound, 1<<14
-	galaGalopDFA.gen.Store(galaGalopNewDFAGen())
-	resetsBefore := galaGalopDFA.resets
-	galaGalopDFA.mu.Unlock()
 
-	var wg sync.WaitGroup
+	// Workers note each generation they see after a parse, so that replaced
+	// generations can be checked once every prediction is done with them.
 	var mu sync.Mutex
+	seen := map[*galaGalopDFAGen]bool{}
+	var wg sync.WaitGroup
 	next := make(chan int)
 	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				if got := parseResult(inputs[i]); got != want[i] {
-					mu.Lock()
+				got := parseResult(inputs[i])
+				g := galaGalopDFA.gen.Load()
+				mu.Lock()
+				seen[g] = true
+				if got != want[i] {
 					t.Errorf("input %d: the result changed with a bounded cache:\n got: %.200s\nwant: %.200s", i, got, want[i])
-					mu.Unlock()
 				}
+				mu.Unlock()
 			}
 		}()
 	}
 	for i := range inputs {
 		next <- i
-		if i%64 == 0 {
-			// A prediction extends the generation it started in, which may
-			// already have been replaced; the current one stays bounded.
-			if states, _, _ := galaGalopDFAStats(); states > bound {
-				t.Errorf("after %d inputs the cache holds %d states, past its bound of %d", i, states, bound)
-			}
-		}
 	}
 	close(next)
 	wg.Wait()
-	states, peak, resets := galaGalopDFAStats()
-	if states > bound {
-		t.Errorf("the cache holds %d states, past its bound of %d", states, bound)
+
+	galaGalopDFA.mu.Lock()
+	defer galaGalopDFA.mu.Unlock()
+	for g := range seen {
+		if n, c := len(g.states), len(g.pr.pool.kind); n > bound {
+			t.Errorf("a generation of the cache holds %d states (%d contexts), past its bound of %d", n, c, bound)
+		}
 	}
-	if resets == resetsBefore {
-		t.Fatalf("the cache never started over (%d states, peak %d)", states, peak)
+	if galaGalopDFA.resets < 10 || len(seen) < 10 {
+		t.Fatalf("the cache started over %d times, and the test saw %d generations; the bound was not exercised",
+			galaGalopDFA.resets, len(seen))
 	}
-	t.Logf("%d inputs: %d resets, peak %d states", len(inputs), resets-resetsBefore, peak)
+	if galaGalopDFA.peak > bound {
+		t.Errorf("the peak is %d states, past the bound of %d", galaGalopDFA.peak, bound)
+	}
+	t.Logf("%d inputs: %d resets, %d generations checked, peak %d states", len(inputs), galaGalopDFA.resets, len(seen), galaGalopDFA.peak)
 }
