@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "measure",
+    srcs = ["measure.go"],
+    importpath = "github.com/martianoff/galop/differential/measure",
+    visibility = ["//differential:__subpackages__"],
+)

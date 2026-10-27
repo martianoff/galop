@@ -1,0 +1,16 @@
+load("@rules_gala//gala:defs.bzl", "gala_binary")
+
+gala_binary(
+    name = "galop-sample",
+    srcs = ["main.gala"],
+    visibility = ["//differential:__subpackages__"],
+    deps = [
+        "//atn",
+        "//diag",  # keep: the generated Go names diag.Diagnostic
+        "//g4",
+        "//lexgen",
+        "//sample",
+        "@gala//collection_immutable",
+        "@gala//fs",
+    ],
+)

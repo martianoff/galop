@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "perf",
+    srcs = ["perf.go"],
+    importpath = "github.com/martianoff/galop/differential/perf",
+    visibility = ["//differential:__subpackages__"],
+)
+
+go_test(
+    name = "perf_test",
+    srcs = ["perf_test.go"],
+    embed = [":perf"],
+)
+
+# The performance gate's baseline: the numbers of main, which
+# //differential/cmd/perfgate judges every run against. Update it with
+#   bazel run //differential/cmd/perfgate -- -update=differential/perf/baseline.json
+exports_files(["baseline.json"])

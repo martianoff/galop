@@ -69,6 +69,7 @@ go_library(
         "registry.go",
         ":antlr_go",
         "galop_antlr.go",
+        "stats.go",
         ":galop_go",
         ":galop_tokens_go",
     ],

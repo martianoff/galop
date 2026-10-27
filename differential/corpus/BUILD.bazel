@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "corpus",
@@ -6,4 +6,10 @@ go_library(
     deps = ["@rules_go//go/runfiles"],
     importpath = "github.com/martianoff/galop/differential/corpus",
     visibility = ["//differential:__subpackages__"],
+)
+
+go_test(
+    name = "corpus_test",
+    srcs = ["corpus_test.go"],
+    embed = [":corpus"],
 )

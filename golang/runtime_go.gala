@@ -20,6 +20,14 @@ package golang
 // contexts have equal ids, and merged with ANTLR's rules, so configuration
 // sets, conflict subsets and DFA states are the ones ANTLR computes.
 val predictorSource = `
+// PFXStats counts one parse's work: Passes is how many times it parsed from
+// the first token (1 when the first pass succeeds), Predictions its runtime
+// (adaptive) predictions and FullContext its full-context ones. Plain fields
+// of the parser, so counting costs no synchronization.
+type PFXStats struct {
+	Passes, Predictions, FullContext int
+}
+
 // PFXEmptyReturn is the return state that marks the end of the outermost context.
 const PFXEmptyReturn = int32(0x7fffffff)
 
@@ -812,6 +820,7 @@ func PFXDFANext(d int, from *PFXDFAState, sym int, t int32, group bool) *PFXDFAS
 // goes to onConflict with its smallest alternative: a first pass that
 // succeeds with such choices is ANTLR's LL parse, and a wrong one is repaired.
 func (p *PARSER) adaptivePredict(d int) int {
+	p.stats.Predictions++
 	st := PFXDFA.starts[d].Load()
 	if st == nil {
 		st = PFXDFAStart(d)

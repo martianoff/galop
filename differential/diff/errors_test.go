@@ -8,6 +8,7 @@ import (
 
 	"github.com/martianoff/galop/differential/antlrgala"
 	"github.com/martianoff/galop/differential/gala"
+	"github.com/martianoff/galop/differential/mutate"
 	"github.com/martianoff/galop/differential/nativegala"
 )
 
@@ -45,7 +46,7 @@ func TestSyntaxErrors(t *testing.T) {
 	same := make([]int, len(flavors))
 	samePos := make([]int, len(flavors))
 	for checked < *errorMutants {
-		src := mutate(r, srcs[r.Intn(len(srcs))])
+		src := mutate.Mutate(r, srcs[r.Intn(len(srcs))])
 		if len(nativegala.Tokens(src).Errors) > 0 {
 			continue
 		}

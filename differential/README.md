@@ -19,12 +19,14 @@ at build time, never checked in. `go.mod` here exists for Bazel's `go_deps`.
 | `antlrgala/` | ANTLR's generated parser (`-package antlrgala`), galop's `antlr` flavor next to it, and `SameTypes`, the hook for parsers that build the same tree types |
 | `nativegala/` | galop's `native` flavor for `gala.g4` (`-package nativegala`, no ANTLR dependency) and GALA's line-break rule ported to its token list |
 | `gala/` | `Tokens`, `ParseANTLR`, the `Parser` type and the parser registry |
-| `corpus/` | Loading input: the Bazel corpus manifest, a directory, or files |
+| `corpus/` | Loading input: the Bazel corpus manifest, a directory, files, or `galop-sample` output |
 | `diff/` | Parallel tree comparison; the corpus tests (both flavors) and `testing.B` benchmarks |
 | `lexdiff/` | galop's generated lexers (both flavors) against ANTLR's, token by token over the corpus; lexer benchmarks |
 | `cmd/treedump` | Print each file's tree (ANTLR's `ToStringTree`) |
 | `cmd/difftest` | Compare two parsers over a corpus; exit 1 on any mismatch |
 | `cmd/bench` | Lexer and parser timings, warm and in a fresh process |
+| `cmd/perfgate` | The performance gate: counters and time ratios against `perf/baseline.json` (see [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md)) |
+| `perf/` | The gate's rules and its checked-in baseline |
 
 ## The corpus
 
@@ -51,6 +53,7 @@ bazel run //differential/cmd/difftest               # antlr-lenient vs antlr-ll 
 bazel run //differential/cmd/difftest -- -a antlr-sll -b antlr-ll
 bazel run //differential/cmd/treedump -- -parser antlr-ll path/to/file.gala
 bazel run -c opt //differential/cmd/bench           # timing table (Markdown)
+bazel run //differential/cmd/perfgate               # the performance gate (report only)
 bazel run -c opt //differential/diff:diff_test -- -test.run='^$' -test.bench=. -test.benchmem
 bazel test //differential/lexdiff:lexdiff_test         # galop's lexer vs ANTLR's, token by token
 ```
@@ -108,6 +111,13 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
   runtime prediction past deep nesting, several times in one input, with no
   viable alternative, and for an entry rule without EOF. On rejected inputs it
   also checks ANTLR's first error.
+- `generated_test` and `generated_deep_test` run `TestGeneratedMatchesANTLR`, `TestMutations` and
+  `TestSyntaxErrors` on random sentences of `gala.g4` that `galop-sample` generated with a
+  fixed seed (`//differential:samples`, `:samples_deep`): valid code no corpus has, and
+  mutated copies of it. Both flavors must give ANTLR's verdict, ANTLR's tree on accepted
+  input and ANTLR's first error on rejected input. `generated_large_1_test` to `_4_test`
+  (tagged `manual`) check 4,000 sentences and 10,000 mutants in four processes; CI runs it on pushes to `main`. See
+  [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md).
 - `//differential/errors:errors_test` checks both flavors' syntax errors against
   ANTLR's on mutations of programs in [`errors/Errors.g4`](errors/Errors.g4), a
   grammar galop decides without runtime prediction.

@@ -1,0 +1,29 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "sample",
+    srcs = ["sample.gala"],
+    importpath = "github.com/martianoff/galop/sample",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//atn",
+        "//lexgen",
+        "@gala//collection_immutable",
+    ],
+)
+
+gala_test(
+    name = "sample_test",
+    srcs = ["sample_test.gala"],
+    importpath = "github.com/martianoff/galop/sample",
+    lib_srcs = ["sample.gala"],
+    pkg = "sample",
+    deps = [
+        "//atn",
+        "//grammartest",
+        "//lexgen",
+        "@gala//collection_immutable",
+        "@gala//go_builtins",
+        "@gala//strings",
+    ],
+)

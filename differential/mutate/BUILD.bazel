@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "mutate",
+    srcs = ["mutate.go"],
+    importpath = "github.com/martianoff/galop/differential/mutate",
+    visibility = ["//differential:__subpackages__"],
+    deps = ["//differential/nativegala"],
+)

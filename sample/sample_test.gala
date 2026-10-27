@@ -1,0 +1,102 @@
+package sample
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+    "martianoff/gala/go_builtins"
+    "martianoff/gala/strings"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/grammartest"
+    "github.com/martianoff/galop/lexgen"
+)
+
+val exprGrammar = `grammar E;
+file: stmt* EOF;
+stmt: ID '=' expr ';' | 'if' '(' expr ')' '{' stmt* '}';
+expr: expr2 (('+' | '-') expr2)*;
+expr2: ID | INT | '(' expr ')' | ID '(' (expr (',' expr)*)? ')';
+ID: [a-z] [a-z0-9]*;
+INT: [0-9]+;
+WS: [ \t\r\n]+ -> skip;
+`
+
+// generated samples the first rule of grammar src.
+func generated(src string, opts Options) Either[string, Array[string]] {
+    val (g, c) = grammartest.Compile(src)
+    val built = lexgen.NewModel(c.Lexer.Get(), g.Channels).FlatMap((m) => lexgen.Build(m, lexgen.Options()))
+    val lexer = built match {
+        case Right(d) => d
+        case Left(errs) => go_builtins.Panic(s"lexgen: ${errs.MkString("; ")}")
+    }
+    Generate(c, lexer, 0, opts)
+}
+
+// sentencesOf is generated's sentences; a failure panics.
+func sentencesOf(src string, opts Options) Array[string] = generated(src, opts) match {
+    case Right(s) => s
+    case Left(msg) => go_builtins.Panic(msg)
+}
+
+// words splits a sentence at its separators.
+func words(s string) Array[string] = strings.Fields(s)
+
+func TestSameSeedSameSentences(t T) T {
+    val a = sentencesOf(exprGrammar, Options(Count = 20, Seed = 7))
+    val b = sentencesOf(exprGrammar, Options(Count = 20, Seed = 7))
+    val other = sentencesOf(exprGrammar, Options(Count = 20, Seed = 8))
+    val t1 = Eq(t, a, b)
+    NotEq(t1, a, other)
+}
+
+func TestSentencesUseTheGrammarsTokens(t T) T {
+    val all = sentencesOf(exprGrammar, Options(Count = 50, Seed = 1))
+    val t1 = Eq(t, all.Size(), 50)
+    // Every word is a token of the grammar: a literal, an identifier or a number.
+    val literals = ArrayOf("=", ";", "if", "(", ")", "{", "}", "+", "-", ",")
+    val isToken = (w string) bool =>
+        literals.Contains(w) || strings.TrimLeft(w, "abcdefghijklmnopqrstuvwxyz0123456789") == ""
+    val ws = all.FlatMap(words)
+    val t2 = IsTrue(t1, ws.NonEmpty())
+    IsTrue(t2, ws.ForAll(isToken))
+}
+
+func TestLimitsBoundTheSentences(t T) T {
+    // Past MaxTokens every choice takes the shortest way out, so a sentence
+    // ends soon after: at most the open rules' shortest completions.
+    val all = sentencesOf(exprGrammar, Options(Count = 30, Seed = 3, MaxTokens = 10, MaxNesting = 1))
+    IsTrue(t, all.ForAll((s) => words(s).Size() < 60))
+}
+
+func TestDeepOptionsNest(t T) T {
+    // With room to recurse, some sentence nests parentheses several deep.
+    val all = sentencesOf(exprGrammar, Options(Count = 200, Seed = 5, MaxNesting = 8, MaxTokens = 2000))
+    val depth = (s string) int => words(s).FoldLeft((0, 0), (acc, w) => w match {
+        case "(" => (acc.V1 + 1, atn.MaxInt(acc.V2, acc.V1 + 1))
+        case ")" => (acc.V1 - 1, acc.V2)
+        case _ => acc
+    }).V2
+    IsTrue(t, all.Exists((s) => depth(s) >= 4))
+}
+
+func TestTokensNoLexerRuleProducesAreNeverUsed(t T) T {
+    val src = `grammar U;
+tokens { VIRTUAL }
+file: (VIRTUAL | ID)+ EOF;
+ID: [a-z]+;
+WS: ' ' -> skip;
+`
+    // VIRTUAL has no text, so every word is an identifier.
+    val all = sentencesOf(src, Options(Count = 20, Seed = 1))
+    val t1 = Eq(t, all.Size(), 20)
+    IsTrue(t1, all.FlatMap(words).ForAll((w) => strings.TrimLeft(w, "abcdefghijklmnopqrstuvwxyz") == ""))
+}
+
+func TestARuleWithNoProducibleSentenceFails(t T) T {
+    val src = `grammar V;
+tokens { VIRTUAL }
+file: VIRTUAL EOF;
+ID: [a-z]+;
+`
+    IsTrue(t, generated(src, Options()).IsLeft())
+}

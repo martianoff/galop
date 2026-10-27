@@ -258,6 +258,7 @@ gala test                                        # unit tests
 gala build -o galop ./cmd/galop                  # the CLI
 ./galop -check -roundtrip testdata/grammars/*.g4 # the grammar corpus
 bazel test //...                                 # the same suite under Bazel
+bazel run //differential/cmd/perfgate            # the performance gate (docs/FUZZ_AND_PERF.md)
 ```
 
 ## License

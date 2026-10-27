@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
@@ -34,6 +35,9 @@ type Source struct {
 	Dir string
 	// Manifest is a file written by the corpus_manifest Bazel rule.
 	Manifest string
+	// Samples is a file galop-sample wrote, by runfiles location or path:
+	// generated sentences, named sample-0001 and on.
+	Samples string
 	// List is a file naming one input file per line.
 	List string
 	// Files are individual files.
@@ -46,6 +50,7 @@ func (s *Source) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&s.Dir, "dir", "", "read every .gala file under this directory")
 	fs.StringVar(&s.Manifest, "manifest", "", "read the files a corpus_manifest lists, by runfiles location (the Bazel corpus)")
 	fs.StringVar(&s.List, "list", "", "read the files this file names, one path per line")
+	fs.StringVar(&s.Samples, "samples", "", "read the sentences a galop-sample file holds, by runfiles location or path")
 }
 
 // Load reads the corpus s names, sorted by Name.
@@ -71,10 +76,12 @@ func (s Source) Load() ([]File, error) {
 		return files, nil
 	case s.Dir != "":
 		return FromDir(fromWorkingDir(s.Dir))
+	case s.Samples != "":
+		return FromSamples(s.Samples)
 	case s.Manifest != "":
 		return FromManifest(s.Manifest)
 	}
-	return nil, fmt.Errorf("no input: pass -dir, -manifest or files")
+	return nil, fmt.Errorf("no input: pass -dir, -samples, -manifest or files")
 }
 
 // FromDir reads every .gala file under root.
@@ -165,6 +172,51 @@ func sorted(files []File) []File {
 func fromWorkingDir(p string) string {
 	if wd := os.Getenv("BUILD_WORKING_DIRECTORY"); wd != "" && !filepath.IsAbs(p) {
 		return filepath.Join(wd, p)
+	}
+	return p
+}
+
+// FromSamples reads the sentences galop-sample wrote to samples (a runfiles
+// location, or else a path): each is its length in bytes on a line of its
+// own, then the sentence and a newline. File i is named sample-<i>, from 1.
+func FromSamples(samples string) ([]File, error) {
+	path := fromWorkingDir(Locate(samples))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var files []File
+	for rest := string(data); rest != ""; {
+		head, body, ok := strings.Cut(rest, "\n")
+		n, err := strconv.Atoi(head)
+		if !ok || err != nil || n < 0 || len(body) < n+1 || body[n] != '\n' {
+			return nil, fmt.Errorf("%s: malformed sample %d (a byte count line, the sentence, a newline)", samples, len(files)+1)
+		}
+		files = append(files, File{Name: fmt.Sprintf("sample-%04d", len(files)+1), Path: path, Src: body[:n]})
+		rest = body[n+1:]
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("%s: no samples", samples)
+	}
+	return files, nil
+}
+
+// WriteSamples writes srcs to path in the format FromSamples reads.
+func WriteSamples(path string, srcs []string) error {
+	var sb strings.Builder
+	for _, s := range srcs {
+		fmt.Fprintf(&sb, "%d\n%s\n", len(s), s)
+	}
+	return os.WriteFile(path, []byte(sb.String()), 0o644)
+}
+
+// Locate resolves a runfiles location to a path when it names one, and
+// otherwise returns p as it is.
+func Locate(p string) string {
+	if loc, err := runfiles.Rlocation(p); err == nil {
+		if _, err := os.Stat(loc); err == nil {
+			return loc
+		}
 	}
 	return p
 }
