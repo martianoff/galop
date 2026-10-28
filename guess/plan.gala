@@ -300,13 +300,13 @@ func regionFollows(a atn.ATN, edges Array[Array[edge]], root int) Array[Array[in
 
 // subset is a DFA under construction: the configuration sets of its states,
 // by key, in creation order.
-struct subset(index Ptr[m.HashMap[string, int]], sets Ptr[m.Array[closureResult]])
+struct subset(index Ptr[m.HashMap[Tuple[string, bool], int]], sets Ptr[m.Array[closureResult]])
 
-func newSubset() subset = subset(m.EmptyHashMap[string, int](), m.EmptyArray[closureResult]())
+func newSubset() subset = subset(m.EmptyHashMap[Tuple[string, bool], int](), m.EmptyArray[closureResult]())
 
 // add returns the state of r, creating it when new.
 func (b subset) add(r closureResult) int {
-    val key = keyOf(r.Configs) + (if (r.Ends) "E" else "")
+    val key = (keyOf(r.Configs), r.Ends)
     b.index.Get(key) match {
         case Some(id) => id
         case None() => {

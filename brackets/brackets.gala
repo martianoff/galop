@@ -82,10 +82,8 @@ func Analyze(a atn.ATN) Brackets {
     // One reason per pair, from the last phase that looked at it: a family
     // checked again replaces its first reasons.
     val all = droppedRejections.AppendAll(second.FlatMap(_.V2)).AppendAll(shared).AppendAll(first.FlatMap(_.V2))
-    // String keys: a HashSet of tuples or structs panics at runtime
-    // (martianoff/gala#880).
-    val key = (r BracketRejection) => s"${r.Opener}/${r.Closer}"
-    val rejected = all.FoldLeft((EmptyArray[BracketRejection](), EmptyHashSet[string]()), (acc, r) =>
+    val key = (r BracketRejection) => (r.Opener, r.Closer)
+    val rejected = all.FoldLeft((EmptyArray[BracketRejection](), EmptyHashSet[Tuple[int, int]]()), (acc, r) =>
         if (acc.V2.Contains(key(r))) acc else (acc.V1.Append(r), acc.V2.Add(key(r)))).V1
     Brackets(kept, g.openerSites(kept), rejected)
 }
@@ -262,9 +260,9 @@ func bracketShow(a atn.ATN, f BracketFamily) string =
 // brackets open there, innermost first.
 struct walkItem(State int, Open List[int])
 
-// key identifies the point for the walk's seen set; a string, since a
-// HashSet of structs panics at runtime (martianoff/gala#880).
-func (w walkItem) key() string = s"${w.State}/${w.Open.MkString(",")}"
+// key identifies the point for the walk's seen set. A List is neither
+// hashable nor comparable by value, so the open families are joined.
+func (w walkItem) key() Tuple[int, string] = (w.State, w.Open.MkString(","))
 
 // walkStep is what visiting a walk point gives: the points it moves on to,
 // the states after a closer that closes the bracket the walk started in, or
@@ -341,7 +339,7 @@ func (b bracketWalker) visit(w walkItem) walkStep {
 // before. It returns the states after the closings, or the first failure.
 func (b bracketWalker) walk(
     work List[walkItem],
-    seen HashSet[string],
+    seen HashSet[Tuple[int, string]],
     closed HashSet[int],
 ) Either[bracketFailure, HashSet[int]] = work match {
     case Cons(w, rest) => {
@@ -368,7 +366,7 @@ func (b bracketWalker) walk(
 func bracketWalk(a atn.ATN, families Array[BracketFamily], start walkItem) Either[bracketFailure, Array[int]] {
     val rule = a.RuleNames.Get(a.State(start.State).Rule)
     val b = bracketWalker(a, families, bracketTokens(families), rule, start.Open.NonEmpty())
-    b.walk(ListOf(start), EmptyHashSet[string](), EmptyHashSet[int]())
+    b.walk(ListOf(start), EmptyHashSet[Tuple[int, string]](), EmptyHashSet[int]())
         .Map((closed) => ArrayFromSlice(closed.ToGoSlice()).Sorted())
 }
 
