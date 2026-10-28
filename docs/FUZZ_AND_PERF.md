@@ -108,6 +108,11 @@ both corpora and both generated sets:
   Each must be well formed: children before parents, every node but the root a
   child exactly once, real tokens in order and at most once, spans in bounds. It
   must also print as ANTLR prints the recovered tree.
+- **`//differential/convert`** builds every test grammar (Expr, Calc, Labels, Errors,
+  Repair) with ANTLR, the antlr flavor with the converter and the native flavor with
+  its listener and visitor. It runs the two checks above on sentences `galop-sample`
+  generates and on mutants of them, and walks every tree with `Typed`, `Accept` and
+  `Walk`. Labels.g4 holds the labels ANTLR's fields keep only the last match of.
 - **`TestTypedVisitorListener`** (`diff_test`) checks `Typed`, `GalaAccept` and
   `GalaWalk` on the corpus trees and on recovered trees. Each node must get its
   rule's or labeled alternative's handle, and the walk must report the order

@@ -673,7 +673,7 @@ its context types, so code written against ANTLR's trees ports by renaming:
 | `ctx.(*ExpressionContext)`, `IExpressionContext` | `ExpressionNode` |
 | `ctx.Expression()`, `ctx.AllExpression()`, `ctx.Expression(i)` | the same |
 | `ctx.IDENTIFIER()`, `ctx.AllIDENTIFIER()` | the same, a `GalaTerminal` |
-| `ctx.GetGuard()` (a label) | the same |
+| `ctx.GetGuard()` (a label) | the same; a label that matches more than once gives its last match, as in ANTLR |
 | `switch c := ctx.(type) { case *TypedPatternContext: ... }` | `switch c := n.Typed().(type) { case *TypedPatternNode: ... }`, or `n.AsTypedPattern()` |
 | `ctx.GetText()`, `ctx.GetStart().GetLine()`, `ctx.GetStop()` | `n.GetText()`, `n.Start().Line`, `n.Stop()` |
 | `ctx.GetChildCount()`, `ctx.GetChild(i)`, `ctx.GetParent()` | `n.ChildCount()`, `n.Child(i)`, `n.Parent()` |
@@ -708,7 +708,7 @@ handles, for every rule and every labeled alternative (`gala.g4`: 83 rules and
 3 labeled alternatives, 86 kinds):
 
 - **`n.Typed()`** returns a pointer to the node's most specific handle, as
-  a `GalaNode` interface that every handle pointer satisfies (`Ref()` gives
+  a `GalaHandle` interface that every handle pointer satisfies (`Ref()` gives
   the `GalaNodeRef` back), so a type switch reads like ANTLR's:
   `switch p := n.Parent().Typed().(type) { case *PrimaryNode: … case *TypedPatternNode: … }`.
   A handle is two words, and putting one in an interface would allocate, so
@@ -742,7 +742,8 @@ returns the zero value.
 ### From ANTLR's tree to the native tree
 
 The antlr flavor, given `-DnativePackage=<import path of the native flavor's
-package>`, also writes `<grammar>_galop_native.go` into ANTLR's package:
+package>`, also writes `<grammar>_galop_native.go` into ANTLR's package (the
+option is an error with the native flavor, or when empty):
 
 ```go
 func GalaToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*native.GalaTree, native.GalaNodeRef)
@@ -783,7 +784,16 @@ The mapping:
 - **Labels.** For each context type with labels, generated code reads the
   label fields: a rule label sets its child's `Label`, a token label adds to
   `TokenLabels` (sorted by token, as native parsing records them), `+=` labels
-  loop over their list. The numbering is the native flavor's.
+  walk their list and the children together. The numbering is the native
+  flavor's. A field holds a list label's every match but another label's
+  last match only, while the native tree records every match. So where a
+  non-list label can match more than once in a node (`a=ID ',' a=ID`, a label
+  in a loop), the converter first aligns the node's children with its
+  alternatives' steps, generated as a small table per context type. The
+  alignment tries each choice's and loop's alternatives in ANTLR's order
+  (the lower alternative first), which is how ANTLR's parser chose between
+  matches of the same children. An error-recovered node that does not align
+  falls back to the fields.
 - **Errors.** ANTLR's error nodes become error tokens. A made-up token (token
   index -1) becomes a conjured token.
 

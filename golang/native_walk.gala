@@ -72,19 +72,20 @@ func nativeTyped(e env) string {
         val s = s"v.s${k.Method()}"
         s"$s, v.at[n.i] = append($s, ${k.Handle()}{n}), int32(len($s))"
     }, false)
-    fill(`// @X@Node is a node as a handle type (see Typed). Every handle type's
+    fill(`// @X@Handle is a node as a handle type (see Typed). Its name ends in Handle,
+// never Node, so no rule's or label's handle type can take it. Every handle type's
 // pointer is one, so a type switch over them reads like one over ANTLR's
 // context types:
 //
 //	switch c := n.Parent().Typed().(type) {
 //	case *PrimaryNode: ...
 //	}
-type @X@Node interface {
+type @X@Handle interface {
 	// Ref is the node itself.
 	Ref() @X@NodeRef
 }
 
-// Ref is n itself, so that every handle type is an @X@Node.
+// Ref is n itself, so that every handle type is an @X@Handle.
 func (n @X@NodeRef) Ref() @X@NodeRef { return n }
 
 // Typed is n as a pointer to its most specific handle: its labeled
@@ -92,7 +93,7 @@ func (n @X@NodeRef) Ref() @X@NodeRef { return n }
 // first call on a tree builds its typed view, once, safely from any
 // goroutine; after that Typed allocates nothing. The handle is shared: do not
 // write through the pointer.
-func (n @X@NodeRef) Typed() @X@Node {
+func (n @X@NodeRef) Typed() @X@Handle {
 	if !n.Ok() {
 		return nil
 	}

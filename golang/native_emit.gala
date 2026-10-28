@@ -96,7 +96,7 @@ func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
 	}
 	return HANDLE{@X@NodeRef{t, root}}, nil
 }
-`, "METHOD", nativeName(e.names.RuleMethod(r.Name)), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
+`, "METHOD", e.names.RuleMethod(r.Name), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
     "HANDLE", nodeType(r.Name), "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported(),
     "REPAIR", s"${e.repairPlan.Repairs(r.Index)}", "START", s"${e.parser.RuleStart.Get(r.Index)}")
 
@@ -104,7 +104,8 @@ func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
 func nodeType(ruleOrLabel string) string = capitalize(ruleOrLabel) + "Node"
 
 // nativeReserved are the methods every handle has; an accessor whose name
-// would clash with one gets a trailing underscore.
+// would clash with one gets a trailing underscore (the package-level Parse
+// functions are never escaped).
 val nativeReserved = ArrayOf(
     "Ok", "Tree", "Index", "Rule", "Alt", "Start", "Stop", "StartIndex", "StopIndex", "GetText",
     "SourceText", "ChildCount", "Child", "Parent", "Token", "Tokens", "HiddenBefore", "Walk", "ToStringTree",
@@ -278,11 +279,11 @@ func labelAccessor(e env, t string, lu labelUse, list bool, id int) string {
         case Some(rule) => {
             val h = nodeType(e.ruleName(rule))
             if (list) s"// $name is the nodes stored under label ${lu.Name}.\nfunc (n $t) $name() []$h {\n\treturn ${e.pfx}Labeled[$h](n.${e.exported()}NodeRef, $id)\n}\n\n"
-            else s"// $name is the node stored under label ${lu.Name}, or no node.\nfunc (n $t) $name() $h {\n\treturn $h{n.firstLabeled($id)}\n}\n\n"
+            else s"// $name is the node stored under label ${lu.Name} (its last match), or no node.\nfunc (n $t) $name() $h {\n\treturn $h{n.lastLabeled($id)}\n}\n\n"
         }
         case None() =>
             if (list) s"// $name is the tokens stored under label ${lu.Name}.\nfunc (n $t) $name() []$term {\n\treturn n.labeledTokens($id)\n}\n\n"
-            else s"// $name is the token stored under label ${lu.Name}, or no token.\nfunc (n $t) $name() $term {\n\treturn n.firstLabeledToken($id)\n}\n\n"
+            else s"// $name is the token stored under label ${lu.Name} (its last match), or no token.\nfunc (n $t) $name() $term {\n\treturn n.lastLabeledToken($id)\n}\n\n"
     }
 }
 
@@ -768,11 +769,13 @@ func (n @X@NodeRef) tokenAt(ttype int32, k int) @X@Terminal {
 	return @X@Terminal{n.t, -1}
 }
 
-// firstLabeled is n's first child node stored under label, or no node.
-func (n @X@NodeRef) firstLabeled(label uint8) @X@NodeRef {
+// lastLabeled is n's last child node stored under label, or no node: as in
+// ANTLR, where a label that matches more than once keeps its last match.
+func (n @X@NodeRef) lastLabeled(label uint8) @X@NodeRef {
 	if n.Ok() {
-		for _, c := range n.kids() {
-			if c >= 0 && n.t.Nodes[c].Label == label {
+		kids := n.kids()
+		for i := len(kids) - 1; i >= 0; i-- {
+			if c := kids[i]; c >= 0 && n.t.Nodes[c].Label == label {
 				return @X@NodeRef{n.t, c}
 			}
 		}
@@ -804,10 +807,11 @@ func (n @X@NodeRef) labeledTokens(label uint8) []@X@Terminal {
 	return out
 }
 
-// firstLabeledToken is n's first token stored under label, or no token.
-func (n @X@NodeRef) firstLabeledToken(label uint8) @X@Terminal {
+// lastLabeledToken is n's last token stored under label, or no token (see
+// lastLabeled).
+func (n @X@NodeRef) lastLabeledToken(label uint8) @X@Terminal {
 	if toks := n.labeledTokens(label); len(toks) > 0 {
-		return toks[0]
+		return toks[len(toks)-1]
 	}
 	return @X@Terminal{n.t, -1}
 }
@@ -844,7 +848,7 @@ func (c @X@Child) IsToken() bool { return c.ref < 0 }
 // IsError reports whether the child is an error token (see @X@Tree), as
 // ANTLR's ErrorNode is a TerminalNode.
 func (c @X@Child) IsError() bool {
-	if len(c.t.ErrorKids) == 0 {
+	if c.t == nil || len(c.t.ErrorKids) == 0 {
 		return false
 	}
 	_, found := slices.BinarySearch(c.t.ErrorKids, c.pos)

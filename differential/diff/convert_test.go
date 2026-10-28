@@ -45,7 +45,10 @@ func recovered(tb testing.TB, n int, check func(i int, src string, tree *nativeg
 		if len(nativegala.Tokens(src).Errors) > 0 {
 			continue
 		}
-		if tree, _, ctx, err := converted(src); err != nil {
+		// Only the mutants ANTLR rejects are converted.
+		stream := gala.Tokens(src)
+		if ctx, err := gala.Lenient(stream); err != nil {
+			tree, _ := antlrgala.GalaToNative(ctx, stream, src)
 			i++
 			check(i, src, tree, ctx)
 		}

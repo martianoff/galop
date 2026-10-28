@@ -375,7 +375,7 @@ X : 'x' ; Y : 'y' ;
 func TestNativeTypedViewAndListener(t T) T {
     val parser = nativeFiles(exprGrammar).Get("expr_parser.go").GetOrElse("")
     val expected = ArrayOf(
-        "func (n ExprNodeRef) Typed() ExprNode",
+        "func (n ExprNodeRef) Typed() ExprHandle",
         // A labeled rule's kinds: its labeled alternatives, then the rule's own.
         "\t\tcase 2:\n\t\t\treturn &v.sAssign[j]",
         "\t\tdefault:\n\t\t\treturn &v.sStat[j]",
@@ -410,8 +410,10 @@ func TestConverterFile(t T) T = generate(exprGrammar, converterDefines) match {
             // Each context type maps to its rule and labeled alternative.
             "\tcase *AssignContext:\n\t\treturn uint16(galopnative.ExprRULE_stat), 2",
             "\tcase *StatContext:\n\t\treturn uint16(galopnative.ExprRULE_stat), 0",
-            // The token label op is read from ANTLR's field.
-            "\tcase *ExprContext:\n\t\tc.labelToken(x.op, 1, id)",
+            // op labels a token in a loop, where ANTLR's field holds only the
+            // last match: the children are aligned with the steps first.
+            "\tcase *ExprContext:\n\t\tif c.align(ExprGalopAlignExpr, id) {\n\t\t\tbreak\n\t\t}\n\t\tc.labelToken(x.op, 1, id)",
+            "var ExprGalopAlignExpr = []ExprGalopStep{{op: ExprGalopOpChoose, exit: -1, alts: [][]ExprGalopStep{{{op: ExprGalopOpRule",
         )
         expected.FoldLeft(t1, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
     }
@@ -421,3 +423,14 @@ func TestConverterFile(t T) T = generate(exprGrammar, converterDefines) match {
 func TestNoConverterWithoutNativePackage(t T) T =
     Eq(t, generate(exprGrammar, antlrDefines).Map((files) => files.Map(_.Name)),
         Right[Array[string], Array[string]](ArrayOf("expr_galop_parser.go", "expr_galop_lexer.go")))
+
+func TestNativePackageNeedsTheANTLRFlavorAndAPackage(t T) T {
+    val withNative = generate(exprGrammar, ArrayOf(g4.OptionEntry("nativePackage", "example.com/expr/native")))
+    val empty = generate(exprGrammar, ArrayOf(g4.OptionEntry("flavor", "antlr"), g4.OptionEntry("nativePackage", "")))
+    val t1 = Eq(t, withNative.Map((fs) => fs.Map(_.Name)), Left[Array[string], Array[string]](ArrayOf(
+        "nativePackage=example.com/expr/native needs flavor=antlr: it adds a converter to the antlr flavor's output",
+    )))
+    Eq(t1, empty.Map((fs) => fs.Map(_.Name)), Left[Array[string], Array[string]](ArrayOf(
+        "nativePackage must name the native flavor's Go package, not be empty",
+    )))
+}
