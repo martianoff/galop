@@ -1,0 +1,318 @@
+// Code generated from convert_test.go.tmpl for grammar @G@. DO NOT EDIT.
+
+// Package convert checks, for one grammar, that galop's generated code
+// compiles and that the converter from ANTLR's trees gives native parsing's
+// tree: on generated sentences, ANTLR's tree and galop's antlr-flavor tree
+// convert to the native tree exactly; on mutants ANTLR rejects, the converted
+// recovered tree is well formed and prints as ANTLR's. It also runs the native
+// typed view, listener and visitor over every tree.
+package convert
+
+import (
+	"flag"
+	"fmt"
+	"math/rand"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/antlr4-go/antlr/v4"
+
+	ga "@ANTLRPKG@"
+	gn "@NATIVEPKG@"
+	"github.com/martianoff/galop/differential/corpus"
+)
+
+var (
+	samples = flag.String("samples", "", "galop-sample output to read")
+	mutants = flag.Int("mutants", 200, "how many rejected mutants to convert")
+)
+
+// errorListener keeps ANTLR's first lexical or syntax error.
+type errorListener struct {
+	*antlr.DefaultErrorListener
+	err error
+}
+
+func (l *errorListener) SyntaxError(_ antlr.Recognizer, _ interface{}, line, column int, msg string, _ antlr.RecognitionException) {
+	if l.err == nil {
+		l.err = fmt.Errorf("%d:%d: %s", line, column, msg)
+	}
+}
+
+// parseANTLR parses src with ANTLR, recovering from errors, and returns the
+// tree, its token stream and the first error.
+func parseANTLR(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStream, error) {
+	errs := &errorListener{DefaultErrorListener: antlr.NewDefaultErrorListener()}
+	lexer := ga.New@G@Lexer(antlr.NewInputStream(src))
+	lexer.RemoveErrorListeners()
+	lexer.AddErrorListener(errs)
+	stream := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
+	p := ga.New@G@Parser(stream)
+	p.RemoveErrorListeners()
+	p.AddErrorListener(errs)
+	return p.@START@(), stream, errs.err
+}
+
+// parseFlavor parses src with galop's antlr flavor.
+func parseFlavor(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStream, error) {
+	stream := antlr.NewCommonTokenStream(ga.New@G@GalopLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel)
+	ctx, err := ga.New@G@GalopParser(stream).@START@()
+	return ctx, stream, err
+}
+
+// parseNative parses src with the native flavor; a lexical error is an error.
+func parseNative(src string) (*gn.@G@Tree, error) {
+	ts := gn.@G@Lex(src)
+	if len(ts.Errors) > 0 {
+		return nil, fmt.Errorf("lexical error %v", &ts.Errors[0])
+	}
+	root, err := gn.Parse@START@(ts)
+	if err != nil {
+		return nil, err
+	}
+	return root.Tree(), nil
+}
+
+func sentences(t *testing.T) []string {
+	fs, err := corpus.FromSamples(*samples)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcs := make([]string, len(fs))
+	for i, f := range fs {
+		srcs[i] = f.Src
+	}
+	return srcs
+}
+
+// sameTree describes the first difference between two native trees, or "".
+func sameTree(want, got *gn.@G@Tree) string {
+	switch {
+	case !reflect.DeepEqual(want.Tokens, got.Tokens):
+		return "tokens differ"
+	case !reflect.DeepEqual(want.Hidden, got.Hidden):
+		return "hidden tokens differ"
+	case !slices.Equal(want.Nodes, got.Nodes):
+		return fmt.Sprintf("nodes differ:\n%+v\nwant\n%+v", got.Nodes, want.Nodes)
+	case !slices.Equal(want.Kids, got.Kids):
+		return "child references differ"
+	case !slices.Equal(want.TokenLabels, got.TokenLabels):
+		return fmt.Sprintf("token labels %+v, want %+v", got.TokenLabels, want.TokenLabels)
+	case want.Next != got.Next:
+		return fmt.Sprintf("next token %d, want %d", got.Next, want.Next)
+	case len(got.ErrorKids)+len(got.Conjured) > 0:
+		return "error tokens in a tree native parsing accepts"
+	}
+	return ""
+}
+
+// TestConvertMatchesNative converts ANTLR's tree and the antlr flavor's of
+// every sentence native parsing accepts, and requires native parsing's tree.
+func TestConvertMatchesNative(t *testing.T) {
+	accepted := 0
+	for i, src := range sentences(t) {
+		want, err := parseNative(src)
+		if err != nil {
+			continue
+		}
+		accepted++
+		ctx, stream, aerr := parseANTLR(src)
+		if aerr != nil {
+			t.Errorf("sentence %d: native parsing accepts, ANTLR reports %v\n%s", i, aerr, src)
+			continue
+		}
+		got, _ := ga.@G@ToNative(ctx, stream, src)
+		if d := sameTree(want, got); d != "" {
+			t.Errorf("sentence %d: converted ANTLR tree: %s\n%s", i, d, src)
+		}
+		fctx, fstream, ferr := parseFlavor(src)
+		if ferr != nil {
+			t.Errorf("sentence %d: galop's antlr flavor reports %v", i, ferr)
+			continue
+		}
+		fgot, _ := ga.@G@ToNative(fctx, fstream, src)
+		if d := sameTree(want, fgot); d != "" {
+			t.Errorf("sentence %d: converted antlr-flavor tree: %s\n%s", i, d, src)
+		}
+		for _, tree := range []*gn.@G@Tree{want, got, fgot} {
+			if msg := walkAll(tree); msg != "" {
+				t.Errorf("sentence %d: %s", i, msg)
+			}
+		}
+	}
+	if accepted == 0 {
+		t.Fatal("native parsing accepts no sentence")
+	}
+	t.Logf("%d sentences converted and compared", accepted)
+}
+
+// mutate drops, doubles or swaps a token of src, or copies one elsewhere.
+func mutate(r *rand.Rand, src string) string {
+	toks := gn.@G@Lex(src).Tokens
+	if len(toks) < 3 {
+		return src
+	}
+	a, b := toks[r.Intn(len(toks)-1)], toks[r.Intn(len(toks)-1)]
+	text := func(t gn.@G@Token) string { return src[t.Start:t.End] }
+	switch r.Intn(4) {
+	case 0:
+		return src[:a.Start] + src[a.End:]
+	case 1:
+		return src[:a.End] + " " + text(a) + src[a.End:]
+	case 2:
+		return src[:a.Start] + text(b) + src[a.End:]
+	}
+	return src[:a.End] + " " + text(b) + " " + src[a.End:]
+}
+
+// TestConvertRecoveredTrees converts ANTLR's error-recovered trees of mutants
+// it rejects and requires a well-formed tree that prints as ANTLR's.
+func TestConvertRecoveredTrees(t *testing.T) {
+	srcs := sentences(t)
+	r := rand.New(rand.NewSource(1))
+	converted, withErrors := 0, 0
+	for tries := 0; converted < *mutants && tries < 50**mutants; tries++ {
+		src := mutate(r, srcs[r.Intn(len(srcs))])
+		if len(gn.@G@Lex(src).Errors) > 0 {
+			continue
+		}
+		ctx, stream, err := parseANTLR(src)
+		if err == nil {
+			continue
+		}
+		converted++
+		i := converted
+		tree, _ := ga.@G@ToNative(ctx, stream, src)
+		if msg := wellFormed(tree); msg != "" {
+			t.Errorf("mutant %d: %s\n%s", i, msg, src)
+			continue
+		}
+		if got, want := tree.Root().ToStringTree(), antlr.TreesStringTree(ctx, gn.@G@RuleNames, nil); got != want {
+			t.Errorf("mutant %d: prints\n%s\nwant\n%s", i, got, want)
+		}
+		if msg := walkAll(tree); msg != "" {
+			t.Errorf("mutant %d: %s", i, msg)
+		}
+		if len(tree.ErrorKids) > 0 {
+			withErrors++
+		}
+	}
+	if converted == 0 {
+		t.Fatal("no mutant was rejected, so no recovered tree was converted")
+	}
+	t.Logf("%d recovered trees converted, %d with error tokens", converted, withErrors)
+}
+
+// wellFormed describes the first way tree breaks the native tree's
+// invariants, or "".
+func wellFormed(tree *gn.@G@Tree) string {
+	nTokens := len(tree.Tokens) + len(tree.Conjured)
+	parents := make([]int, len(tree.Nodes))
+	for i := range parents {
+		parents[i] = -1
+	}
+	for i, n := range tree.Nodes {
+		if n.Stop < n.Start-1 || n.Start < 0 || int(n.Start) > len(tree.Tokens) || int(n.Stop) >= len(tree.Tokens) {
+			return fmt.Sprintf("node %d spans %d..%d of %d tokens", i, n.Start, n.Stop, len(tree.Tokens))
+		}
+		if n.Kids < 0 || int(n.Kids+n.NKids) > len(tree.Kids) {
+			return fmt.Sprintf("node %d's children are out of range", i)
+		}
+		for _, k := range tree.Kids[n.Kids : n.Kids+n.NKids] {
+			switch {
+			case k >= int32(i):
+				return fmt.Sprintf("node %d has child %d, which does not come before it", i, k)
+			case k >= 0 && parents[k] >= 0:
+				return fmt.Sprintf("node %d is a child of %d and %d", k, parents[k], i)
+			case k >= 0:
+				parents[k] = i
+			case int(-k-1) >= nTokens:
+				return fmt.Sprintf("node %d has token child %d of %d", i, -k-1, nTokens)
+			}
+		}
+	}
+	for i, p := range parents[:len(parents)-1] {
+		if p < 0 {
+			return fmt.Sprintf("node %d has no parent", i)
+		}
+	}
+	for i, p := range tree.ErrorKids {
+		if p < 0 || int(p) >= len(tree.Kids) || tree.Kids[p] >= 0 || (i > 0 && p <= tree.ErrorKids[i-1]) {
+			return fmt.Sprintf("error token %d is not a token child in order", i)
+		}
+	}
+	return ""
+}
+
+// counter counts what Walk reports.
+type counter struct {
+	gn.@G@BaseListener
+	enter, exit, tokens, errs int
+}
+
+func (c *counter) EnterEveryRule(gn.@G@NodeRef)  { c.enter++ }
+func (c *counter) ExitEveryRule(gn.@G@NodeRef)   { c.exit++ }
+func (c *counter) VisitTerminal(gn.@G@Terminal)  { c.tokens++ }
+func (c *counter) VisitErrorNode(gn.@G@Terminal) { c.errs++ }
+
+// visitor is the base visitor, which every node is accepted by.
+type visitor struct{ gn.@G@BaseVisitor[int] }
+
+// walkAll runs Typed, Accept and Walk over tree and checks what they see.
+func walkAll(tree *gn.@G@Tree) string {
+	tokens := 0
+	for i := range tree.Nodes {
+		n := tree.Node(i)
+		h := n.Typed()
+		if h == nil || h.Ref() != n {
+			return fmt.Sprintf("node %d: Typed gives %v", i, h)
+		}
+		if ty := reflect.TypeOf(h); ty.Kind() != reflect.Pointer || !strings.HasSuffix(ty.Elem().Name(), "Node") {
+			return fmt.Sprintf("node %d: Typed gives a %v", i, ty)
+		}
+		gn.@G@Accept[int](n, visitor{})
+		for j := 0; j < n.ChildCount(); j++ {
+			if n.Child(j).IsToken() {
+				tokens++
+			}
+		}
+	}
+	c := &counter{}
+	gn.@G@Walk(tree.Root(), c)
+	switch {
+	case c.enter != len(tree.Nodes) || c.exit != len(tree.Nodes):
+		return fmt.Sprintf("Walk entered %d and left %d of %d nodes", c.enter, c.exit, len(tree.Nodes))
+	case c.tokens+c.errs != tokens || c.errs != len(tree.ErrorKids):
+		return fmt.Sprintf("Walk reported %d tokens and %d error tokens of %d and %d", c.tokens, c.errs, tokens, len(tree.ErrorKids))
+	}
+	return ""
+}
+
+// BenchmarkConvert converts ANTLR's trees of the sentences native parsing
+// accepts (built once, outside the timing).
+func BenchmarkConvert(b *testing.B) {
+	fs, err := corpus.FromSamples(*samples)
+	if err != nil {
+		b.Fatal(err)
+	}
+	type parsed struct {
+		ctx    antlr.ParserRuleContext
+		stream *antlr.CommonTokenStream
+		src    string
+	}
+	var trees []parsed
+	for _, f := range fs {
+		if ctx, stream, err := parseANTLR(f.Src); err == nil {
+			trees = append(trees, parsed{ctx, stream, f.Src})
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		for _, t := range trees {
+			ga.@G@ToNative(t.ctx, t.stream, t.src)
+		}
+	}
+}

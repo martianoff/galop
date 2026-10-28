@@ -1,0 +1,570 @@
+package golang
+
+import (
+    "strconv"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// The converter from ANTLR's parse trees to galop's native tree. The antlr
+// flavor writes it, with `-DnativePackage=<import path of the native
+// flavor's package>`, next to ANTLR's generated code, whose context types it
+// reads: it converts trees from ANTLR's own parser (error-recovered ones
+// included) and from galop's antlr flavor, which builds the same types.
+
+// ConverterFileName names the converter file of a grammar: `gala_galop_native.go`.
+func converterFileName(base string) string = base + "_galop_native.go"
+
+// antlrConverter emits the converter of the grammar e describes; nx is the
+// native flavor's exported prefix (`Gala`) and nativeImport its package.
+func antlrConverter(
+    e env,
+    pkg string,
+    version string,
+    grammarFile string,
+    nx string,
+    nativeImport string,
+) string {
+    val kinds = nodeKinds(e)
+    val kindCases = kinds.Map((k) =>
+        s"\tcase *${e.names.Context(k.Name)}:\n\t\treturn uint16(galopnative.${nx}RULE_${k.Rule.Name}), ${k.Alt}"
+    ).MkString("\n")
+    val labelCases = kinds.Collect((k) => labelStores(e, k) match {
+        case Array() => None[string]()
+        case stores => Some(s"\tcase *${e.names.Context(k.Name)}:\n" + stores.MkString("\n"))
+    }).MkString("\n")
+    val labelSwitch = if (labelCases == "") "" else s"\tswitch x := ctx.(type) {\n$labelCases\n\t}"
+    val lp = internal(e)
+    val aligned = kinds.Filter(aligns).Map((k) =>
+        s"// ${lp}Align${k.Method()} is the automaton of ${k.Name}'s alternatives (see align).\n" +
+            s"var ${lp}Align${k.Method()} = ${lp}NewNFA([]${lp}Step{{op: ${lp}OpChoose, exit: -1, alts: ${altsLiteral(lp, kindAlts(k).Map(_.Steps), ruleLabels(k.Rule))}}})\n"
+    ).MkString("\n")
+    fill(converterTemplate, "VERSION", version, "FILE", grammarFile, "PACKAGE", pkg, "IMPORT", strconv.Quote(nativeImport),
+        "KINDS", kindCases, "LABELS", labelSwitch, "ALIGNED", aligned, "@N@", nx, "LPFX", internal(e))
+}
+
+// internal is the prefix of the converter's unexported names: `exprGalop`.
+func internal(e env) string = decapitalize(e.pfx)
+
+// kindAlts are the alternatives of rule k.Rule whose nodes are of kind k.
+func kindAlts(k nodeKind) Array[atn.AltIR] =
+    if (k.Alt == 0) k.Rule.Alts.Filter(_.Label.IsEmpty()) else k.Rule.Alts.Filter(_.Label == Some(k.Name))
+
+// labelStores are the statements that record the labels of kind k's nodes,
+// numbered as the native flavor numbers them (see labelGroups): a rule label
+// sets its child node's Label, a token label adds to the tree's TokenLabels.
+// They read ANTLR's label fields, which hold every match of a list label but
+// only the last match of another label. Where a non-list label can match more
+// than once, the kind's children are first aligned with its alternatives'
+// steps to find every match (see align). The fields are the fallback where
+// ANTLR's parser recovered from an error inside the rule, or the node does not
+// align. The aligner runs no semantic predicates: the Go target rejects
+// grammars with them, so no converter meets one.
+func labelStores(e env, k nodeKind) Array[string] {
+    val fields = labelGroups(kindAlts(k).FlatMap(_.Steps), ruleLabels(k.Rule)).Map((g) => {
+        val field = s"x.${e.names.LabelField(g.Use.Name)}"
+        // A list's nodes come in the order of the children, so one walk
+        // over the children finds them all.
+        if (g.Use.Rule.IsDefined() && g.List)
+            s"\t\tfor j, l := mark, 0; l < len($field); l++ {\n\t\t\tj = c.labelNode($field[l], ${g.Number}, ctx, mark, j)\n\t\t}"
+        else if (g.Use.Rule.IsDefined()) s"\t\tc.labelNode($field, ${g.Number}, ctx, mark, mark)"
+        else if (g.List) s"\t\tfor _, l := range $field {\n\t\t\tc.labelToken(l, ${g.Number}, id)\n\t\t}"
+        else s"\t\tc.labelToken($field, ${g.Number}, id)"
+    })
+    if (fields.NonEmpty() && aligns(k))
+        ArrayOf(s"\t\tif !${internal(e)}Recovered(&x.BaseParserRuleContext) && c.align(${internal(e)}Align${k.Method()}, id) {\n\t\t\tbreak\n\t\t}").AppendAll(fields)
+    else fields
+}
+
+// aligns reports whether kind k's nodes are aligned: they have a non-list
+// label that can match more than once in a node, so that ANTLR's field holds
+// only its last match.
+func aligns(k nodeKind) bool {
+    val alts = kindAlts(k)
+    labelGroups(alts.FlatMap(_.Steps), ruleLabels(k.Rule)).Exists((g) =>
+        !g.List && alts.Exists((a) => labelCount(g.Use.Name, a.Steps) > 1)
+    )
+}
+
+// labelCount is how many times label name can match along one path through
+// steps: 2 stands for more than once.
+func labelCount(name string, steps Array[atn.Step]) int = steps.FoldLeft(0, (n, s) => n + (s match {
+    case atn.MatchToken(_, Some(l)) if l.Name == name => 1
+    case atn.MatchSet(_, Some(l), _) if l.Name == name => 1
+    case atn.CallRule(_, _, Some(l)) if l.Name == name => 1
+    case atn.Choose(_, alts, _) => alts.Map((a) => labelCount(name, a)).FoldLeft(0, (m, c) => if (c > m) c else m)
+    case atn.Loop(_, _, _, body) => if (labelCount(name, body) > 0) 2 else 0
+    case _ => 0
+}))
+
+// altsLiteral is alternatives of steps as a Go [][]<pfx>Step literal.
+func altsLiteral(pfx string, alts Array[Array[atn.Step]], labels Array[string]) string =
+    s"[][]${pfx}Step{" + alts.Map((a) => "{" + a.Collect((s) => stepLiteral(pfx, s, labels)).MkString(", ") + "}").MkString(", ") + "}"
+
+// stepLiteral is step s as a Go <pfx>Step literal; actions and predicates match
+// nothing and have none.
+func stepLiteral(pfx string, s atn.Step, labels Array[string]) Option[string] {
+    val num = (l Option[atn.LabelRef]) => l.Map((r) => labels.IndexOf(r.Name) + 1).GetOrElse(0)
+    s match {
+        case atn.MatchToken(tok, l) => Some(s"{op: ${pfx}OpToken, sym: $tok, label: ${num(l)}}")
+        case atn.MatchSet(set, l, _) =>
+            Some(s"{op: ${pfx}OpSet, set: []int32{${set.Ranges.FlatMap((r) => ArrayOf(r.Lo, r.Hi)).MkString(", ")}}, label: ${num(l)}}")
+        case atn.CallRule(rule, _, l) => Some(s"{op: ${pfx}OpRule, sym: $rule, label: ${num(l)}}")
+        case atn.Choose(_, alts, exit) => {
+            // The exit alternative, if any, is tried where its number puts it.
+            val order = exit match {
+                case Some(1) => 0
+                case Some(_) => 1
+                case None() => -1
+            }
+            Some(s"{op: ${pfx}OpChoose, exit: $order, alts: ${altsLiteral(pfx, alts, labels)}}")
+        }
+        case atn.Loop(plus, _, cont, body) =>
+            Some(s"{op: ${pfx}OpLoop, plus: $plus, cont: ${cont == 1}, alts: ${altsLiteral(pfx, ArrayOf(body), labels)}}")
+        case _ => None()
+    }
+}
+
+val converterTemplate = `// Code generated by galop VERSION from FILE. DO NOT EDIT.
+
+package PACKAGE
+
+import (
+	"reflect"
+	"slices"
+	"sync"
+	"unicode/utf8"
+
+	"github.com/antlr4-go/antlr/v4"
+
+	galopnative IMPORT
+)
+
+// @N@ToNative converts root, a parse tree of ANTLR's context types whose
+// tokens come from stream, to galop's native tree over src, the text stream
+// read, and returns the tree and its root. root may come from ANTLR's
+// parser, error-recovered or not, or from galop's antlr flavor. Where native
+// parsing accepts the input, the result is the tree it builds: the same
+// tokens, nodes, alternatives, labels and spans. ANTLR's error nodes become
+// error tokens (see galopnative.@N@Tree), and the tokens its recovery made up
+// ("<missing ')'>") the tree's conjured tokens.
+func @N@ToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.@N@Tree, galopnative.@N@NodeRef) {
+	stream.Fill()
+	// The conversion's scratch slices are reused from earlier conversions.
+	c := LPFXScratch.Get().(*LPFXToNative)
+	defer LPFXScratch.Put(c)
+	c.tree, c.last, c.nfa, c.alignKids = &galopnative.@N@Tree{}, -1, nil, nil
+	c.offset, c.kids, c.errs = c.offset[:0], c.kids[:0], c.errs[:0]
+	c.tree.@N@Tokens = c.tokens(stream.GetAllTokens(), src)
+	// The native parser's estimates: a tree rarely outgrows them.
+	n := len(c.tree.Tokens)
+	c.tree.Nodes, c.tree.Kids = make([]galopnative.@N@NodeData, 0, 4*n+4), make([]int32, 0, 5*n+4)
+	c.node(root)
+	t := c.tree
+	if r := t.Nodes[len(t.Nodes)-1]; r.Stop >= r.Start && t.Tokens[r.Stop].Type == galopnative.@N@EOF {
+		t.Next = int(r.Stop)
+	} else {
+		t.Next = int(r.Stop) + 1
+	}
+	c.tree = nil
+	return t, t.Root()
+}
+
+// LPFXScratch holds conversion states whose slices later conversions reuse.
+var LPFXScratch = sync.Pool{New: func() any { return &LPFXToNative{} }}
+
+// LPFXToNative is one conversion's state: the tree, where each stream token
+// went, and the children of the nodes being converted.
+type LPFXToNative struct {
+	tree *galopnative.@N@Tree
+	// index maps a stream token to its native token, -1 for an off-channel one.
+	index []int32
+	// offset maps a code point index to a byte offset in the source; empty
+	// when the source is ASCII and the two are the same.
+	offset []int32
+	srcLen int32
+	// last is the native index of the last real token converted, so a
+	// conjured token sits before the one after it.
+	last int32
+	// kids are the child references of the nodes being converted, one per
+	// ANTLR child; errs the positions in kids of error tokens.
+	kids []int32
+	errs []int
+	// The alignment's state, kept between nodes (see align).
+	nfa         *LPFXNFA
+	alignKids   []int32
+	alignLabels []uint8
+	failed      []bool
+}
+
+// tokens converts the stream's tokens: the default channel's become the
+// native tokens, the others the hidden ones.
+func (c *LPFXToNative) tokens(all []antlr.Token, src string) *galopnative.@N@Tokens {
+	c.srcLen = int32(len(src))
+	if !LPFXIsASCII(src) {
+		c.offset = slices.Grow(c.offset[:0], utf8.RuneCountInString(src)+1)
+		for i := range src {
+			c.offset = append(c.offset, int32(i))
+		}
+		c.offset = append(c.offset, c.srcLen)
+	}
+	ts := &galopnative.@N@Tokens{Src: src, Tokens: make([]galopnative.@N@Token, 0, len(all))}
+	c.index = slices.Grow(c.index[:0], len(all))[:len(all)]
+	for i, t := range all {
+		start := c.byteAt(t.GetStart())
+		end := start
+		if t.GetTokenType() != antlr.TokenEOF {
+			end = c.byteAt(t.GetStop() + 1)
+		}
+		nt := galopnative.@N@Token{Type: int32(t.GetTokenType()), Start: start, End: end, Line: int32(t.GetLine()), Column: int32(t.GetColumn())}
+		if t.GetChannel() == antlr.TokenDefaultChannel {
+			c.index[i] = int32(len(ts.Tokens))
+			ts.Tokens = append(ts.Tokens, nt)
+		} else {
+			c.index[i] = -1
+			ts.Hidden = append(ts.Hidden, galopnative.@N@HiddenToken{@N@Token: nt, Channel: int32(t.GetChannel()), Next: int32(len(ts.Tokens))})
+		}
+	}
+	return ts
+}
+
+// LPFXIsASCII reports whether s is all ASCII.
+func LPFXIsASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// byteAt is the byte offset of code point cp.
+func (c *LPFXToNative) byteAt(cp int) int32 {
+	switch {
+	case cp < 0:
+		return 0
+	case len(c.offset) == 0:
+		return min(int32(cp), c.srcLen)
+	case cp < len(c.offset):
+		return c.offset[cp]
+	}
+	return c.srcLen
+}
+
+// node converts ctx and its subtree, children first, and returns its index.
+func (c *LPFXToNative) node(ctx antlr.ParserRuleContext) int32 {
+	mark := len(c.kids)
+	// A context with no start token begins at the token after those before it.
+	first := c.last + 1
+	for _, ch := range ctx.GetChildren() {
+		switch x := ch.(type) {
+		case antlr.ParserRuleContext:
+			c.kids = append(c.kids, c.node(x))
+		case antlr.ErrorNode:
+			c.errs = append(c.errs, len(c.kids))
+			c.kids = append(c.kids, -c.tokenRef(x.GetSymbol())-1)
+		case antlr.TerminalNode:
+			c.kids = append(c.kids, -c.tokenRef(x.GetSymbol())-1)
+		}
+	}
+	rule, alt := LPFXNativeKind(ctx)
+	start := first
+	if t := ctx.GetStart(); t != nil && t.GetTokenIndex() >= 0 && c.index[t.GetTokenIndex()] >= 0 {
+		start = c.index[t.GetTokenIndex()]
+	}
+	stop := start - 1
+	if t := ctx.GetStop(); t != nil && t.GetTokenIndex() >= 0 && c.index[t.GetTokenIndex()] >= start {
+		stop = c.index[t.GetTokenIndex()]
+	}
+	id := c.add(rule, alt, mark, start, stop)
+	labels := len(c.tree.TokenLabels)
+	c.labels(ctx, id, mark)
+	// Native parsing records token labels in the order the tokens come.
+	slices.SortStableFunc(c.tree.TokenLabels[labels:], func(a, b galopnative.@N@TokenLabel) int { return int(a.Token - b.Token) })
+	c.kids = c.kids[:mark]
+	return id
+}
+
+// add appends a node whose children are c.kids[mark:], and records which of
+// them are error tokens.
+func (c *LPFXToNative) add(rule uint16, alt uint8, mark int, start, stop int32) int32 {
+	t := c.tree
+	off := len(t.Kids)
+	t.Kids = append(t.Kids, c.kids[mark:]...)
+	e := len(c.errs)
+	for e > 0 && c.errs[e-1] >= mark {
+		e--
+	}
+	for _, p := range c.errs[e:] {
+		t.ErrorKids = append(t.ErrorKids, int32(off+p-mark))
+	}
+	c.errs = c.errs[:e]
+	t.Nodes = append(t.Nodes, galopnative.@N@NodeData{Rule: rule, Alt: alt, Kids: int32(off), NKids: int32(len(t.Kids) - off), Start: start, Stop: stop})
+	return int32(len(t.Nodes) - 1)
+}
+
+// tokenRef is the native index of tok, a conjured token added when the
+// stream does not have it.
+func (c *LPFXToNative) tokenRef(tok antlr.Token) int32 {
+	if i := tok.GetTokenIndex(); i >= 0 && i < len(c.index) && c.index[i] >= 0 {
+		c.last = c.index[i]
+		return c.last
+	}
+	t := c.tree
+	at := min(int(c.last+1), len(t.Tokens)-1)
+	pos := t.Tokens[at].Start
+	t.Conjured = append(t.Conjured, galopnative.@N@Token{Type: int32(tok.GetTokenType()), Start: pos, End: pos, Line: int32(tok.GetLine()), Column: int32(tok.GetColumn())})
+	t.ConjuredText = append(t.ConjuredText, tok.GetText())
+	return int32(len(t.Tokens) + len(t.Conjured) - 1)
+}
+
+// labelNode records that the child context l of ctx, whose children are
+// c.kids[mark:], is stored under label. It looks from position from of
+// c.kids on and returns the position after l, where the next node of a list
+// label is.
+func (c *LPFXToNative) labelNode(l antlr.ParserRuleContext, label uint8, ctx antlr.ParserRuleContext, mark, from int) int {
+	if l == nil {
+		return from
+	}
+	children := ctx.GetChildren()
+	for j := from; j-mark < len(children); j++ {
+		if children[j-mark] == l {
+			c.tree.Nodes[c.kids[j]].Label = label
+			return j + 1
+		}
+	}
+	return from
+}
+
+// labelToken records that token tok is stored under label in node id; a
+// token the recovery made up is not recorded.
+func (c *LPFXToNative) labelToken(tok antlr.Token, label uint8, id int32) {
+	if tok == nil || tok.GetTokenIndex() < 0 || c.index[tok.GetTokenIndex()] < 0 {
+		return
+	}
+	c.tree.TokenLabels = append(c.tree.TokenLabels, galopnative.@N@TokenLabel{Node: id, Token: c.index[tok.GetTokenIndex()], Label: label})
+}
+
+// labels records the labels of the node ctx, number id, whose children are
+// c.kids[mark:].
+func (c *LPFXToNative) labels(ctx antlr.ParserRuleContext, id int32, mark int) {
+LABELS
+}
+
+// LPFXStep is one step of an alternative, as generated: a token, a token set
+// (set holds lo, hi pairs), a rule (sym), a choice among alts (exit says where
+// the alternative that matches nothing is tried: -1 none, 0 first, 1 last) or
+// a loop over alts[0] (plus: once before deciding; cont: continuing is tried
+// before leaving). label is the label it stores under, or 0.
+type LPFXStep struct {
+	op    uint8
+	sym   int32
+	label uint8
+	set   []int32
+	alts  [][]LPFXStep
+	exit  int8
+	plus  bool
+	cont  bool
+}
+
+// The kinds of LPFXStep and LPFXEdge.
+const (
+	LPFXOpToken = iota
+	LPFXOpSet
+	LPFXOpRule
+	LPFXOpChoose
+	LPFXOpLoop
+	LPFXOpEps
+)
+
+// LPFXEdge is one transition of an LPFXNFA: on nothing (LPFXOpEps), or on a
+// child that is the token, in the token set or of the rule it names, which
+// it then stores under label.
+type LPFXEdge struct {
+	to    int32
+	op    uint8
+	sym   int32
+	label uint8
+	set   []int32
+}
+
+// LPFXNFA is a kind's alternatives as an automaton from state 0 to accept;
+// each state's edges are in the order ANTLR prefers them (the lower
+// alternative first).
+type LPFXNFA struct {
+	edges  [][]LPFXEdge
+	accept int32
+}
+
+// LPFXNewNFA builds the automaton of steps.
+func LPFXNewNFA(steps []LPFXStep) *LPFXNFA {
+	a := &LPFXNFA{}
+	a.accept = a.seq(steps, a.state())
+	return a
+}
+
+func (a *LPFXNFA) state() int32 {
+	a.edges = append(a.edges, nil)
+	return int32(len(a.edges) - 1)
+}
+
+func (a *LPFXNFA) eps(from, to int32) {
+	a.edges[from] = append(a.edges[from], LPFXEdge{to: to, op: LPFXOpEps})
+}
+
+// seq adds steps from state from on and returns the state they end in.
+func (a *LPFXNFA) seq(steps []LPFXStep, from int32) int32 {
+	for i := range steps {
+		from = a.step(&steps[i], from)
+	}
+	return from
+}
+
+func (a *LPFXNFA) step(s *LPFXStep, from int32) int32 {
+	switch s.op {
+	case LPFXOpChoose:
+		out := a.state()
+		if s.exit == 0 {
+			a.eps(from, out)
+		}
+		for _, alt := range s.alts {
+			in := a.state()
+			a.eps(from, in)
+			a.eps(a.seq(alt, in), out)
+		}
+		if s.exit == 1 {
+			a.eps(from, out)
+		}
+		return out
+	case LPFXOpLoop:
+		decide, out, body := a.state(), a.state(), a.state()
+		a.eps(a.seq(s.alts[0], body), decide)
+		if s.plus {
+			a.eps(from, body)
+		} else {
+			a.eps(from, decide)
+		}
+		if s.cont {
+			a.eps(decide, body)
+			a.eps(decide, out)
+		} else {
+			a.eps(decide, out)
+			a.eps(decide, body)
+		}
+		return out
+	}
+	to := a.state()
+	a.edges[from] = append(a.edges[from], LPFXEdge{to: to, op: s.op, sym: s.sym, label: s.label, set: s.set})
+	return to
+}
+
+// LPFXExceptionField is the index of the field of ANTLR's
+// BaseParserRuleContext that holds the error a rule recovered from (Go's
+// runtime has no getter for it), or nil when this runtime has none.
+var LPFXExceptionField = func() []int {
+	if f, ok := reflect.TypeOf(antlr.BaseParserRuleContext{}).FieldByName("exception"); ok && f.Type.Kind() == reflect.Interface {
+		return f.Index
+	}
+	return nil
+}()
+
+// LPFXRecovered reports whether ANTLR's parser recovered from an error inside
+// the rule of b, or cannot tell: its children may then be part of an
+// alternative ANTLR never finished.
+func LPFXRecovered(b *antlr.BaseParserRuleContext) bool {
+	return LPFXExceptionField == nil || !reflect.ValueOf(b).Elem().FieldByIndex(LPFXExceptionField).IsNil()
+}
+
+// align records the labels of node id by finding ANTLR's path through nfa
+// over its children: the first that matches them all, trying each state's
+// edges in order, which is how ANTLR's parser chose among matches of the same
+// children. A state that failed at a child is not tried there again, so the
+// search is polynomial. It reports false, recording nothing, when the
+// children have an error token or do not match.
+func (c *LPFXToNative) align(nfa *LPFXNFA, id int32) bool {
+	t := c.tree
+	n := t.Nodes[id]
+	if k := len(t.ErrorKids); k > 0 && t.ErrorKids[k-1] >= n.Kids {
+		return false
+	}
+	c.nfa, c.alignKids = nfa, t.Kids[n.Kids:n.Kids+n.NKids]
+	size := len(nfa.edges) * (len(c.alignKids) + 1)
+	c.failed = slices.Grow(c.failed[:0], size)[:size]
+	clear(c.failed)
+	c.alignLabels = slices.Grow(c.alignLabels[:0], len(c.alignKids))[:len(c.alignKids)]
+	if !c.path(0, 0) {
+		return false
+	}
+	for j, label := range c.alignLabels {
+		switch k := c.alignKids[j]; {
+		case label == 0:
+		case k >= 0:
+			t.Nodes[k].Label = label
+		default:
+			t.TokenLabels = append(t.TokenLabels, galopnative.@N@TokenLabel{Node: id, Token: -k - 1, Label: label})
+		}
+	}
+	return true
+}
+
+// path reports whether the automaton gets from state s at child pos to
+// accept after the last child, noting each child's label on the way.
+func (c *LPFXToNative) path(s int32, pos int) bool {
+	kids := c.alignKids
+	if s == c.nfa.accept && pos == len(kids) {
+		return true
+	}
+	// A state already tried at pos failed there, or is being tried: a cycle
+	// of edges that match nothing, which no shortest path needs.
+	key := int(s)*(len(kids)+1) + pos
+	if c.failed[key] {
+		return false
+	}
+	c.failed[key] = true
+	for i := range c.nfa.edges[s] {
+		e := &c.nfa.edges[s][i]
+		if e.op == LPFXOpEps {
+			if c.path(e.to, pos) {
+				return true
+			}
+		} else if pos < len(kids) && c.matches(e, kids[pos]) {
+			c.alignLabels[pos] = e.label
+			if c.path(e.to, pos+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// matches reports whether child k is what edge e matches.
+func (c *LPFXToNative) matches(e *LPFXEdge, k int32) bool {
+	if e.op == LPFXOpRule {
+		return k >= 0 && int32(c.tree.Nodes[k].Rule) == e.sym
+	}
+	if k >= 0 {
+		return false
+	}
+	ty := c.tree.Token(int(-k - 1)).Type
+	if e.op == LPFXOpToken {
+		return ty == e.sym
+	}
+	for i := 0; i+1 < len(e.set); i += 2 {
+		if e.set[i] <= ty && ty <= e.set[i+1] {
+			return true
+		}
+	}
+	return false
+}
+
+ALIGNED
+// LPFXNativeKind is the native rule and labeled alternative of a context.
+func LPFXNativeKind(ctx antlr.ParserRuleContext) (uint16, uint8) {
+	switch ctx.(type) {
+KINDS
+	}
+	return uint16(ctx.GetRuleIndex()), 0
+}
+`

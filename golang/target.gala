@@ -36,15 +36,21 @@ func (t goTarget) Flavors() Array[string] = GoFlavors
 // flavorOf is the flavor the `flavor` option picks for grammar g (the
 // default when it is not set), or None for a value that is not a flavor.
 func flavorOf(opts codegen.Options, g g4.Grammar) Option[Flavor] = opts.Define("flavor").GetOrElse(GoFlavors.Head()) match {
-    case "native" => Some(NativeFlavor(capitalize(baseName(g))))
+    case "native" => Some(NativeFlavor(nativeExported(g)))
     case "antlr" => Some(ANTLRFlavor())
     case _ => None()
 }
 
+// nativeExported is the native flavor's exported prefix for grammar g: `Expr`.
+func nativeExported(g g4.Grammar) string = capitalize(baseName(g))
+
 // Generate returns the Go files for in in the chosen flavor.
 func (t goTarget) Generate(in codegen.Input, opts codegen.Options) Either[Array[string], Array[codegen.OutputFile]] =
     flavorOf(opts, in.Grammar) match {
-        case Some(f) => generateFlavor(in, opts, t.Version, f)
+        case Some(f) => nativePackageProblem(opts, f) match {
+            case Some(problem) => Left(ArrayOf(problem))
+            case None() => generateFlavor(in, opts, t.Version, f)
+        }
         case None() => Left(ArrayOf(s"Go target: unknown flavor '${opts.Define("flavor").GetOrElse("")}' (supported: ${GoFlavors.MkString(", ")})"))
     }
 
@@ -84,8 +90,31 @@ func infix(f Flavor) string = f match {
 // rules, a lexer for one with lexer rules. An unknown flavor names none (the
 // tool reports it before asking).
 func (t goTarget) FileNames(g g4.Grammar, c atn.Compiled, opts codegen.Options) Array[string] = flavorOf(opts, g) match {
-    case Some(f) => ArrayOf(c.Parser.Map((_) => parserFileName(g, f)), c.Lexer.Map((_) => lexerFileName(g, f))).Collect((name) => name)
+    case Some(f) => ArrayOf(
+        c.Parser.Map((_) => parserFileName(g, f)),
+        c.Parser.Filter((_) => converterImport(opts, f).IsDefined()).Map((_) => converterFileName(fileBase(g))),
+        c.Lexer.Map((_) => lexerFileName(g, f)),
+    ).Collect((name) => name)
     case None() => EmptyArray[string]()
+}
+
+// nativePackageProblem explains why the nativePackage option cannot be
+// used: it names the package the antlr flavor's converter writes trees for,
+// so it needs that flavor and a package.
+func nativePackageProblem(opts codegen.Options, f Flavor) Option[string] = (opts.Define("nativePackage").Map(strings.TrimSpace), f) match {
+    case (Some(""), _) => Some("nativePackage must name the native flavor's Go package, not be empty")
+    case (Some(p), NativeFlavor(_)) =>
+        Some(s"nativePackage=$p needs flavor=antlr: it adds a converter to the antlr flavor's output")
+    case _ => None()
+}
+
+// converterImport is the native flavor's package the antlr flavor writes a
+// converter to the native tree for (-DnativePackage, spaces trimmed), or None
+// for none. FileNames and Generate both read it, so they agree; a blank value
+// writes no converter (and Generate reports it, see nativePackageProblem).
+func converterImport(opts codegen.Options, f Flavor) Option[string] = f match {
+    case ANTLRFlavor() => opts.Define("nativePackage").Map(strings.TrimSpace).Filter(_ != "")
+    case NativeFlavor(_) => None()
 }
 
 // generateFlavor generates a flavor's parser, for a grammar with parser rules,
@@ -147,10 +176,14 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             val pkg = lexgen.PackageOf(opts)
             val file = grammar + ".g4"
             val code = f match {
-                case NativeFlavor(_) => nativeParser(e, pkg, version, file, compiled.Lexer.IsEmpty(), in.Grammar.Channels)
+                case NativeFlavor(_) => nativeParser(e, pkg, version, file, compiled.Lexer.IsEmpty(), in.Grammar.Channels, opts)
                 case ANTLRFlavor() => antlrParser(e, pkg, version, file)
             }
-            Right(ArrayOf(codegen.OutputFile(parserFileName(in.Grammar, f), code)))
+            val converter = converterImport(opts, f).Map((imp) => codegen.OutputFile(
+                converterFileName(fileBase(in.Grammar)),
+                antlrConverter(e, pkg, version, file, nativeExported(in.Grammar), imp),
+            ))
+            Right(ArrayOf(Some(codegen.OutputFile(parserFileName(in.Grammar, f), code)), converter).Collect((o) => o))
         }
         case _ => Right(EmptyArray[codegen.OutputFile]())
     }

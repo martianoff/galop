@@ -31,13 +31,7 @@ var (
 // reading bracketed groups as one symbol changes neither trees nor errors.
 // -mutants and -mutant_seed size the run.
 func TestMutations(t *testing.T) {
-	var srcs []string
-	for _, f := range files(t) {
-		// Large files make ANTLR's LL pass slow without adding much.
-		if len(f.Src) < 20000 {
-			srcs = append(srcs, gala.StripBOM(f.Src))
-		}
-	}
+	srcs := mutationSources(t)
 	// Each flavor parses with the repair of a failed SLL parse (rerun false)
 	// and with ANTLR's whole-input LL rerun (rerun true). On error, where says
 	// where the parse left off: the error text, with its position, and for the
@@ -128,4 +122,17 @@ func nativeResult[N interface{ ToStringTree() string }](root N, err error) (tree
 		return "", err.Error(), err
 	}
 	return root.ToStringTree(), "", nil
+}
+
+// mutationSources are the inputs the mutation tests mutate: the files under
+// 20,000 bytes, BOM stripped. Large files make ANTLR's LL pass slow without
+// adding much.
+func mutationSources(tb testing.TB) []string {
+	var srcs []string
+	for _, f := range files(tb) {
+		if len(f.Src) < 20000 {
+			srcs = append(srcs, gala.StripBOM(f.Src))
+		}
+	}
+	return srcs
 }

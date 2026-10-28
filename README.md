@@ -99,8 +99,10 @@ What you keep:
 - **Your code, if you want.** The `antlr` flavor builds ANTLR's own parse-tree
   types, so existing listeners and visitors keep working. The default, `native`,
   builds galop's own compact tree, with ANTLR's accessors (`ctx.Expression()`,
-  `ctx.AllStatement()`, `ctx.IDENTIFIER()`, `ctx.GetGuard()`), so porting code
-  written against ANTLR's trees is mostly renaming; it has no dependency.
+  `ctx.AllStatement()`, `ctx.IDENTIFIER()`, `ctx.GetGuard()`), typed type
+  switches, and a generated listener (`-listener`, the default) and visitor
+  (`-visitor`), so porting code written against ANTLR's trees is mostly
+  renaming; it has no dependency.
 
 What you get: a faster parser, especially when many goroutines parse at once
 (see the table above). galop's first user is the GALA compiler itself.
@@ -221,6 +223,37 @@ parsing that input in a fresh process, with the same message, line and column.
 (ANTLR's error text can depend on what the same process parsed earlier, because
 its prediction cache is shared.) Neither recovers from syntax errors yet: a
 parse stops at that first error.
+
+The native flavor also generates a typed view, a listener (by default) and a
+visitor (with `-visitor`), so code written against ANTLR's trees can keep its
+shape:
+
+```go
+switch p := n.Parent().Typed().(type) {  // the node as its rule's handle
+case *parser.AssignNode:
+	...
+}
+parser.ExprWalk(prog.Ref(), myListener)       // EnterAssign/ExitAssign, VisitTerminal, ...
+v := parser.ExprAccept[int](expr.Ref(), myVisitor) // VisitX per rule and labeled alternative
+```
+
+To move a program from ANTLR's trees to the native tree step by step, generate
+the antlr flavor with `-DnativePackage=<import path of the native package>`. It
+then also writes `expr_galop_native.go`, whose `ExprToNative(root, stream, src)`
+converts any tree of ANTLR's context types to the native tree:
+
+```mermaid
+flowchart LR
+    A[ANTLR parser<br/>error-recovered tree] --> C[ExprToNative]
+    B[galop antlr flavor] --> C
+    C --> T[native tree]
+    N[galop native flavor] --> T
+```
+
+On input native parsing accepts, the converted tree is the one native parsing
+builds. On input with syntax errors it is ANTLR's error-recovered tree, with
+error tokens, which an editor needs while a file is being typed (see
+[design](docs/DESIGN.md#from-antlrs-tree-to-the-native-tree)).
 
 ### Bazel
 

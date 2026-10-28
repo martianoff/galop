@@ -37,6 +37,10 @@ func escape(name string) string = if (reservedWords.Contains(name)) name + "_" e
 // it may be any Unicode letter, not only ASCII.
 func capitalize(name string) string = strings.S(name).Capitalize().ToString()
 
+// decapitalize lower-cases the first character: `ExprGalop` gives `exprGalop`.
+func decapitalize(name string) string =
+    strings.S(name).Take(1).ToLower().ToString() + strings.S(name).Drop(1).ToString()
+
 // Names derives the Go identifiers of one grammar; Combined says whether it
 // is a combined grammar rather than a parser grammar.
 struct Names(Grammar string, Combined bool = true)

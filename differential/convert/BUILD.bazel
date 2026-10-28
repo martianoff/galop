@@ -1,0 +1,21 @@
+load(":defs.bzl", "convert_test")
+
+# Each grammar's ANTLR parser, galop's antlr flavor with the converter to the
+# native tree and galop's native flavor with its listener and visitor, built
+# and run on sentences galop-sample generates: the converted trees must be
+# native parsing's (see convert_test.go.tmpl). gala.g4 has the same checks,
+# on its corpora too, in //differential/diff.
+[convert_test(
+    name = name,
+    grammar = grammar,
+    extra_srcs = ["labels_getters_test.go"] if name == "labels" else [],
+    grammar_name = grammar_name,
+    sample_flags = flags,
+    start = start,
+) for name, grammar, grammar_name, start, flags in [
+    ("expr", "grammars/Expr.g4", "Expr", "prog", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("calc", "grammars/Calc.g4", "Calc", "prog", "-n 300 -seed 1 -nesting 4 -tokens 300"),
+    ("labels", "grammars/Labels.g4", "Labels", "prog", "-n 400 -seed 1 -nesting 3 -tokens 200"),
+    ("errors", "//differential/errors:Errors.g4", "Errors", "prog", "-n 300 -seed 1 -nesting 3 -tokens 300"),
+    ("repair", "//differential/repair:Repair.g4", "Repair", "s3", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+]]

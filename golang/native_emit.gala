@@ -8,6 +8,7 @@ import (
     . "martianoff/gala/concurrent"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/lexgen"
 )
 
@@ -25,8 +26,17 @@ import (
 
 // nativeParser emits `<grammar>_parser.go` of the native flavor. withTokens
 // adds the token runtime, for a grammar without lexer rules (otherwise the
-// lexer file has it).
-func nativeParser(e env, pkg string, version string, grammarFile string, withTokens bool, channels Array[string]) string {
+// lexer file has it); opts' Listener and Visitor add the listener and the
+// visitor (see native_walk.gala).
+func nativeParser(
+    e env,
+    pkg string,
+    version string,
+    grammarFile string,
+    withTokens bool,
+    channels Array[string],
+    opts codegen.Options,
+) string {
     val ruleCode = e.rules.Map((r) => Future(emitNativeRule(e, r))).Map(_.Get())
     val decisionCode = e.plans.Map((plan) => Future(emitDecision(e, plan))).Map(_.Get())
     val handles = e.rules.Map((r) => Future(nativeHandles(e, r))).Map(_.Get())
@@ -40,6 +50,9 @@ func nativeParser(e env, pkg string, version string, grammarFile string, withTok
         nativeRuleConstants(e),
         fill(nativeTreeTemplate, "@X@", e.exported(), "PFX", e.pfx),
         strings.TrimSuffix(handles.MkString(""), "\n"),
+        nativeTyped(e),
+        if (opts.Visitor) nativeVisitor(e) else "",
+        if (opts.Listener) nativeListener(e) else "",
         e.rules.Map((r) => nativeEntry(e, r)).MkString("\n"),
         nativeParserCore(e),
         ruleCode.MkString("\n"),
@@ -83,7 +96,7 @@ func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
 	}
 	return HANDLE{@X@NodeRef{t, root}}, nil
 }
-`, "METHOD", nativeName(e.names.RuleMethod(r.Name)), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
+`, "METHOD", e.names.RuleMethod(r.Name), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
     "HANDLE", nodeType(r.Name), "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported(),
     "REPAIR", s"${e.repairPlan.Repairs(r.Index)}", "START", s"${e.parser.RuleStart.Get(r.Index)}")
 
@@ -91,10 +104,12 @@ func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
 func nodeType(ruleOrLabel string) string = capitalize(ruleOrLabel) + "Node"
 
 // nativeReserved are the methods every handle has; an accessor whose name
-// would clash with one gets a trailing underscore.
+// would clash with one gets a trailing underscore (the package-level Parse
+// functions are never escaped).
 val nativeReserved = ArrayOf(
     "Ok", "Tree", "Index", "Rule", "Alt", "Start", "Stop", "StartIndex", "StopIndex", "GetText",
     "SourceText", "ChildCount", "Child", "Parent", "Token", "Tokens", "HiddenBefore", "Walk", "ToStringTree",
+    "Ref", "Typed", "Kind",
 )
 
 // nativeName escapes a method name that clashes with a handle's own methods.
@@ -212,12 +227,22 @@ func accessors(e env, t string, steps Array[atn.Step], labels Array[string]) str
         if (el.IsRule) ruleAccessor(e, t, e.ruleName(el.Id), refs.Count(_ == el) > 1)
         else tokenAccessor(e, t, el.Id, refs.Count(_ == el) > 1)
     )
-    val uses = labelUses(steps)
-    val labelGetters = uses.Map(_.Name).Distinct().Map((name) => {
-        val same = uses.Filter(_.Name == name)
-        labelAccessor(e, t, same.Head(), same.Exists(_.Append), labels.IndexOf(name) + 1)
-    })
+    val labelGetters = labelGroups(steps, labels).Map((g) => labelAccessor(e, t, g.Use, g.List, g.Number))
     elems.AppendAll(labelGetters).MkString("")
+}
+
+// labelGroup is one label of some steps: its first use, whether it holds a
+// list (any use is `+=`), and its number (from 1) among the rule's labels.
+struct labelGroup(Use labelUse, List bool, Number int)
+
+// labelGroups groups the label uses of steps by label; labels are the rule's
+// labels in numbering order (see ruleLabels).
+func labelGroups(steps Array[atn.Step], labels Array[string]) Array[labelGroup] {
+    val uses = labelUses(steps)
+    uses.Map(_.Name).Distinct().Map((name) => {
+        val same = uses.Filter(_.Name == name)
+        labelGroup(same.Head(), same.Exists(_.Append), labels.IndexOf(name) + 1)
+    })
 }
 
 // ruleAccessor emits ANTLR's getters for a rule: `X()` when it occurs at most
@@ -254,11 +279,11 @@ func labelAccessor(e env, t string, lu labelUse, list bool, id int) string {
         case Some(rule) => {
             val h = nodeType(e.ruleName(rule))
             if (list) s"// $name is the nodes stored under label ${lu.Name}.\nfunc (n $t) $name() []$h {\n\treturn ${e.pfx}Labeled[$h](n.${e.exported()}NodeRef, $id)\n}\n\n"
-            else s"// $name is the node stored under label ${lu.Name}, or no node.\nfunc (n $t) $name() $h {\n\treturn $h{n.firstLabeled($id)}\n}\n\n"
+            else s"// $name is the node stored under label ${lu.Name} (its last match), or no node.\nfunc (n $t) $name() $h {\n\treturn $h{n.lastLabeled($id)}\n}\n\n"
         }
         case None() =>
             if (list) s"// $name is the tokens stored under label ${lu.Name}.\nfunc (n $t) $name() []$term {\n\treturn n.labeledTokens($id)\n}\n\n"
-            else s"// $name is the token stored under label ${lu.Name}, or no token.\nfunc (n $t) $name() $term {\n\treturn n.firstLabeledToken($id)\n}\n\n"
+            else s"// $name is the token stored under label ${lu.Name} (its last match), or no token.\nfunc (n $t) $name() $term {\n\treturn n.lastLabeledToken($id)\n}\n\n"
     }
 }
 
@@ -451,15 +476,50 @@ type @X@TokenLabel struct {
 
 // @X@Tree is a parse: the tokens, every node (children before their parent,
 // so the root is last) and the child references, where k >= 0 is Nodes[k] and
-// k < 0 is Tokens[-k-1]. Next is the index of the token after the parsed input.
+// k < 0 is token -k-1 (see Token). Next is the index of the token after the
+// parsed input.
+//
+// A tree converted from ANTLR's error-recovered parse can also have error
+// tokens, which native parsing never makes. ErrorKids lists, in order, the
+// positions in Kids of the token children that are ANTLR error nodes: tokens
+// the recovery skipped or made up. Conjured are the made-up ones (ANTLR's
+// "<missing ')'>"), ConjuredText their texts: token len(Tokens)+k is
+// Conjured[k].
 type @X@Tree struct {
 	*@X@Tokens
-	Nodes       []@X@NodeData
-	Kids        []int32
-	TokenLabels []@X@TokenLabel
-	Next        int
-	parents     []int32
-	parentsOnce sync.Once
+	Nodes        []@X@NodeData
+	Kids         []int32
+	TokenLabels  []@X@TokenLabel
+	Next         int
+	ErrorKids    []int32
+	Conjured     []@X@Token
+	ConjuredText []string
+	parents      []int32
+	parentsOnce  sync.Once
+	typed        []struct{ @X@NodeRef }
+	typedOnce    sync.Once
+}
+
+// Root is the tree's root node, the last one.
+func (t *@X@Tree) Root() @X@NodeRef { return @X@NodeRef{t, int32(len(t.Nodes)) - 1} }
+
+// Node is the tree's i-th node.
+func (t *@X@Tree) Node(i int) @X@NodeRef { return @X@NodeRef{t, int32(i)} }
+
+// Token is token i: Tokens[i], or a conjured token past them.
+func (t *@X@Tree) Token(i int) @X@Token {
+	if i < len(t.Tokens) {
+		return t.Tokens[i]
+	}
+	return t.Conjured[i-len(t.Tokens)]
+}
+
+// Text is token i's text, a conjured token's included.
+func (t *@X@Tree) Text(i int) string {
+	if i < len(t.Tokens) {
+		return t.@X@Tokens.Text(i)
+	}
+	return t.ConjuredText[i-len(t.Tokens)]
 }
 
 // @X@NodeRef is a node of a tree, or no node: the zero value, or a missing
@@ -545,7 +605,8 @@ func (n @X@NodeRef) ChildCount() int { return int(n.t.Nodes[n.i].NKids) }
 
 // Child is n's i-th child.
 func (n @X@NodeRef) Child(i int) @X@Child {
-	return @X@Child{n.t, n.t.Kids[int(n.t.Nodes[n.i].Kids)+i]}
+	pos := n.t.Nodes[n.i].Kids + int32(i)
+	return @X@Child{n.t, n.t.Kids[pos], pos}
 }
 
 // Parent is the node n is a child of, or no node for the root. The first
@@ -578,13 +639,13 @@ func (n @X@NodeRef) Tokens(ttype int32) []@X@Terminal {
 	}
 	count := 0
 	for _, k := range n.kids() {
-		if k < 0 && n.t.Tokens[-k-1].Type == ttype {
+		if k < 0 && n.t.Token(int(-k-1)).Type == ttype {
 			count++
 		}
 	}
 	out := make([]@X@Terminal, 0, count)
 	for _, k := range n.kids() {
-		if k < 0 && n.t.Tokens[-k-1].Type == ttype {
+		if k < 0 && n.t.Token(int(-k-1)).Type == ttype {
 			out = append(out, @X@Terminal{n.t, -k - 1})
 		}
 	}
@@ -697,7 +758,7 @@ func PFXKidsWhere[H ~struct{ @X@NodeRef }](n @X@NodeRef, keep func(@X@NodeData) 
 func (n @X@NodeRef) tokenAt(ttype int32, k int) @X@Terminal {
 	if n.Ok() {
 		for _, c := range n.kids() {
-			if c < 0 && n.t.Tokens[-c-1].Type == ttype {
+			if c < 0 && n.t.Token(int(-c-1)).Type == ttype {
 				if k == 0 {
 					return @X@Terminal{n.t, -c - 1}
 				}
@@ -708,11 +769,13 @@ func (n @X@NodeRef) tokenAt(ttype int32, k int) @X@Terminal {
 	return @X@Terminal{n.t, -1}
 }
 
-// firstLabeled is n's first child node stored under label, or no node.
-func (n @X@NodeRef) firstLabeled(label uint8) @X@NodeRef {
+// lastLabeled is n's last child node stored under label, or no node: as in
+// ANTLR, where a label that matches more than once keeps its last match.
+func (n @X@NodeRef) lastLabeled(label uint8) @X@NodeRef {
 	if n.Ok() {
-		for _, c := range n.kids() {
-			if c >= 0 && n.t.Nodes[c].Label == label {
+		kids := n.kids()
+		for i := len(kids) - 1; i >= 0; i-- {
+			if c := kids[i]; c >= 0 && n.t.Nodes[c].Label == label {
 				return @X@NodeRef{n.t, c}
 			}
 		}
@@ -744,12 +807,21 @@ func (n @X@NodeRef) labeledTokens(label uint8) []@X@Terminal {
 	return out
 }
 
-// firstLabeledToken is n's first token stored under label, or no token.
-func (n @X@NodeRef) firstLabeledToken(label uint8) @X@Terminal {
-	if toks := n.labeledTokens(label); len(toks) > 0 {
-		return toks[0]
+// lastLabeledToken is n's last token stored under label, or no token (see
+// lastLabeled). TokenLabels is in node order, and a node's records in token
+// order, so it is the last of n's records with that label.
+func (n @X@NodeRef) lastLabeledToken(label uint8) @X@Terminal {
+	last := @X@Terminal{n.t, -1}
+	if n.Ok() {
+		labels := n.t.TokenLabels
+		lo, _ := slices.BinarySearchFunc(labels, n.i, func(l @X@TokenLabel, node int32) int { return int(l.Node - node) })
+		for ; lo < len(labels) && labels[lo].Node == n.i; lo++ {
+			if labels[lo].Label == label {
+				last = @X@Terminal{n.t, labels[lo].Token}
+			}
+		}
 	}
-	return @X@Terminal{n.t, -1}
+	return last
 }
 
 // @X@Terminal is a token of a tree, or no token.
@@ -761,11 +833,12 @@ type @X@Terminal struct {
 // Ok reports whether the terminal is a token.
 func (t @X@Terminal) Ok() bool { return t.t != nil && t.i >= 0 }
 
-// Index is the token's index in Tree().Tokens.
+// Index is the token's index in Tree().Tokens (past them for a conjured
+// token; see @X@Tree).
 func (t @X@Terminal) Index() int { return int(t.i) }
 
 // Token is the token.
-func (t @X@Terminal) Token() @X@Token { return t.t.Tokens[t.i] }
+func (t @X@Terminal) Token() @X@Token { return t.t.Token(int(t.i)) }
 
 // GetText is the token's text.
 func (t @X@Terminal) GetText() string { return t.t.Text(int(t.i)) }
@@ -774,10 +847,21 @@ func (t @X@Terminal) GetText() string { return t.t.Text(int(t.i)) }
 type @X@Child struct {
 	t   *@X@Tree
 	ref int32
+	pos int32
 }
 
-// IsToken reports whether the child is a token.
+// IsToken reports whether the child is a token, an error token included.
 func (c @X@Child) IsToken() bool { return c.ref < 0 }
+
+// IsError reports whether the child is an error token (see @X@Tree), as
+// ANTLR's ErrorNode is a TerminalNode.
+func (c @X@Child) IsError() bool {
+	if c.t == nil || len(c.t.ErrorKids) == 0 {
+		return false
+	}
+	_, found := slices.BinarySearch(c.t.ErrorKids, c.pos)
+	return found
+}
 
 // Node is the child as a node; no node when it is a token.
 func (c @X@Child) Node() @X@NodeRef {

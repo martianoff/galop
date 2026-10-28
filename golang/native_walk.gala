@@ -1,0 +1,255 @@
+package golang
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// The native flavor's typed view of a tree, visitor and listener: what code
+// written against ANTLR's context types (type switches, VisitX, EnterX/ExitX)
+// needs to move to galop's tree without reading node indexes.
+
+// nodeKind is one kind of node a handle type stands for: a rule, a rule's
+// labeled alternative (Alt from 1), or a labeled rule's node with no label
+// (Alt 0, which only an error-recovered tree has).
+struct nodeKind(Rule atn.RuleIR, Alt int, Name string)
+
+// Handle is the kind's handle type: `CaseClauseNode`.
+func (k nodeKind) Handle() string = nodeType(k.Name)
+
+// Method is the suffix of the kind's visitor and listener methods: `CaseClause`.
+func (k nodeKind) Method() string = capitalize(k.Name)
+
+// HasMethods reports whether the visitor and listener have methods for the
+// kind. As in ANTLR, a labeled rule's own kind has none: its nodes get only
+// EnterEveryRule and ExitEveryRule, and Accept returns the zero value.
+func (k nodeKind) HasMethods() bool = k.Alt > 0 || altLabelsOf(k.Rule).IsEmpty()
+
+// ruleKinds lists the kinds of rule r's nodes: the rule's own, then one per
+// labeled alternative.
+func ruleKinds(r atn.RuleIR) Array[nodeKind] =
+    ArrayOf(nodeKind(r, 0, r.Name)).AppendAll(altLabelsOf(r).ZipWithIndex().Map((li) => nodeKind(r, li.V2 + 1, li.V1)))
+
+// nodeKinds lists every kind of node of the grammar, in rule order.
+func nodeKinds(e env) Array[nodeKind] = e.rules.FlatMap(ruleKinds)
+
+// kindSwitch emits a switch on node n's kind that runs body(k) for kind k;
+// methodsOnly leaves out the kinds without visitor and listener methods.
+func kindSwitch(e env, body func(nodeKind) string, methodsOnly bool) string {
+    val x = e.exported()
+    val cases = nodeKinds(e).Filter((k) => !methodsOnly || k.HasMethods()).Map((k) =>
+        s"\tcase ${x}KIND_${k.Name}:\n\t\t${body(k)}"
+    )
+    s"\tswitch n.Kind() {\n${cases.MkString("\n")}\n\t}"
+}
+
+// nativeTyped emits a node's kind, Typed and the interface every handle type
+// satisfies. Kind is a table lookup; Typed returns a pointer into the tree's
+// handles, an array built once per tree, so it allocates nothing.
+func nativeTyped(e env) string {
+    val kinds = nodeKinds(e)
+    val x = e.exported()
+    val consts = kinds.ZipWithIndex().Map((ki) => s"\t${x}KIND_${ki.V1.Name} ${x}Kind = ${ki.V2}").MkString("\n")
+    val names = kinds.Map(_.Name)
+    val bases = e.rules.Map((r) => s"${names.IndexOf(r.Name)}").MkString(", ")
+    fill(`// @X@Kind is the kind of a node: its rule, or its rule's labeled
+// alternative, one @X@KIND_ constant each. A labeled rule's own kind is for
+// nodes with no alternative yet, which only an error-recovered tree has.
+type @X@Kind uint16
+
+// The kinds of nodes, numbered in rule order: a rule's own kind, then its
+// labeled alternatives'.
+const (
+CONSTS
+)
+
+// LPFXKindBase is each rule's own kind; its labeled alternatives' kinds follow.
+var LPFXKindBase = [...]@X@Kind{BASES}
+
+// Kind is n's kind. Switching on it costs a table lookup and builds nothing:
+//
+//	switch p := n.Parent(); p.Kind() {
+//	case @X@KIND_primary: c := PrimaryNode{p}; ...
+//	}
+func (n @X@NodeRef) Kind() @X@Kind {
+	d := &n.t.Nodes[n.i]
+	return LPFXKindBase[d.Rule] + @X@Kind(d.Alt)
+}
+
+// @X@Handle is a node as a handle type (see Typed). Its name ends in Handle,
+// never Node, so no rule's or label's handle type can take it. Every handle
+// type's pointer is one, so a type switch over them reads like one over
+// ANTLR's context types:
+//
+//	switch c := n.Parent().Typed().(type) {
+//	case *PrimaryNode: ...
+//	}
+type @X@Handle interface {
+	// Ref is the node itself.
+	Ref() @X@NodeRef
+}
+
+// Ref is n itself, so that every handle type is an @X@Handle.
+func (n @X@NodeRef) Ref() @X@NodeRef { return n }
+
+// Typed is n as a pointer to its most specific handle: its labeled
+// alternative's when it has one, its rule's otherwise; nil for no node. The
+// pointer is into the tree's handles, built on the first call, once, safely
+// from any goroutine (16 bytes a node); after that Typed allocates nothing.
+// The handle is shared: do not write through the pointer. A switch on Kind
+// needs no handles at all.
+func (n @X@NodeRef) Typed() @X@Handle {
+	if !n.Ok() {
+		return nil
+	}
+	h := &n.t.handles()[n.i]
+CASES
+	return n
+}
+
+// handles is t's nodes as handles, built on first use. Every handle type has
+// the same underlying type as an element, so a pointer to one converts to a
+// pointer to any handle type.
+func (t *@X@Tree) handles() []struct{ @X@NodeRef } {
+	t.typedOnce.Do(func() {
+		hs := make([]struct{ @X@NodeRef }, len(t.Nodes))
+		for i := range hs {
+			hs[i].@X@NodeRef = @X@NodeRef{t, int32(i)}
+		}
+		t.typed = hs
+	})
+	return t.typed
+}
+`, "CONSTS", consts, "BASES", bases, "CASES", kindSwitch(e, (k) => s"return (*${k.Handle()})(h)", false),
+        "LPFX", decapitalize(e.pfx), "@X@", x)
+}
+
+// nativeVisitor emits the visitor: one method per kind of node, a base
+// that returns zero values, Accept and VisitChildren.
+func nativeVisitor(e env) string {
+    val x = e.exported()
+    val kinds = nodeKinds(e).Filter(_.HasMethods())
+    val methods = kinds.Map((k) => s"\tVisit${k.Method()}(n ${k.Handle()}) R").MkString("\n")
+    val base = kinds.Map((k) => s"func (${x}BaseVisitor[R]) Visit${k.Method()}(${k.Handle()}) (r R) { return }").MkString("\n")
+    val accept = kindSwitch(e, (k) => s"return v.Visit${k.Method()}(${k.Handle()}{n})", true)
+    fill(`// @X@Visitor visits nodes by kind, as ANTLR's visitor does: one method per
+// rule and labeled alternative, which @X@Accept calls. Embed @X@BaseVisitor
+// to start from methods that return the zero value; an override reaches its
+// children with @X@Accept or @X@VisitChildren (Go has no virtual dispatch to
+// do it for the base).
+type @X@Visitor[R any] interface {
+METHODS
+}
+
+// @X@BaseVisitor's methods return the zero value.
+type @X@BaseVisitor[R any] struct{}
+
+BASE
+
+// @X@Accept calls v's method for n's kind; for no node, or a labeled rule's
+// node with no label, it returns the zero value.
+func @X@Accept[R any](n @X@NodeRef, v @X@Visitor[R]) (r R) {
+	if !n.Ok() {
+		return
+	}
+ACCEPT
+	return
+}
+
+// @X@VisitChildren accepts n's child nodes in order and folds their results,
+// from zero, with merge.
+func @X@VisitChildren[R any](n @X@NodeRef, v @X@Visitor[R], zero R, merge func(acc, next R) R) R {
+	acc := zero
+	for i := 0; i < n.ChildCount(); i++ {
+		if c := n.Child(i); !c.IsToken() {
+			acc = merge(acc, @X@Accept(c.Node(), v))
+		}
+	}
+	return acc
+}
+`, "METHODS", methods, "BASE", base, "ACCEPT", accept, "@X@", x)
+}
+
+// nativeListener emits the listener: Enter and Exit methods per kind of
+// node, a base of no-ops, and Walk.
+func nativeListener(e env) string {
+    val x = e.exported()
+    val kinds = nodeKinds(e).Filter(_.HasMethods())
+    val methods = kinds.Map((k) => s"\tEnter${k.Method()}(n ${k.Handle()})\n\tExit${k.Method()}(n ${k.Handle()})").MkString("\n")
+    val base = kinds.Map((k) =>
+        s"func (${x}BaseListener) Enter${k.Method()}(${k.Handle()}) {}\nfunc (${x}BaseListener) Exit${k.Method()}(${k.Handle()}) {}"
+    ).MkString("\n")
+    val dispatch = (verb string) string => kindSwitch(e, (k) => s"l.$verb${k.Method()}(${k.Handle()}{n})", true)
+    fill(`// @X@Listener is told about a tree's nodes as @X@Walk passes them, as
+// ANTLR's listener is: Enter and Exit per rule and labeled alternative, the
+// EveryRule pair around every node, and each token and error token (see
+// @X@Tree). Embed @X@BaseListener to start from no-ops.
+type @X@Listener interface {
+	EnterEveryRule(n @X@NodeRef)
+	ExitEveryRule(n @X@NodeRef)
+	VisitTerminal(t @X@Terminal)
+	VisitErrorNode(t @X@Terminal)
+METHODS
+}
+
+// @X@BaseListener's methods do nothing.
+type @X@BaseListener struct{}
+
+func (@X@BaseListener) EnterEveryRule(@X@NodeRef)  {}
+func (@X@BaseListener) ExitEveryRule(@X@NodeRef)   {}
+func (@X@BaseListener) VisitTerminal(@X@Terminal)  {}
+func (@X@BaseListener) VisitErrorNode(@X@Terminal) {}
+BASE
+
+// @X@Walk walks n's subtree depth first, as ANTLR's ParseTreeWalker does:
+// at each node EnterEveryRule and the node's Enter method, then its children
+// in order (VisitTerminal for a token, VisitErrorNode for an error token),
+// then its Exit method and ExitEveryRule. It keeps its own stack, so a deep
+// tree cannot overflow Go's.
+func @X@Walk(n @X@NodeRef, l @X@Listener) {
+	if !n.Ok() {
+		return
+	}
+	type frame struct {
+		n    @X@NodeRef
+		next int
+	}
+	stack := []frame{{n, -1}}
+	for len(stack) > 0 {
+		f := &stack[len(stack)-1]
+		if f.next < 0 {
+			l.EnterEveryRule(f.n)
+			PFXEnter(l, f.n)
+			f.next = 0
+		}
+		if f.next < f.n.ChildCount() {
+			c := f.n.Child(f.next)
+			f.next++
+			switch {
+			case c.IsError():
+				l.VisitErrorNode(c.Terminal())
+			case c.IsToken():
+				l.VisitTerminal(c.Terminal())
+			default:
+				stack = append(stack, frame{c.Node(), -1})
+			}
+			continue
+		}
+		PFXExit(l, f.n)
+		l.ExitEveryRule(f.n)
+		stack = stack[:len(stack)-1]
+	}
+}
+
+// PFXEnter calls l's Enter method for n's kind.
+func PFXEnter(l @X@Listener, n @X@NodeRef) {
+ENTER
+}
+
+// PFXExit calls l's Exit method for n's kind.
+func PFXExit(l @X@Listener, n @X@NodeRef) {
+EXIT
+}
+`, "METHODS", methods, "BASE", base, "ENTER", dispatch("Enter"), "EXIT", dispatch("Exit"), "PFX", e.pfx, "@X@", x)
+}
