@@ -58,12 +58,14 @@ func nativeTyped(e env) string {
 // nodes with no alternative yet, which only an error-recovered tree has.
 type @X@Kind uint16
 
+// The kinds of nodes, numbered in rule order: a rule's own kind, then its
+// labeled alternatives'.
 const (
 CONSTS
 )
 
-// PFXKindBase is each rule's own kind; its labeled alternatives' kinds follow.
-var PFXKindBase = [...]@X@Kind{BASES}
+// LPFXKindBase is each rule's own kind; its labeled alternatives' kinds follow.
+var LPFXKindBase = [...]@X@Kind{BASES}
 
 // Kind is n's kind. Switching on it costs a table lookup and builds nothing:
 //
@@ -72,7 +74,7 @@ var PFXKindBase = [...]@X@Kind{BASES}
 //	}
 func (n @X@NodeRef) Kind() @X@Kind {
 	d := &n.t.Nodes[n.i]
-	return PFXKindBase[d.Rule] + @X@Kind(d.Alt)
+	return LPFXKindBase[d.Rule] + @X@Kind(d.Alt)
 }
 
 // @X@Handle is a node as a handle type (see Typed). Its name ends in Handle,
@@ -120,7 +122,7 @@ func (t *@X@Tree) handles() []struct{ @X@NodeRef } {
 	return t.typed
 }
 `, "CONSTS", consts, "BASES", bases, "CASES", kindSwitch(e, (k) => s"return (*${k.Handle()})(h)", false),
-        "PFX", e.pfx, "@X@", x)
+        "LPFX", decapitalize(e.pfx), "@X@", x)
 }
 
 // nativeVisitor emits the visitor: one method per kind of node, a base

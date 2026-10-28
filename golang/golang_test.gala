@@ -378,7 +378,7 @@ func TestNativeTypedViewAndListener(t T) T {
         "func (n ExprNodeRef) Typed() ExprHandle",
         // A labeled rule has its own kind, then one per labeled alternative.
         "\tExprKIND_stat ExprKind = 1\n\tExprKIND_exprStat ExprKind = 2\n\tExprKIND_assign ExprKind = 3\n",
-        "var ExprGalopKindBase = [...]ExprKind{0, 1, 4, 5}",
+        "var exprGalopKindBase = [...]ExprKind{0, 1, 4, 5}",
         "\tcase ExprKIND_assign:\n\t\treturn (*AssignNode)(h)",
         "\tcase ExprKIND_stat:\n\t\treturn (*StatNode)(h)",
         // The listener comes by default, with a method pair per kind.
@@ -414,8 +414,8 @@ func TestConverterFile(t T) T = generate(exprGrammar, converterDefines) match {
             "\tcase *StatContext:\n\t\treturn uint16(galopnative.ExprRULE_stat), 0",
             // op labels a token in a loop, where ANTLR's field holds only the
             // last match: the children are aligned with the steps first.
-            "\tcase *ExprContext:\n\t\tif c.align(ExprGalopAlignExpr, id) {\n\t\t\tbreak\n\t\t}\n\t\tc.labelToken(x.op, 1, id)",
-            "var ExprGalopAlignExpr = []ExprGalopStep{{op: ExprGalopOpChoose, exit: -1, alts: [][]ExprGalopStep{{{op: ExprGalopOpRule",
+            "\tcase *ExprContext:\n\t\tif !exprGalopRecovered(&x.BaseParserRuleContext) && c.align(exprGalopAlignExpr, id) {\n\t\t\tbreak\n\t\t}\n\t\tc.labelToken(x.op, 1, id)",
+            "var exprGalopAlignExpr = exprGalopNewNFA([]exprGalopStep{{op: exprGalopOpChoose, exit: -1, alts: [][]exprGalopStep{{{op: exprGalopOpRule",
         )
         expected.FoldLeft(t1, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
     }
@@ -435,4 +435,22 @@ func TestNativePackageNeedsTheANTLRFlavorAndAPackage(t T) T {
     Eq(t1, empty.Map((fs) => fs.Map(_.Name)), Left[Array[string], Array[string]](ArrayOf(
         "nativePackage must name the native flavor's Go package, not be empty",
     )))
+}
+
+func TestConverterRejectsPredicates(t T) T {
+    // The aligner runs no semantic predicates, so it could pick an
+    // alternative a predicate rules out; the Go target rejects grammars with
+    // predicates, so no converter is written for one.
+    val src = "grammar P;\nr : ({true}? x=ID)+ EOF ;\nID : [a-z]+ ;\nWS : ' ' -> skip ;\n"
+    Eq(t, generate(src, converterDefines).Map((files) => files.Map(_.Name)),
+        Left[Array[string], Array[string]](ArrayOf("Go target: semantic predicates are not supported yet")))
+}
+
+func TestNativePackageIsTrimmed(t T) T {
+    val defines = ArrayOf(g4.OptionEntry("flavor", "antlr"), g4.OptionEntry("nativePackage", "  example.com/expr/native "))
+    generate(exprGrammar, defines) match {
+        case Right(files) => IsTrue(t, files.Exists((f) => f.Name == "expr_galop_native.go" &&
+            strings.Contains(f.Content, "\tgalopnative \"example.com/expr/native\"\n")))
+        case Left(errs) => t.Error(errs.MkString("; "))
+    }
 }

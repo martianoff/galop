@@ -797,8 +797,11 @@ The mapping:
   alternatives' steps, generated as a small table per context type. The
   alignment tries each choice's and loop's alternatives in ANTLR's order
   (the lower alternative first), which is how ANTLR's parser chose between
-  matches of the same children. An error-recovered node that does not align
-  falls back to the fields.
+  matches of the same children. A state that failed at a child is not tried
+  there again, so the search is polynomial. A node whose rule ANTLR's parser
+  recovered an error in, or that does not align, falls back to the fields.
+  The aligner runs no semantic predicates; the Go target rejects grammars
+  with them, so no converter meets one.
 - **Errors.** ANTLR's error nodes become error tokens. A made-up token (token
   index -1) becomes a conjured token.
 

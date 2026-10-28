@@ -808,12 +808,20 @@ func (n @X@NodeRef) labeledTokens(label uint8) []@X@Terminal {
 }
 
 // lastLabeledToken is n's last token stored under label, or no token (see
-// lastLabeled).
+// lastLabeled). TokenLabels is in node order, and a node's records in token
+// order, so it is the last of n's records with that label.
 func (n @X@NodeRef) lastLabeledToken(label uint8) @X@Terminal {
-	if toks := n.labeledTokens(label); len(toks) > 0 {
-		return toks[len(toks)-1]
+	last := @X@Terminal{n.t, -1}
+	if n.Ok() {
+		labels := n.t.TokenLabels
+		lo, _ := slices.BinarySearchFunc(labels, n.i, func(l @X@TokenLabel, node int32) int { return int(l.Node - node) })
+		for ; lo < len(labels) && labels[lo].Node == n.i; lo++ {
+			if labels[lo].Label == label {
+				last = @X@Terminal{n.t, labels[lo].Token}
+			}
+		}
 	}
-	return @X@Terminal{n.t, -1}
+	return last
 }
 
 // @X@Terminal is a token of a tree, or no token.

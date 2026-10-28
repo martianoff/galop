@@ -136,8 +136,10 @@ func TestConvertMatchesNative(t *testing.T) {
 		if d := sameTree(want, fgot); d != "" {
 			t.Errorf("sentence %d: converted antlr-flavor tree: %s\n%s", i, d, src)
 		}
-		if msg := walkAll(want); msg != "" {
-			t.Errorf("sentence %d: %s", i, msg)
+		for _, tree := range []*gn.@G@Tree{want, got, fgot} {
+			if msg := walkAll(tree); msg != "" {
+				t.Errorf("sentence %d: %s", i, msg)
+			}
 		}
 	}
 	if accepted == 0 {
@@ -170,8 +172,8 @@ func mutate(r *rand.Rand, src string) string {
 func TestConvertRecoveredTrees(t *testing.T) {
 	srcs := sentences(t)
 	r := rand.New(rand.NewSource(1))
-	withErrors := 0
-	for i, tries := 0, 0; i < *mutants && tries < 50**mutants; tries++ {
+	converted, withErrors := 0, 0
+	for tries := 0; converted < *mutants && tries < 50**mutants; tries++ {
 		src := mutate(r, srcs[r.Intn(len(srcs))])
 		if len(gn.@G@Lex(src).Errors) > 0 {
 			continue
@@ -180,7 +182,8 @@ func TestConvertRecoveredTrees(t *testing.T) {
 		if err == nil {
 			continue
 		}
-		i++
+		converted++
+		i := converted
 		tree, _ := ga.@G@ToNative(ctx, stream, src)
 		if msg := wellFormed(tree); msg != "" {
 			t.Errorf("mutant %d: %s\n%s", i, msg, src)
@@ -196,7 +199,10 @@ func TestConvertRecoveredTrees(t *testing.T) {
 			withErrors++
 		}
 	}
-	t.Logf("recovered trees converted, %d with error tokens", withErrors)
+	if converted == 0 {
+		t.Fatal("no mutant was rejected, so no recovered tree was converted")
+	}
+	t.Logf("%d recovered trees converted, %d with error tokens", converted, withErrors)
 }
 
 // wellFormed describes the first way tree breaks the native tree's
@@ -282,4 +288,31 @@ func walkAll(tree *gn.@G@Tree) string {
 		return fmt.Sprintf("Walk reported %d tokens and %d error tokens of %d and %d", c.tokens, c.errs, tokens, len(tree.ErrorKids))
 	}
 	return ""
+}
+
+// BenchmarkConvert converts ANTLR's trees of the sentences native parsing
+// accepts (built once, outside the timing).
+func BenchmarkConvert(b *testing.B) {
+	fs, err := corpus.FromSamples(*samples)
+	if err != nil {
+		b.Fatal(err)
+	}
+	type parsed struct {
+		ctx    antlr.ParserRuleContext
+		stream *antlr.CommonTokenStream
+		src    string
+	}
+	var trees []parsed
+	for _, f := range fs {
+		if ctx, stream, err := parseANTLR(f.Src); err == nil {
+			trees = append(trees, parsed{ctx, stream, f.Src})
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		for _, t := range trees {
+			ga.@G@ToNative(t.ctx, t.stream, t.src)
+		}
+	}
 }

@@ -1,7 +1,11 @@
 package convert
 
 import (
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/antlr4-go/antlr/v4"
 
 	la "github.com/martianoff/galop/differential/convert/labels/antlr"
 	ln "github.com/martianoff/galop/differential/convert/labels/native"
@@ -21,6 +25,9 @@ func TestLabelGettersMatchANTLR(t *testing.T) {
 		t.Fatal(err)
 	}
 	items, nitems := ctx.(*la.ProgContext).AllItem(), root.AllItem()
+	if len(items) != len(want) || len(nitems) != len(want) {
+		t.Fatalf("%d items, native %d, want %d", len(items), len(nitems), len(want))
+	}
 	for i, it := range items {
 		var got, ngot string
 		switch c := it.(type) {
@@ -51,5 +58,35 @@ func TestLabelGettersMatchANTLR(t *testing.T) {
 		if got != want[i] || ngot != got {
 			t.Errorf("item %d: ANTLR's getter gives %q, native %q, want %q", i, got, ngot, want[i])
 		}
+	}
+}
+
+// TestAlignmentIsPolynomial converts a node the aligner cannot match: an
+// Amb node of 40 IDs and no ';', built by hand. Every way to split the IDs
+// between the loop's alternatives fails; without remembering failures the
+// search would try about 2^40 of them.
+func TestAlignmentIsPolynomial(t *testing.T) {
+	src := "amb" + strings.Repeat(" x", 40)
+	stream := antlr.NewCommonTokenStream(la.NewLabelsLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel)
+	stream.Fill()
+	ctx := la.NewAmbContext(nil, la.NewItemContext(nil, nil, -1))
+	toks := stream.GetAllTokens()
+	for _, tok := range toks[:len(toks)-1] {
+		ctx.AddTokenNode(tok)
+	}
+	ctx.SetStart(toks[0])
+	ctx.SetStop(toks[len(toks)-2])
+	done := make(chan *ln.LabelsTree)
+	go func() {
+		tree, _ := la.LabelsToNative(ctx, stream, src)
+		done <- tree
+	}()
+	select {
+	case tree := <-done:
+		if n := len(tree.TokenLabels); n != 0 {
+			t.Errorf("%d token labels from a node that does not align, want ANTLR's field (none)", n)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the alignment did not finish in 10 s")
 	}
 }

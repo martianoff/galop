@@ -40,7 +40,8 @@ func converted(src string) (antlrTree, flavorTree *nativegala.GalaTree, antlrCtx
 func recovered(tb testing.TB, n int, check func(i int, src string, tree *nativegala.GalaTree, ctx antlr.ParserRuleContext)) {
 	srcs := mutationSources(tb)
 	r := rand.New(rand.NewSource(*mutantSeed))
-	for i := 0; i < n; {
+	i := 0
+	for tries := 0; i < n && tries < 50*n; tries++ {
 		src := mutate.Mutate(r, srcs[r.Intn(len(srcs))])
 		if len(nativegala.Tokens(src).Errors) > 0 {
 			continue
@@ -52,6 +53,9 @@ func recovered(tb testing.TB, n int, check func(i int, src string, tree *nativeg
 			i++
 			check(i, src, tree, ctx)
 		}
+	}
+	if i == 0 {
+		tb.Fatal("no mutant was rejected, so no recovered tree was converted")
 	}
 }
 

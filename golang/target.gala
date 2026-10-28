@@ -101,7 +101,7 @@ func (t goTarget) FileNames(g g4.Grammar, c atn.Compiled, opts codegen.Options) 
 // nativePackageProblem explains why the nativePackage option cannot be
 // used: it names the package the antlr flavor's converter writes trees for,
 // so it needs that flavor and a package.
-func nativePackageProblem(opts codegen.Options, f Flavor) Option[string] = (opts.Define("nativePackage"), f) match {
+func nativePackageProblem(opts codegen.Options, f Flavor) Option[string] = (opts.Define("nativePackage").Map(strings.TrimSpace), f) match {
     case (Some(""), _) => Some("nativePackage must name the native flavor's Go package, not be empty")
     case (Some(p), NativeFlavor(_)) =>
         Some(s"nativePackage=$p needs flavor=antlr: it adds a converter to the antlr flavor's output")
@@ -109,9 +109,11 @@ func nativePackageProblem(opts codegen.Options, f Flavor) Option[string] = (opts
 }
 
 // converterImport is the native flavor's package the antlr flavor writes a
-// converter to the native tree for (-DnativePackage), or None for none.
+// converter to the native tree for (-DnativePackage, spaces trimmed), or None
+// for none. FileNames and Generate both read it, so they agree; a blank value
+// writes no converter (and Generate reports it, see nativePackageProblem).
 func converterImport(opts codegen.Options, f Flavor) Option[string] = f match {
-    case ANTLRFlavor() => opts.Define("nativePackage")
+    case ANTLRFlavor() => opts.Define("nativePackage").Map(strings.TrimSpace).Filter(_ != "")
     case NativeFlavor(_) => None()
 }
 
