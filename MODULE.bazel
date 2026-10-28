@@ -3,7 +3,7 @@ module(
     # Tracks the latest tagged galop release. Bump in lockstep with the release
     # tag so registry consumers see a MODULE.bazel whose version matches the one
     # they requested.
-    version = "0.2.3",
+    version = "0.2.4",
 )
 
 bazel_dep(name = "platforms", version = "1.0.0")
