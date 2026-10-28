@@ -118,6 +118,12 @@ both corpora and both generated sets:
   rule's or labeled alternative's handle, and the walk must report the order
   ANTLR's `ParseTreeWalker` does.
 
+**`TestParseAtMatchesANTLR`** (`diff_test`, `heldout_test`) re-parses expressions cut
+from the corpus at their line and column, as the GALA compiler re-parses interpolated
+expressions and default values. It parses each one alone and with a stray `)` after it.
+Both flavors must give ANTLR's tree, its tokens at its lines and columns, and stop
+before the token ANTLR stops before.
+
 ```sh
 bazel test //differential/diff:generated_test //differential/diff:generated_deep_test
 bazel test //differential/diff:generated_large_1_test   # one of the four large runs (manual)

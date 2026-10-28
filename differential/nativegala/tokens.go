@@ -16,6 +16,14 @@ func Tokens(src string) *GalaTokens {
 	return ts
 }
 
+// TokensAt is Tokens for text whose first character sits at line and column
+// of an enclosing file (line from 1, column from 0).
+func TokensAt(src string, line, column int) *GalaTokens {
+	ts := GalaLexAt(src, line, column)
+	RetypeLines(ts)
+	return ts
+}
+
 // Parse parses src as a GALA source file. Lexical errors count as errors, as
 // in the GALA compiler.
 func Parse(src string) (SourceFileNode, error) {

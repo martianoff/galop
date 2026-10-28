@@ -6,6 +6,7 @@ DIFF_TEST_SRCS = [
     "errors_test.go",
     "native_test.go",
     "convert_test.go",
+    "at_test.go",
     "mutations_test.go",
 ]
 
@@ -60,7 +61,7 @@ go_test(
     deps = DIFF_TEST_DEPS,
 ) for name, corpus, size, tags, args in [
     ("heldout_test", "//differential:heldout", "medium", [], [
-        "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestConvertMatchesNative|TestConvertRecoveredTrees|TestMutations|TestSyntaxErrors)$$",
+        "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestConvertMatchesNative|TestConvertRecoveredTrees|TestParseAtMatchesANTLR|TestMutations|TestSyntaxErrors)$$",
     ]),
     ("mutations_large_test", "//differential:corpus", "enormous", ["manual"], [
         "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees)$$",

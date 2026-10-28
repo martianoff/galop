@@ -52,6 +52,32 @@ func GalopTokens(src string) *antlr.CommonTokenStream {
 	return newTokenStream(lexer)
 }
 
+// TokensAt is Tokens for text whose first character sits at line and
+// column of an enclosing file (line from 1, column from 0): the lexer counts
+// from there, as the GALA compiler seeds it to re-parse an interpolated
+// expression or a default value.
+func TokensAt(src string, line, column int) *antlr.CommonTokenStream {
+	lexer := antlrgala.NewgalaLexer(antlr.NewInputStream(src))
+	isolateLexerCaches(lexer.BaseLexer)
+	lexer.RemoveErrorListeners()
+	seed(lexer.BaseLexer, line, column)
+	return newTokenStream(lexer)
+}
+
+// GalopTokensAt is TokensAt with galop's generated lexer in place of ANTLR's.
+func GalopTokensAt(src string, line, column int) *antlr.CommonTokenStream {
+	lexer := antlrgala.NewgalaGalopLexer(antlr.NewInputStream(src))
+	lexer.RemoveErrorListeners()
+	seed(lexer.BaseLexer, line, column)
+	return newTokenStream(lexer)
+}
+
+// seed makes a lexer count lines and columns from line and column.
+func seed(lexer *antlr.BaseLexer, line, column int) {
+	sim := lexer.Interpreter.(*antlr.LexerATNSimulator)
+	sim.Line, sim.CharPositionInLine = line, column
+}
+
 func tokens(src string, errs antlr.ErrorListener) *antlr.CommonTokenStream {
 	lexer := antlrgala.NewgalaLexer(antlr.NewInputStream(StripBOM(src)))
 	isolateLexerCaches(lexer.BaseLexer)

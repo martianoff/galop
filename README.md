@@ -237,6 +237,14 @@ parser.ExprWalk(prog.Ref(), myListener)       // EnterAssign/ExitAssign, VisitTe
 v := parser.ExprAccept[int](expr.Ref(), myVisitor) // VisitX per rule and labeled alternative
 ```
 
+To parse text cut from a larger file, such as an expression inside a string,
+start the lexer at the text's position so tokens and errors report positions in
+the enclosing file. The native flavor has `ExprLexAt(src, line, column)`. The
+antlr flavor's lexer counts from its `Interpreter`'s `Line` and
+`CharPositionInLine`, as ANTLR's lexer does. An entry rule that is not anchored
+to EOF stops after its match: `Tree().Next` (native) or the stream's next token
+(antlr flavor) is where it stopped, as in ANTLR.
+
 To move a program from ANTLR's trees to the native tree step by step, generate
 the antlr flavor with `-DnativePackage=<import path of the native package>`. It
 then also writes `expr_galop_native.go`, whose `ExprToNative(root, stream, src)`
