@@ -712,10 +712,16 @@ handles, for every rule and every labeled alternative (`gala.g4`: 83 rules and
   the `GalaNodeRef` back), so a type switch reads like ANTLR's:
   `switch p := n.Parent().Typed().(type) { case *PrimaryNode: … case *TypedPatternNode: … }`.
   A handle is two words, and putting one in an interface would allocate, so
-  the first `Typed` call on a tree builds a typed view: every node as its
-  handle, in one slice per kind (a few appends per kind, once per tree).
-  `Typed` then returns a pointer into it, which fits an interface without
-  allocating: 0 allocations per call.
+  the first `Typed` call on a tree builds its handles: one array of every
+  node as a handle, 16 bytes a node, in one allocation. Every handle type has
+  the element's underlying type, so `Typed` converts a pointer into the array
+  to the node's handle type: 0 allocations per call. On the GALA corpus the
+  array costs about 6% of a native parse's time and 28% of its memory.
+- **`n.Kind()`** is the node's kind, a `GalaKind` constant per rule and
+  labeled alternative (`GalaKIND_primary`), read from a table. A switch on it
+  needs no handles: `switch p := n.Parent(); p.Kind() { case GalaKIND_primary:
+  c := PrimaryNode{p}; … }`. It is the dispatch for hot paths, at no memory
+  cost; `Typed` is the one that reads like ANTLR's type switches.
 - **`GalaVisitor[R]`** (with `-visitor`) has a `VisitX(n XNode) R` per kind.
   `GalaAccept(n, v)` calls the method for `n`'s kind;
   embedding `GalaBaseVisitor[R]` gives methods that return the zero value.
@@ -729,8 +735,7 @@ handles, for every rule and every labeled alternative (`gala.g4`: 83 rules and
   does, with an explicit stack, so a deep tree cannot overflow Go's.
 
 `Typed`, `GalaAccept` and the listener's dispatch are one generated switch on
-the node's rule and alternative, so walking and visiting allocate nothing per
-node.
+`Kind`, so walking and visiting allocate nothing.
 
 ANTLR's labeled rules have a context type for the rule itself, which only an
 error-recovered tree uses (ANTLR's recovery can leave a node before choosing

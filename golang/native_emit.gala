@@ -109,7 +109,7 @@ func nodeType(ruleOrLabel string) string = capitalize(ruleOrLabel) + "Node"
 val nativeReserved = ArrayOf(
     "Ok", "Tree", "Index", "Rule", "Alt", "Start", "Stop", "StartIndex", "StopIndex", "GetText",
     "SourceText", "ChildCount", "Child", "Parent", "Token", "Tokens", "HiddenBefore", "Walk", "ToStringTree",
-    "Ref", "Typed",
+    "Ref", "Typed", "Kind",
 )
 
 // nativeName escapes a method name that clashes with a handle's own methods.
@@ -496,7 +496,7 @@ type @X@Tree struct {
 	ConjuredText []string
 	parents      []int32
 	parentsOnce  sync.Once
-	typed        *PFXTyped
+	typed        []struct{ @X@NodeRef }
 	typedOnce    sync.Once
 }
 

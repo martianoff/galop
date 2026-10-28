@@ -281,6 +281,10 @@ func checkTyped(tree *nativegala.GalaTree) string {
 		if want == "CaseClauseNode" || want == "TypedPatternNode" {
 			visited = want
 		}
+		if isClause, kind := want == "CaseClauseNode", n.Kind(); isClause != (kind == nativegala.GalaKIND_caseClause) ||
+			(want == "TypedPatternNode") != (kind == nativegala.GalaKIND_typedPattern) {
+			return fmt.Sprintf("node %d: Kind is %d for a %s", i, kind, want)
+		}
 		if v := nativegala.GalaAccept[string](n, kinds{}); v != visited {
 			return fmt.Sprintf("node %d: Accept returned %q, want %q", i, v, visited)
 		}
@@ -388,4 +392,33 @@ func BenchmarkTypedView(b *testing.B) {
 			r.Typed()
 		}
 	}
+}
+
+// BenchmarkKind switches on Kind for every node of the inputs' trees: the
+// typed dispatch that needs no handles.
+func BenchmarkKind(b *testing.B) {
+	var trees []*nativegala.GalaTree
+	nodes := 0
+	for _, f := range files(b) {
+		if root, err := nativegala.Parse(f.Src); err == nil {
+			trees = append(trees, root.Tree())
+			nodes += len(root.Tree().Nodes)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	clauses := 0
+	for range b.N {
+		for _, t := range trees {
+			for i := range t.Nodes {
+				switch n := t.Node(i); n.Kind() {
+				case nativegala.GalaKIND_caseClause:
+					clauses += nativegala.CaseClauseNode{GalaNodeRef: n}.ChildCount()
+				case nativegala.GalaKIND_typedPattern:
+					clauses++
+				}
+			}
+		}
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*nodes), "ns/node")
 }

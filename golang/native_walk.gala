@@ -34,48 +34,51 @@ func ruleKinds(r atn.RuleIR) Array[nodeKind] =
 // nodeKinds lists every kind of node of the grammar, in rule order.
 func nodeKinds(e env) Array[nodeKind] = e.rules.FlatMap(ruleKinds)
 
-// kindSwitch emits a switch on node n's rule and labeled alternative that
-// runs body(k) for n's kind k; methodsOnly leaves out the kinds without
-// visitor and listener methods. A labeled rule's own kind is the default of
-// the switch on alternatives, so no body runs after another.
+// kindSwitch emits a switch on node n's kind that runs body(k) for kind k;
+// methodsOnly leaves out the kinds without visitor and listener methods.
 func kindSwitch(e env, body func(nodeKind) string, methodsOnly bool) string {
     val x = e.exported()
-    val cases = e.rules.Map((r) => {
-        val head = s"\tcase ${x}RULE_${r.Name}:\n"
-        ruleKinds(r) match {
-            case Array(only) => head + s"\t\t${body(only)}"
-            case kinds => {
-                val alts = kinds.Drop(1).Map((k) => s"\t\tcase ${k.Alt}:\n\t\t\t${body(k)}").MkString("\n")
-                val base = if (methodsOnly) "" else s"\n\t\tdefault:\n\t\t\t${body(kinds.Head())}"
-                head + s"\t\tswitch n.t.Nodes[n.i].Alt {\n$alts$base\n\t\t}"
-            }
-        }
-    })
-    s"\tswitch n.t.Nodes[n.i].Rule {\n${cases.MkString("\n")}\n\t}"
+    val cases = nodeKinds(e).Filter((k) => !methodsOnly || k.HasMethods()).Map((k) =>
+        s"\tcase ${x}KIND_${k.Name}:\n\t\t${body(k)}"
+    )
+    s"\tswitch n.Kind() {\n${cases.MkString("\n")}\n\t}"
 }
 
-// nativeTyped emits Typed, the interface every handle type satisfies, and the
-// typed view behind it: every node of a tree as its handle, one slice per
-// kind, built once per tree, so that Typed returns a pointer into it and
-// allocates nothing.
+// nativeTyped emits a node's kind, Typed and the interface every handle type
+// satisfies. Kind is a table lookup; Typed returns a pointer into the tree's
+// handles, an array built once per tree, so it allocates nothing.
 func nativeTyped(e env) string {
     val kinds = nodeKinds(e)
-    val slabs = kinds.Map((k) => s"\ts${k.Method()} []${k.Handle()}").MkString("\n")
+    val x = e.exported()
+    val consts = kinds.ZipWithIndex().Map((ki) => s"\t${x}KIND_${ki.V1.Name} ${x}Kind = ${ki.V2}").MkString("\n")
     val names = kinds.Map(_.Name)
-    val kindOf = kindSwitch(e, (k) => s"return ${names.IndexOf(k.Name)}", false)
-    val makes = kinds.ZipWithIndex().Map((ki) =>
-        s"\tv.s${ki.V1.Method()} = make([]${ki.V1.Handle()}, 0, counts[${ki.V2}])"
-    ).MkString("\n")
-    // The right side is read before the assignment, so at gets the length
-    // before the append.
-    val build = kindSwitch(e, (k) => {
-        val s = s"v.s${k.Method()}"
-        s"$s, v.at[n.i] = append($s, ${k.Handle()}{n}), int32(len($s))"
-    }, false)
-    fill(`// @X@Handle is a node as a handle type (see Typed). Its name ends in Handle,
-// never Node, so no rule's or label's handle type can take it. Every handle type's
-// pointer is one, so a type switch over them reads like one over ANTLR's
-// context types:
+    val bases = e.rules.Map((r) => s"${names.IndexOf(r.Name)}").MkString(", ")
+    fill(`// @X@Kind is the kind of a node: its rule, or its rule's labeled
+// alternative, one @X@KIND_ constant each. A labeled rule's own kind is for
+// nodes with no alternative yet, which only an error-recovered tree has.
+type @X@Kind uint16
+
+const (
+CONSTS
+)
+
+// PFXKindBase is each rule's own kind; its labeled alternatives' kinds follow.
+var PFXKindBase = [...]@X@Kind{BASES}
+
+// Kind is n's kind. Switching on it costs a table lookup and builds nothing:
+//
+//	switch p := n.Parent(); p.Kind() {
+//	case @X@KIND_primary: c := PrimaryNode{p}; ...
+//	}
+func (n @X@NodeRef) Kind() @X@Kind {
+	d := &n.t.Nodes[n.i]
+	return PFXKindBase[d.Rule] + @X@Kind(d.Alt)
+}
+
+// @X@Handle is a node as a handle type (see Typed). Its name ends in Handle,
+// never Node, so no rule's or label's handle type can take it. Every handle
+// type's pointer is one, so a type switch over them reads like one over
+// ANTLR's context types:
 //
 //	switch c := n.Parent().Typed().(type) {
 //	case *PrimaryNode: ...
@@ -90,61 +93,34 @@ func (n @X@NodeRef) Ref() @X@NodeRef { return n }
 
 // Typed is n as a pointer to its most specific handle: its labeled
 // alternative's when it has one, its rule's otherwise; nil for no node. The
-// first call on a tree builds its typed view, once, safely from any
-// goroutine; after that Typed allocates nothing. The handle is shared: do not
-// write through the pointer.
+// pointer is into the tree's handles, built on the first call, once, safely
+// from any goroutine (16 bytes a node); after that Typed allocates nothing.
+// The handle is shared: do not write through the pointer. A switch on Kind
+// needs no handles at all.
 func (n @X@NodeRef) Typed() @X@Handle {
 	if !n.Ok() {
 		return nil
 	}
-	v := n.t.typedView()
-	j := v.at[n.i]
+	h := &n.t.handles()[n.i]
 CASES
 	return n
 }
 
-// PFXTyped is a tree's typed view: at maps each node to its place in its
-// kind's slice.
-type PFXTyped struct {
-	at []int32
-SLABS
-}
-
-// typedView builds t's typed view on first use.
-func (t *@X@Tree) typedView() *PFXTyped {
+// handles is t's nodes as handles, built on first use. Every handle type has
+// the same underlying type as an element, so a pointer to one converts to a
+// pointer to any handle type.
+func (t *@X@Tree) handles() []struct{ @X@NodeRef } {
 	t.typedOnce.Do(func() {
-		t.typed = PFXNewTyped(t)
+		hs := make([]struct{ @X@NodeRef }, len(t.Nodes))
+		for i := range hs {
+			hs[i].@X@NodeRef = @X@NodeRef{t, int32(i)}
+		}
+		t.typed = hs
 	})
 	return t.typed
 }
-
-// PFXNewTyped builds t's typed view: it counts the nodes of each kind, so
-// that each kind's slice is allocated once, at its size.
-func PFXNewTyped(t *@X@Tree) *PFXTyped {
-	var counts [NKIND]int32
-	for i := range t.Nodes {
-		counts[PFXKindOf(@X@NodeRef{t, int32(i)})]++
-	}
-	v := &PFXTyped{at: make([]int32, len(t.Nodes))}
-MAKES
-	for i := range t.Nodes {
-		v.add(@X@NodeRef{t, int32(i)})
-	}
-	return v
-}
-
-// PFXKindOf is the index of n's kind among the typed view's slices.
-func PFXKindOf(n @X@NodeRef) int {
-KINDOF
-	return 0
-}
-
-// add puts node n in its kind's slice.
-func (v *PFXTyped) add(n @X@NodeRef) {
-BUILD
-}
-`, "CASES", kindSwitch(e, (k) => s"return &v.s${k.Method()}[j]", false), "SLABS", slabs, "KINDOF", kindOf, "MAKES", makes, "NKIND", s"${kinds.Size()}",
-        "BUILD", build, "PFX", e.pfx, "@X@", e.exported())
+`, "CONSTS", consts, "BASES", bases, "CASES", kindSwitch(e, (k) => s"return (*${k.Handle()})(h)", false),
+        "PFX", e.pfx, "@X@", x)
 }
 
 // nativeVisitor emits the visitor: one method per kind of node, a base

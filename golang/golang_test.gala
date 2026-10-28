@@ -376,9 +376,11 @@ func TestNativeTypedViewAndListener(t T) T {
     val parser = nativeFiles(exprGrammar).Get("expr_parser.go").GetOrElse("")
     val expected = ArrayOf(
         "func (n ExprNodeRef) Typed() ExprHandle",
-        // A labeled rule's kinds: its labeled alternatives, then the rule's own.
-        "\t\tcase 2:\n\t\t\treturn &v.sAssign[j]",
-        "\t\tdefault:\n\t\t\treturn &v.sStat[j]",
+        // A labeled rule has its own kind, then one per labeled alternative.
+        "\tExprKIND_stat ExprKind = 1\n\tExprKIND_exprStat ExprKind = 2\n\tExprKIND_assign ExprKind = 3\n",
+        "var ExprGalopKindBase = [...]ExprKind{0, 1, 4, 5}",
+        "\tcase ExprKIND_assign:\n\t\treturn (*AssignNode)(h)",
+        "\tcase ExprKIND_stat:\n\t\treturn (*StatNode)(h)",
         // The listener comes by default, with a method pair per kind.
         "\tEnterAssign(n AssignNode)\n\tExitAssign(n AssignNode)",
         "func ExprWalk(n ExprNodeRef, l ExprListener)",
