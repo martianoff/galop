@@ -195,7 +195,7 @@ struct decider(
     g grammarInfo,
     maxK int,
     stacks contextTable,
-    memo Ptr[m.HashMap[string, Lookahead]],
+    memo Ptr[m.HashMap[Tuple3[int, bool, string], Lookahead]],
     expanded Ptr[m.Array[Ptr[m.HashMap[int64, expansion]]]],
     expanding Ptr[m.HashSet[int64]],
     // trackExit records Exit on configurations leaving the decision's rule;
@@ -208,7 +208,7 @@ func newDecider(g grammarInfo, maxK int, trackExit bool = true) decider =
         g,
         maxK,
         newContextTable(),
-        m.EmptyHashMap[string, Lookahead](),
+        m.EmptyHashMap[Tuple3[int, bool, string], Lookahead](),
         m.ArrayTabulate(maxK + 2, (_) => m.EmptyHashMap[int64, expansion]()),
         m.EmptyHashSet[int64](),
         trackExit,
@@ -390,7 +390,7 @@ func (d decider) decide(moves Array[move], depth int) Lookahead {
 // ones before the first token.
 // Past EOF there are no more tokens to look at: every alternative sees EOF again.
 func (d decider) after(next Array[config], depth int, atEOF bool) Lookahead {
-    val key = s"$depth|$atEOF|" + unique(next.Map(_.key())).Sorted().MkString(" ")
+    val key = (depth, atEOF, unique(next.Map(_.key())).Sorted().MkString(" "))
     d.memo.Get(key) match {
         case Some(known) => known
         case None() => {
