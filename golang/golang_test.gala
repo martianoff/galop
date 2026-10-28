@@ -28,11 +28,16 @@ WS : [ \t\r\n]+ -> skip ;
 `
 
 // generate runs the Go target on a test grammar that must be valid.
-func generate(src string, defines Array[g4.OptionEntry]) Either[Array[string], Array[codegen.OutputFile]] {
+func generate(
+    src string,
+    defines Array[g4.OptionEntry],
+    listener bool = true,
+    visitor bool = false,
+) Either[Array[string], Array[codegen.OutputFile]] {
     val (g, c) = grammartest.Compile(src)
     Target("test").Generate(
         codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, repair.PlanFor(g, c), false))),
-        codegen.Options(Package = "expr", Defines = defines),
+        codegen.Options(Package = "expr", Defines = defines, Listener = listener, Visitor = visitor),
     )
 }
 
@@ -164,7 +169,7 @@ func TestFileNamesMatchGenerate(t T) T = g4.Parse(exprGrammar) match {
                 Right[Array[string], Array[string]](Target("test").FileNames(g, c, codegen.Options(Defines = defines))),
                 generate(exprGrammar, defines).Map((files) => files.Map(_.Name)),
             )
-            check(check(t, EmptyArray[g4.OptionEntry]()), antlrDefines)
+            check(check(check(t, EmptyArray[g4.OptionEntry]()), antlrDefines), converterDefines)
         }
         case Left(errs) => t.Error(errs.MkString("; "))
     }
@@ -366,3 +371,53 @@ X : 'x' ; Y : 'y' ;
     val t1 = IsTrue(t, strings.Contains(code, "p.adaptivePredict("))
     IsTrue(t1, strings.Contains(code, "const AGalopOpenerCount = 0"))
 }
+
+func TestNativeTypedViewAndListener(t T) T {
+    val parser = nativeFiles(exprGrammar).Get("expr_parser.go").GetOrElse("")
+    val expected = ArrayOf(
+        "func (n ExprNodeRef) Typed() ExprNode",
+        // A labeled rule's kinds: its labeled alternatives, then the rule's own.
+        "\t\tcase 2:\n\t\t\treturn &v.sAssign[j]",
+        "\t\tdefault:\n\t\t\treturn &v.sStat[j]",
+        // The listener comes by default, with a method pair per kind.
+        "\tEnterAssign(n AssignNode)\n\tExitAssign(n AssignNode)",
+        "func ExprWalk(n ExprNodeRef, l ExprListener)",
+    )
+    val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(parser, s)))
+    // As in ANTLR, a labeled rule's own kind has no listener methods.
+    val t2 = IsFalse(t1, strings.Contains(parser, "EnterStat("))
+    // The visitor needs -visitor.
+    IsFalse(t2, strings.Contains(parser, "type ExprVisitor[R any] interface"))
+}
+
+func TestNativeVisitorAndNoListener(t T) T {
+    val parser = parserOf(generate(exprGrammar, EmptyArray[g4.OptionEntry](), listener = false, visitor = true))
+    val t1 = IsTrue(t, strings.Contains(parser, "\tVisitAssign(n AssignNode) R\n"))
+    val t2 = IsTrue(t1, strings.Contains(parser, "func ExprAccept[R any](n ExprNodeRef, v ExprVisitor[R]) (r R)"))
+    IsFalse(t2, strings.Contains(parser, "ExprListener"))
+}
+
+// converterDefines select the antlr flavor with the converter to the native package.
+val converterDefines = ArrayOf(g4.OptionEntry("flavor", "antlr"), g4.OptionEntry("nativePackage", "example.com/expr/native"))
+
+func TestConverterFile(t T) T = generate(exprGrammar, converterDefines) match {
+    case Right(files) => {
+        val t1 = Eq(t, files.Map(_.Name), ArrayOf("expr_galop_parser.go", "expr_galop_native.go", "expr_galop_lexer.go"))
+        val code = files.Find((f) => f.Name == "expr_galop_native.go").Map(_.Content).GetOrElse("")
+        val expected = ArrayOf(
+            "\tgalopnative \"example.com/expr/native\"\n",
+            "func ExprToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.ExprTree, galopnative.ExprNodeRef)",
+            // Each context type maps to its rule and labeled alternative.
+            "\tcase *AssignContext:\n\t\treturn uint16(galopnative.ExprRULE_stat), 2",
+            "\tcase *StatContext:\n\t\treturn uint16(galopnative.ExprRULE_stat), 0",
+            // The token label op is read from ANTLR's field.
+            "\tcase *ExprContext:\n\t\tc.labelToken(x.op, 1, id)",
+        )
+        expected.FoldLeft(t1, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
+    }
+    case Left(errs) => t.Error(errs.MkString("; "))
+}
+
+func TestNoConverterWithoutNativePackage(t T) T =
+    Eq(t, generate(exprGrammar, antlrDefines).Map((files) => files.Map(_.Name)),
+        Right[Array[string], Array[string]](ArrayOf("expr_galop_parser.go", "expr_galop_lexer.go")))

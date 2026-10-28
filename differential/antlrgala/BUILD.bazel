@@ -26,7 +26,9 @@ genrule(
 
 # galop's lexer and parser for gala.g4 (the Go target's antlr flavor), generated at
 # build time by the galop CLI built from this repository, like ANTLR's. galop is a
-# source, not a tool, so it is built once (see testdata/grammars).
+# source, not a tool, so it is built once (see testdata/grammars). With
+# -DnativePackage it also writes the converter from these trees (and ANTLR's)
+# to the native flavor's tree in //differential/nativegala.
 genrule(
     name = "galop_go",
     srcs = [
@@ -35,9 +37,10 @@ genrule(
     ],
     outs = [
         "gala_galop_lexer.go",
+        "gala_galop_native.go",
         "gala_galop_parser.go",
     ],
-    cmd = "$(location //cmd/galop) -Dlanguage=Go -Dflavor=antlr -package antlrgala -Xexact-output-dir -o $(RULEDIR) $(location //testdata/grammars:gala.g4)",
+    cmd = "$(location //cmd/galop) -Dlanguage=Go -Dflavor=antlr -DnativePackage=github.com/martianoff/galop/differential/nativegala -package antlrgala -Xexact-output-dir -o $(RULEDIR) $(location //testdata/grammars:gala.g4)",
 )
 
 # The same parser generated with -Xno-brackets, so prediction reads tokens
@@ -75,5 +78,8 @@ go_library(
     ],
     importpath = "github.com/martianoff/galop/differential/antlrgala",
     visibility = ["//differential:__subpackages__"],
-    deps = ["@com_github_antlr4_go_antlr_v4//:antlr"],
+    deps = [
+        "//differential/nativegala",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
 )

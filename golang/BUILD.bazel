@@ -3,10 +3,12 @@ load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
 gala_library(
     name = "golang",
     srcs = [
+        "convert_emit.gala",
         "errors_go.gala",
         "guess_go.gala",
         "names.gala",
         "native_emit.gala",
+        "native_walk.gala",
         "parser_emit.gala",
         "repair_go.gala",
         "runtime_go.gala",
@@ -40,8 +42,10 @@ gala_test(
     ],
     importpath = "github.com/martianoff/galop/golang",
     lib_srcs = [
+        "convert_emit.gala",
         "names.gala",
         "native_emit.gala",
+        "native_walk.gala",
         "parser_emit.gala",
         "runtime_go.gala",
         "tables.gala",

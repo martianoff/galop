@@ -25,5 +25,6 @@ go_binary(
         "//differential/mutate",
         "//differential/nativegala",
         "//differential/perf",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
     ],
 )

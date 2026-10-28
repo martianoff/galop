@@ -95,6 +95,24 @@ These are the same checks the corpus mutation tests run (`diff_test`, `heldout_t
 and the large runs), pointed at the generated input with `-samples` instead of
 `-manifest`.
 
+The converter from ANTLR's trees to the native tree (see
+[design](DESIGN.md#from-antlrs-tree-to-the-native-tree)) has its own checks, run on
+both corpora and both generated sets:
+
+- **`TestConvertMatchesNative`** converts ANTLR's tree and galop's antlr-flavor tree
+  of every input native parsing accepts, and requires native parsing's tree: the same
+  tokens, hidden tokens, nodes, child references, token labels and `Next`, with no
+  made-up tokens.
+- **`TestConvertRecoveredTrees`** converts ANTLR's error-recovered trees of rejected
+  mutants (`-recovered_trees`, 100 per PR target and 500 to 2,000 in the large runs).
+  Each must be well formed: children before parents, every node but the root a
+  child exactly once, real tokens in order and at most once, spans in bounds. It
+  must also print as ANTLR prints the recovered tree.
+- **`TestTypedVisitorListener`** (`diff_test`) checks `Typed`, `GalaAccept` and
+  `GalaWalk` on the corpus trees and on recovered trees. Each node must get its
+  rule's or labeled alternative's handle, and the walk must report the order
+  ANTLR's `ParseTreeWalker` does.
+
 ```sh
 bazel test //differential/diff:generated_test //differential/diff:generated_deep_test
 bazel test //differential/diff:generated_large_1_test   # one of the four large runs (manual)
@@ -166,6 +184,10 @@ To keep the ratios stable on a shared runner:
 
 The gaps (first pass minus warm) are reported for galop and for the lexer. The
 lexer's gap is the floor any Go program pays.
+
+`…/w1/convert/warm-ms` is the warm time of converting each input's ANTLR trees to
+the native tree on one goroutine (the antlr flavor's tree where it accepts the file,
+ANTLR's recovered one where it does not). It is only reported.
 
 ### CI
 

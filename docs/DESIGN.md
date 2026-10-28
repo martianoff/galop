@@ -674,7 +674,7 @@ its context types, so code written against ANTLR's trees ports by renaming:
 | `ctx.Expression()`, `ctx.AllExpression()`, `ctx.Expression(i)` | the same |
 | `ctx.IDENTIFIER()`, `ctx.AllIDENTIFIER()` | the same, a `GalaTerminal` |
 | `ctx.GetGuard()` (a label) | the same |
-| `switch c := ctx.(type) { case *TypedPatternContext: ... }` | `if c, ok := n.AsTypedPattern(); ok { ... }` |
+| `switch c := ctx.(type) { case *TypedPatternContext: ... }` | `switch c := n.Typed().(type) { case *TypedPatternNode: ... }`, or `n.AsTypedPattern()` |
 | `ctx.GetText()`, `ctx.GetStart().GetLine()`, `ctx.GetStop()` | `n.GetText()`, `n.Start().Line`, `n.Stop()` |
 | `ctx.GetChildCount()`, `ctx.GetChild(i)`, `ctx.GetParent()` | `n.ChildCount()`, `n.Child(i)`, `n.Parent()` |
 | `ctx.GetToken(ttype, 0)` | `n.Token(ttype)` |
@@ -687,9 +687,114 @@ Token positions are byte offsets where ANTLR's are code-point indexes; lines and
 columns are ANTLR's. `GalaRuleNames` and `GalaAltNames` name rules and labeled
 alternatives.
 
-The layout leaves room to grow without breaking callers: error recovery can add
-error nodes as another kind of child reference and a list of errors to the tree;
-listeners and visitors are a generated walk over the same handles.
+A tree can hold **error tokens**, which the converter below produces from
+ANTLR's error-recovered trees; native parsing makes none. As ANTLR's
+`ErrorNode` is a `TerminalNode`, an error token is a token child like any
+other, so token accessors (`n.RPAREN()`, `n.Token(t)`) and `ToStringTree` see
+it as ANTLR's do; `Child(i).IsError()` tells it apart. `Tree.ErrorKids` lists
+the positions in `Kids` of the error tokens, in order, and is empty for a
+native parse, so the check costs nothing there. An error token is one ANTLR's
+recovery skipped or made up (`<missing ')'>`). Made-up tokens are not in the
+source, so they live in `Tree.Conjured` and `Tree.ConjuredText`, after the
+real ones: token reference `len(Tokens)+k` is `Conjured[k]`, which sits,
+empty, at the start of the real token after it. `Tree.Token(i)` and
+`Tree.Text(i)` read either kind of token.
+
+### Typed view, visitor and listener
+
+Code written against ANTLR's trees dispatches on node kind with type switches,
+visitors and listeners. The native flavor generates all three over the same
+handles, for every rule and every labeled alternative (`gala.g4`: 83 rules and
+3 labeled alternatives, 86 kinds):
+
+- **`n.Typed()`** returns a pointer to the node's most specific handle, as
+  a `GalaNode` interface that every handle pointer satisfies (`Ref()` gives
+  the `GalaNodeRef` back), so a type switch reads like ANTLR's:
+  `switch p := n.Parent().Typed().(type) { case *PrimaryNode: … case *TypedPatternNode: … }`.
+  A handle is two words, and putting one in an interface would allocate, so
+  the first `Typed` call on a tree builds a typed view: every node as its
+  handle, in one slice per kind (a few appends per kind, once per tree).
+  `Typed` then returns a pointer into it, which fits an interface without
+  allocating: 0 allocations per call.
+- **`GalaVisitor[R]`** (with `-visitor`) has a `VisitX(n XNode) R` per kind.
+  `GalaAccept(n, v)` calls the method for `n`'s kind;
+  embedding `GalaBaseVisitor[R]` gives methods that return the zero value.
+  Go has no virtual dispatch from an embedded base to the outer type, so an
+  override reaches its children with `GalaAccept` or
+  `GalaVisitChildren(n, v, zero, merge)`, which folds the children's results.
+- **`GalaListener`** (by default; `-no-listener` leaves it out) has
+  `EnterX`/`ExitX` per kind, `EnterEveryRule`/`ExitEveryRule`, `VisitTerminal`
+  and `VisitErrorNode` (for error tokens), and `GalaBaseListener` gives
+  no-ops. `GalaWalk(n, l)` calls them in the order ANTLR's `ParseTreeWalker`
+  does, with an explicit stack, so a deep tree cannot overflow Go's.
+
+`Typed`, `GalaAccept` and the listener's dispatch are one generated switch on
+the node's rule and alternative, so walking and visiting allocate nothing per
+node.
+
+ANTLR's labeled rules have a context type for the rule itself, which only an
+error-recovered tree uses (ANTLR's recovery can leave a node before choosing
+its alternative). The native flavor keeps that kind too: alternative 0 of a
+labeled rule is the rule's own handle. As in ANTLR, it has no visitor or
+listener methods: its nodes get only the `EveryRule` pair, and `GalaAccept`
+returns the zero value.
+
+### From ANTLR's tree to the native tree
+
+The antlr flavor, given `-DnativePackage=<import path of the native flavor's
+package>`, also writes `<grammar>_galop_native.go` into ANTLR's package:
+
+```go
+func GalaToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*native.GalaTree, native.GalaNodeRef)
+```
+
+It converts a tree of ANTLR's context types, built by ANTLR's own parser
+(error-recovered or not) or by galop's antlr flavor, to the native tree over
+`src`. Living in ANTLR's package, it reads the context types statically,
+including the label fields ANTLR leaves unexported, so it needs no reflection
+and works for any grammar.
+
+```mermaid
+flowchart LR
+    src[source text] --> antlr[ANTLR parser<br/>with error recovery]
+    src --> flavor[galop antlr flavor]
+    src --> nat[galop native flavor]
+    antlr --> ctx[ANTLR context tree]
+    flavor --> ctx
+    ctx --> conv["GalaToNative<br/>(generated, ANTLR's package)"]
+    conv --> tree[native GalaTree]
+    nat --> tree
+    tree --> api[typed handles, Typed,<br/>visitor, listener]
+```
+
+The mapping:
+
+- **Tokens.** The stream's default-channel tokens become the native tokens and
+  the others the hidden ones, each pointing at the next default-channel token,
+  as the native lexer does. ANTLR's positions are code-point indexes; an
+  offset table turns them into byte offsets, built only when the source is not
+  ASCII. An index map takes each stream token to its native one.
+- **Nodes.** Children are converted before their parent, so nodes come in the
+  native order (the root last). A context's type gives its rule and labeled
+  alternative (one generated type switch); its start and stop tokens give its
+  span. A context with no start token, which recovery leaves, begins at the
+  token after the last one converted; an empty span ends one before it starts.
+  `Next`, the token after the parse, is EOF when the root ends at EOF.
+- **Labels.** For each context type with labels, generated code reads the
+  label fields: a rule label sets its child's `Label`, a token label adds to
+  `TokenLabels` (sorted by token, as native parsing records them), `+=` labels
+  loop over their list. The numbering is the native flavor's.
+- **Errors.** ANTLR's error nodes become error tokens. A made-up token (token
+  index -1) becomes a conjured token.
+
+Where native parsing accepts the input, the conversion is exactly the tree
+native parsing builds: the same tokens, hidden tokens, nodes (rule,
+alternative, label, span), child references, token labels and `Next`. On
+rejected input it gives native consumers ANTLR's recovered tree, which is what
+an editor needs for hover and completion in a file being typed. The
+differential tests check both (see [Fuzzing and performance](FUZZ_AND_PERF.md#parity-tests)).
+Converting costs about as much as a native parse; most of it is the garbage
+collector scanning the ANTLR tree being read.
 
 Generated parsers are safe to use from many goroutines at once: all tables are
 immutable package-level data and all parse state lives in the parser instance.

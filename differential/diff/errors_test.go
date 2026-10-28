@@ -35,12 +35,7 @@ var flavors = []struct {
 // the same message, as the GALA compiler reports them. Files with lexical
 // errors are skipped; both lexers report those the same way.
 func TestSyntaxErrors(t *testing.T) {
-	var srcs []string
-	for _, f := range files(t) {
-		if len(f.Src) < 20000 {
-			srcs = append(srcs, gala.StripBOM(f.Src))
-		}
-	}
+	srcs := mutationSources(t)
 	r := rand.New(rand.NewSource(*mutantSeed))
 	checked := 0
 	same := make([]int, len(flavors))

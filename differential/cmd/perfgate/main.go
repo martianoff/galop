@@ -14,7 +14,9 @@
 //     SLL-then-LL strategy) and the native lexer alone: warm (median of
 //     -passes) and first pass in a fresh process (median of -runs), on 1 and
 //     32 goroutines, and from them the ratios galop over ANTLR and galop over
-//     the lexer. Absolute times are only reported.
+//     the lexer. Absolute times are only reported;
+//   - the warm time of converting ANTLR trees to the native tree (see
+//     GalaToNative), only reported.
 //
 // The baseline file's rules say how far each number may move and which are
 // only reported; a number the baseline has and the run lacks fails. Without
@@ -34,6 +36,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/antlr4-go/antlr/v4"
 
 	"github.com/martianoff/galop/differential/antlrgala"
 	"github.com/martianoff/galop/differential/corpus"
@@ -115,6 +119,7 @@ func run() int {
 	if *times {
 		for _, in := range inputNames {
 			measureTimes(r, inputs[in], in, files[in])
+			measureConversion(r, inputs[in], in)
 		}
 	}
 	return report(r)
@@ -420,4 +425,42 @@ func check(err error) {
 		fmt.Fprintln(os.Stderr, "perfgate:", err)
 		os.Exit(2)
 	}
+}
+
+// measureConversion adds the warm time of converting the input's ANTLR trees
+// to the native tree, on one goroutine, to r's Info: galop's antlr flavor's
+// tree where it accepts the file, ANTLR's error-recovered one where it does
+// not. It is reported, not judged.
+func measureConversion(r perf.Report, srcs []string, name string) {
+	type parsed struct {
+		root   antlr.ParserRuleContext
+		stream *antlr.CommonTokenStream
+		src    string
+	}
+	trees := make([]parsed, len(srcs))
+	for i, src := range srcs {
+		src = gala.StripBOM(src)
+		stream := gala.GalopTokens(src)
+		var root antlr.ParserRuleContext
+		root, err := antlrgala.NewgalaGalopParser(stream).SourceFile()
+		if err != nil {
+			stream = gala.Tokens(src)
+			root, _ = gala.Lenient(stream)
+		}
+		trees[i] = parsed{root, stream, src}
+	}
+	// One pass over the single input "" converts every tree, so the
+	// conversion is sampled as the other phases are.
+	all := []string{""}
+	convert := func(string) {
+		for _, t := range trees {
+			antlrgala.GalaToNative(t.root, t.stream, t.src)
+		}
+	}
+	reps := calibrate(all, convert, 1)
+	var samples []float64
+	for range *passes {
+		samples = append(samples, warm(all, convert, 1, reps))
+	}
+	r.Info[name+"/w1/convert/warm-ms"] = median(samples)
 }

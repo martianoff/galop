@@ -51,11 +51,12 @@ struct Config(
 struct Parsed(Config Config, Problems Array[diag.Diagnostic])
 
 // GrammarOptions are the grammar-level options ANTLR 4 accepts (in `options {}`
-// or as -D), plus the Go target's own: `flavor` picks the output style and
-// `lexerDepth` the lexer DFA's rule-call depth.
+// or as -D), plus the Go target's own: `flavor` picks the output style,
+// `lexerDepth` the lexer DFA's rule-call depth and `nativePackage` the native
+// flavor's package the antlr flavor's converter writes trees for.
 val GrammarOptions = ArrayOf(
     "superClass", "contextSuperClass", "TokenLabelType", "tokenVocab", "language",
-    "accessLevel", "exportMacro", "caseInsensitive", "flavor", "lexerDepth",
+    "accessLevel", "exportMacro", "caseInsensitive", "flavor", "lexerDepth", "nativePackage",
 )
 
 // UnsupportedOptions are grammar options ANTLR knows that change what a grammar

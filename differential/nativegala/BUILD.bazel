@@ -14,7 +14,7 @@ genrule(
         "gala_lexer.go",
         "gala_parser.go",
     ],
-    cmd = "$(location //cmd/galop) -package nativegala -Xexact-output-dir -o $(RULEDIR) $(location //testdata/grammars:gala.g4)",
+    cmd = "$(location //cmd/galop) -package nativegala -visitor -Xexact-output-dir -o $(RULEDIR) $(location //testdata/grammars:gala.g4)",
 )
 
 go_library(
