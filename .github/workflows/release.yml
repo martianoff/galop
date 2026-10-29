@@ -22,16 +22,14 @@ jobs:
             goflags: -p=2
             gala: gala-linux-amd64
             target: galop-linux-amd64
-          - os: macos-latest
-            goflags: -p=1
-            gala: gala-darwin-arm64
-            target: galop-darwin-arm64
           - os: windows-latest
             goflags: -p=2
             gala: gala-windows-amd64.exe
             target: galop-windows-amd64.exe
-          # galop is pure Go, so these two are cross-compiled on Linux. Their
-          # tests already ran on the native entries above.
+          # galop is pure Go, so the arm64 and macOS binaries are cross-compiled
+          # on Linux. Their tests run in CI, which runs gala test on macOS. A
+          # native macOS build compiles one package at a time and hit the
+          # 120-minute limit for 0.2.5; a cross build takes about 13 minutes.
           - os: ubuntu-latest
             goflags: -p=2
             gala: gala-linux-amd64
@@ -46,7 +44,13 @@ jobs:
             goos: darwin
             goarch: amd64
             cross: true
-    # macOS builds one package at a time (-p=1) and took 61 minutes for 0.2.0.
+          - os: ubuntu-latest
+            goflags: -p=2
+            gala: gala-linux-amd64
+            target: galop-darwin-arm64
+            goos: darwin
+            goarch: arm64
+            cross: true
     timeout-minutes: 120
     # Same memory limits as CI; see the comment in ci.yml.
     env:
