@@ -151,11 +151,28 @@ import (
 // error tokens (see galopnative.@N@Tree), and the tokens its recovery made up
 // ("<missing ')'>") the tree's conjured tokens.
 func @N@ToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.@N@Tree, galopnative.@N@NodeRef) {
+	t := LPFXConvert(root, stream, src, nil)
+	return t, t.Root()
+}
+
+// @N@ToNativeContexts is @N@ToNative that also returns, for each native
+// node, the ANTLR context it was converted from, by node index: ctxs[i] is
+// node i's, and the root's is root. It is the bridge for code that holds
+// both trees.
+func @N@ToNativeContexts(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.@N@Tree, []antlr.ParserRuleContext) {
+	ctxs := make([]antlr.ParserRuleContext, 0, 64)
+	t := LPFXConvert(root, stream, src, &ctxs)
+	return t, ctxs
+}
+
+// LPFXConvert converts root (see @N@ToNative), appending each node's context
+// to *ctxs as the node is added when ctxs is not nil.
+func LPFXConvert(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string, ctxs *[]antlr.ParserRuleContext) *galopnative.@N@Tree {
 	stream.Fill()
 	// The conversion's scratch slices are reused from earlier conversions.
 	c := LPFXScratch.Get().(*LPFXToNative)
 	defer LPFXScratch.Put(c)
-	c.tree, c.last, c.nfa, c.alignKids = &galopnative.@N@Tree{}, -1, nil, nil
+	c.tree, c.last, c.nfa, c.alignKids, c.ctxs = &galopnative.@N@Tree{}, -1, nil, nil, ctxs
 	c.offset, c.kids, c.errs = c.offset[:0], c.kids[:0], c.errs[:0]
 	c.tree.@N@Tokens = c.tokens(stream.GetAllTokens(), src)
 	// The native parser's estimates: a tree rarely outgrows them.
@@ -168,8 +185,8 @@ func @N@ToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, 
 	} else {
 		t.Next = int(r.Stop) + 1
 	}
-	c.tree = nil
-	return t, t.Root()
+	c.tree, c.ctxs = nil, nil
+	return t
 }
 
 // LPFXScratch holds conversion states whose slices later conversions reuse.
@@ -197,6 +214,8 @@ type LPFXToNative struct {
 	alignKids   []int32
 	alignLabels []uint8
 	failed      []bool
+	// ctxs, when not nil, gets each node's context as the node is added.
+	ctxs *[]antlr.ParserRuleContext
 }
 
 // tokens converts the stream's tokens: the default channel's become the
@@ -279,6 +298,9 @@ func (c *LPFXToNative) node(ctx antlr.ParserRuleContext) int32 {
 		stop = c.index[t.GetTokenIndex()]
 	}
 	id := c.add(rule, alt, mark, start, stop)
+	if c.ctxs != nil {
+		*c.ctxs = append(*c.ctxs, ctx)
+	}
 	labels := len(c.tree.TokenLabels)
 	c.labels(ctx, id, mark)
 	// Native parsing records token labels in the order the tokens come.
