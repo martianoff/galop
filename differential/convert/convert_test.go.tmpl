@@ -123,7 +123,7 @@ func TestConvertMatchesNative(t *testing.T) {
 			t.Errorf("sentence %d: native parsing accepts, ANTLR reports %v\n%s", i, aerr, src)
 			continue
 		}
-		got, ctxs := ga.@G@ToNativeContexts(ctx, stream, src)
+		got, _, ctxs := ga.@G@ToNativeContexts(ctx, stream, src)
 		if msg := checkContexts(got, ctxs, ctx); msg != "" {
 			t.Errorf("sentence %d: @G@ToNativeContexts: %s", i, msg)
 		}
@@ -135,7 +135,10 @@ func TestConvertMatchesNative(t *testing.T) {
 			t.Errorf("sentence %d: galop's antlr flavor reports %v", i, ferr)
 			continue
 		}
-		fgot, _ := ga.@G@ToNative(fctx, fstream, src)
+		fgot, _, fctxs := ga.@G@ToNativeContexts(fctx, fstream, src)
+		if msg := checkContexts(fgot, fctxs, fctx); msg != "" {
+			t.Errorf("sentence %d: @G@ToNativeContexts of the antlr flavor's tree: %s", i, msg)
+		}
 		if d := sameTree(want, fgot); d != "" {
 			t.Errorf("sentence %d: converted antlr-flavor tree: %s\n%s", i, d, src)
 		}
@@ -187,7 +190,7 @@ func TestConvertRecoveredTrees(t *testing.T) {
 		}
 		converted++
 		i := converted
-		tree, ctxs := ga.@G@ToNativeContexts(ctx, stream, src)
+		tree, _, ctxs := ga.@G@ToNativeContexts(ctx, stream, src)
 		if msg := checkContexts(tree, ctxs, ctx); msg != "" {
 			t.Errorf("mutant %d: @G@ToNativeContexts: %s", i, msg)
 		}
@@ -212,7 +215,8 @@ func TestConvertRecoveredTrees(t *testing.T) {
 }
 
 // checkContexts checks what @G@ToNativeContexts returns beside tree: one
-// context per node, of the node's rule, the root's last, each once.
+// context per node, of the node's rule and starting at its first token, the
+// root's last, each once.
 func checkContexts(tree *gn.@G@Tree, ctxs []antlr.ParserRuleContext, root antlr.ParserRuleContext) string {
 	if len(ctxs) != len(tree.Nodes) {
 		return fmt.Sprintf("%d contexts for %d nodes", len(ctxs), len(tree.Nodes))
@@ -229,6 +233,11 @@ func checkContexts(tree *gn.@G@Tree, ctxs []antlr.ParserRuleContext, root antlr.
 			return fmt.Sprintf("node %d's context is another node's too", i)
 		}
 		seen[c] = true
+		if n := tree.Nodes[i]; n.Stop >= n.Start {
+			if s, tok := tree.Tokens[n.Start], c.GetStart(); int(s.Line) != tok.GetLine() || int(s.Column) != tok.GetColumn() {
+				return fmt.Sprintf("node %d starts at %d:%d, its context at %d:%d", i, s.Line, s.Column, tok.GetLine(), tok.GetColumn())
+			}
+		}
 	}
 	return ""
 }

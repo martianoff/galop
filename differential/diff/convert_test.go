@@ -21,24 +21,31 @@ var recoveredTrees = flag.Int("recovered_trees", 100, "TestConvertRecoveredTrees
 
 // converted parses src with ANTLR (the GALA compiler's strategy, with ANTLR's
 // error recovery) and with galop's antlr flavor, and converts both trees to
-// the native tree. The antlr flavor stops at the first syntax error, so its
-// tree is nil then.
-func converted(src string) (antlrTree, flavorTree *nativegala.GalaTree, antlrCtx antlr.ParserRuleContext, antlrErr error, ctxMsg string) {
+// the native tree, reporting to tb any context the conversion pairs a node
+// with wrongly (see checkContexts). The antlr flavor stops at the first
+// syntax error, so its tree is nil then.
+func converted(tb testing.TB, name, src string) (antlrTree, flavorTree *nativegala.GalaTree, antlrCtx antlr.ParserRuleContext, antlrErr error) {
 	src = gala.StripBOM(src)
 	stream := gala.Tokens(src)
 	antlrCtx, antlrErr = gala.Lenient(stream)
 	var ctxs []antlr.ParserRuleContext
-	antlrTree, ctxs = antlrgala.GalaToNativeContexts(antlrCtx, stream, src)
-	ctxMsg = checkContexts(antlrTree, ctxs, antlrCtx)
+	antlrTree, _, ctxs = antlrgala.GalaToNativeContexts(antlrCtx, stream, src)
+	if msg := checkContexts(antlrTree, ctxs, antlrCtx); msg != "" {
+		tb.Errorf("%s: GalaToNativeContexts of ANTLR's tree: %s", name, msg)
+	}
 	fstream := gala.GalopTokens(src)
 	if ctx, err := antlrgala.NewgalaGalopParser(fstream).SourceFile(); err == nil {
-		flavorTree, _ = antlrgala.GalaToNative(ctx, fstream, src)
+		flavorTree, _, ctxs = antlrgala.GalaToNativeContexts(ctx, fstream, src)
+		if msg := checkContexts(flavorTree, ctxs, ctx); msg != "" {
+			tb.Errorf("%s: GalaToNativeContexts of the antlr flavor's tree: %s", name, msg)
+		}
 	}
-	return antlrTree, flavorTree, antlrCtx, antlrErr, ctxMsg
+	return antlrTree, flavorTree, antlrCtx, antlrErr
 }
 
 // checkContexts checks what GalaToNativeContexts returns beside tree: one
-// context per node, of the node's rule, the root's last, each once.
+// context per node, of the node's rule and starting at its first token, the
+// root's last, each once.
 func checkContexts(tree *nativegala.GalaTree, ctxs []antlr.ParserRuleContext, root antlr.ParserRuleContext) string {
 	if len(ctxs) != len(tree.Nodes) {
 		return fmt.Sprintf("%d contexts for %d nodes", len(ctxs), len(tree.Nodes))
@@ -55,13 +62,18 @@ func checkContexts(tree *nativegala.GalaTree, ctxs []antlr.ParserRuleContext, ro
 			return fmt.Sprintf("node %d's context is another node's too", i)
 		}
 		seen[c] = true
+		if n := tree.Nodes[i]; n.Stop >= n.Start {
+			if s, tok := tree.Tokens[n.Start], c.GetStart(); int(s.Line) != tok.GetLine() || int(s.Column) != tok.GetColumn() {
+				return fmt.Sprintf("node %d starts at %d:%d, its context at %d:%d", i, s.Line, s.Column, tok.GetLine(), tok.GetColumn())
+			}
+		}
 	}
 	return ""
 }
 
 // recovered calls check on n mutants that lex but ANTLR rejects, with
 // ANTLR's error-recovered tree of each and its conversion.
-func recovered(tb testing.TB, n int, check func(i int, src string, tree *nativegala.GalaTree, ctx antlr.ParserRuleContext)) {
+func recovered(tb testing.TB, n int, check func(i int, src string, tree *nativegala.GalaTree, ctxs []antlr.ParserRuleContext, ctx antlr.ParserRuleContext)) {
 	srcs := mutationSources(tb)
 	r := rand.New(rand.NewSource(*mutantSeed))
 	i := 0
@@ -73,12 +85,9 @@ func recovered(tb testing.TB, n int, check func(i int, src string, tree *nativeg
 		// Only the mutants ANTLR rejects are converted.
 		stream := gala.Tokens(src)
 		if ctx, err := gala.Lenient(stream); err != nil {
-			tree, ctxs := antlrgala.GalaToNativeContexts(ctx, stream, src)
-			if msg := checkContexts(tree, ctxs, ctx); msg != "" {
-				tb.Errorf("mutant %d: GalaToNativeContexts: %s\n%s", i+1, msg, src)
-			}
+			tree, _, ctxs := antlrgala.GalaToNativeContexts(ctx, stream, src)
 			i++
-			check(i, src, tree, ctx)
+			check(i, src, tree, ctxs, ctx)
 		}
 	}
 	if i == 0 {
@@ -124,13 +133,10 @@ func TestConvertMatchesNative(t *testing.T) {
 			continue
 		}
 		checked++
-		antlrTree, flavorTree, _, antlrErr, ctxMsg := converted(f.Src)
+		antlrTree, flavorTree, _, antlrErr := converted(t, f.Name, f.Src)
 		if antlrErr != nil {
 			t.Errorf("%s: native parsing accepts, ANTLR reports %v", f.Name, antlrErr)
 			continue
-		}
-		if ctxMsg != "" {
-			t.Errorf("%s: GalaToNativeContexts: %s", f.Name, ctxMsg)
 		}
 		if d := sameTree(root.Tree(), antlrTree); d != "" {
 			t.Errorf("%s: converted ANTLR tree: %s", f.Name, d)
@@ -151,10 +157,13 @@ func TestConvertMatchesNative(t *testing.T) {
 // own rendering of the tree.
 func TestConvertRecoveredTrees(t *testing.T) {
 	withErrors := 0
-	recovered(t, *recoveredTrees, func(i int, src string, tree *nativegala.GalaTree, ctx antlr.ParserRuleContext) {
+	recovered(t, *recoveredTrees, func(i int, src string, tree *nativegala.GalaTree, ctxs []antlr.ParserRuleContext, ctx antlr.ParserRuleContext) {
 		if msg := wellFormed(tree); msg != "" {
 			t.Errorf("mutant %d: %s\n%s", i, msg, src)
 			return
+		}
+		if msg := checkContexts(tree, ctxs, ctx); msg != "" {
+			t.Errorf("mutant %d: GalaToNativeContexts: %s\n%s", i, msg, src)
 		}
 		if got, want := tree.Root().ToStringTree(), gala.TreeString(ctx); got != want {
 			t.Errorf("mutant %d: the converted tree prints differently\n%s", i, firstDifference(want, got))
@@ -346,7 +355,7 @@ func TestTypedVisitorListener(t *testing.T) {
 			}
 		}
 	}
-	recovered(t, 30, func(i int, src string, tree *nativegala.GalaTree, _ antlr.ParserRuleContext) {
+	recovered(t, 30, func(i int, src string, tree *nativegala.GalaTree, _ []antlr.ParserRuleContext, _ antlr.ParserRuleContext) {
 		if msg := checkTyped(tree); msg != "" {
 			t.Errorf("mutant %d: %s\n%s", i, msg, src)
 		}

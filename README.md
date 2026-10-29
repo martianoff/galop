@@ -248,7 +248,9 @@ to EOF stops after its match: `Tree().Next` (native) or the stream's next token
 To move a program from ANTLR's trees to the native tree step by step, generate
 the antlr flavor with `-DnativePackage=<import path of the native package>`. It
 then also writes `expr_galop_native.go`, whose `ExprToNative(root, stream, src)`
-converts any tree of ANTLR's context types to the native tree:
+converts any tree of ANTLR's context types to the native tree;
+`ExprToNativeContexts` also returns the ANTLR context of each native node, for
+code that holds both trees while it moves:
 
 ```mermaid
 flowchart LR

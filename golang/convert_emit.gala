@@ -159,10 +159,10 @@ func @N@ToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, 
 // node, the ANTLR context it was converted from, by node index: ctxs[i] is
 // node i's, and the root's is root. It is the bridge for code that holds
 // both trees.
-func @N@ToNativeContexts(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.@N@Tree, []antlr.ParserRuleContext) {
-	ctxs := make([]antlr.ParserRuleContext, 0, 64)
+func @N@ToNativeContexts(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.@N@Tree, galopnative.@N@NodeRef, []antlr.ParserRuleContext) {
+	var ctxs []antlr.ParserRuleContext
 	t := LPFXConvert(root, stream, src, &ctxs)
-	return t, ctxs
+	return t, t.Root(), ctxs
 }
 
 // LPFXConvert converts root (see @N@ToNative), appending each node's context
@@ -171,13 +171,21 @@ func LPFXConvert(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, 
 	stream.Fill()
 	// The conversion's scratch slices are reused from earlier conversions.
 	c := LPFXScratch.Get().(*LPFXToNative)
-	defer LPFXScratch.Put(c)
+	// A pooled state keeps no tree or context alive, even when the
+	// conversion panics.
+	defer func() {
+		c.tree, c.ctxs = nil, nil
+		LPFXScratch.Put(c)
+	}()
 	c.tree, c.last, c.nfa, c.alignKids, c.ctxs = &galopnative.@N@Tree{}, -1, nil, nil, ctxs
 	c.offset, c.kids, c.errs = c.offset[:0], c.kids[:0], c.errs[:0]
 	c.tree.@N@Tokens = c.tokens(stream.GetAllTokens(), src)
 	// The native parser's estimates: a tree rarely outgrows them.
 	n := len(c.tree.Tokens)
 	c.tree.Nodes, c.tree.Kids = make([]galopnative.@N@NodeData, 0, 4*n+4), make([]int32, 0, 5*n+4)
+	if ctxs != nil {
+		*ctxs = slices.Grow((*ctxs)[:0], 4*n+4)
+	}
 	c.node(root)
 	t := c.tree
 	if r := t.Nodes[len(t.Nodes)-1]; r.Stop >= r.Start && t.Tokens[r.Stop].Type == galopnative.@N@EOF {
@@ -185,7 +193,6 @@ func LPFXConvert(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, 
 	} else {
 		t.Next = int(r.Stop) + 1
 	}
-	c.tree, c.ctxs = nil, nil
 	return t
 }
 
