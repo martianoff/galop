@@ -409,6 +409,7 @@ func TestConverterFile(t T) T = generate(exprGrammar, converterDefines) match {
         val expected = ArrayOf(
             "\tgalopnative \"example.com/expr/native\"\n",
             "func ExprToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.ExprTree, galopnative.ExprNodeRef)",
+            "func ExprToNativeContexts(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.ExprTree, galopnative.ExprNodeRef, []antlr.ParserRuleContext)",
             // Each context type maps to its rule and labeled alternative.
             "\tcase *AssignContext:\n\t\treturn uint16(galopnative.ExprRULE_stat), 2",
             "\tcase *StatContext:\n\t\treturn uint16(galopnative.ExprRULE_stat), 0",

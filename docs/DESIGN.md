@@ -760,6 +760,11 @@ It converts a tree of ANTLR's context types, built by ANTLR's own parser
 including the label fields ANTLR leaves unexported, so it needs no reflection
 and works for any grammar.
 
+`GalaToNativeContexts` converts the same way and also returns the context each
+native node came from, indexed by node (the root's last), recorded as the node
+is added. It is the bridge for code that holds both trees while it moves from
+one to the other.
+
 ```mermaid
 flowchart LR
     src[source text] --> antlr[ANTLR parser<br/>with error recovery]

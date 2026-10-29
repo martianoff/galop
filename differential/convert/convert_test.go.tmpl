@@ -123,7 +123,10 @@ func TestConvertMatchesNative(t *testing.T) {
 			t.Errorf("sentence %d: native parsing accepts, ANTLR reports %v\n%s", i, aerr, src)
 			continue
 		}
-		got, _ := ga.@G@ToNative(ctx, stream, src)
+		got, _, ctxs := ga.@G@ToNativeContexts(ctx, stream, src)
+		if msg := checkContexts(got, ctxs, ctx); msg != "" {
+			t.Errorf("sentence %d: @G@ToNativeContexts: %s", i, msg)
+		}
 		if d := sameTree(want, got); d != "" {
 			t.Errorf("sentence %d: converted ANTLR tree: %s\n%s", i, d, src)
 		}
@@ -132,7 +135,10 @@ func TestConvertMatchesNative(t *testing.T) {
 			t.Errorf("sentence %d: galop's antlr flavor reports %v", i, ferr)
 			continue
 		}
-		fgot, _ := ga.@G@ToNative(fctx, fstream, src)
+		fgot, _, fctxs := ga.@G@ToNativeContexts(fctx, fstream, src)
+		if msg := checkContexts(fgot, fctxs, fctx); msg != "" {
+			t.Errorf("sentence %d: @G@ToNativeContexts of the antlr flavor's tree: %s", i, msg)
+		}
 		if d := sameTree(want, fgot); d != "" {
 			t.Errorf("sentence %d: converted antlr-flavor tree: %s\n%s", i, d, src)
 		}
@@ -184,7 +190,10 @@ func TestConvertRecoveredTrees(t *testing.T) {
 		}
 		converted++
 		i := converted
-		tree, _ := ga.@G@ToNative(ctx, stream, src)
+		tree, _, ctxs := ga.@G@ToNativeContexts(ctx, stream, src)
+		if msg := checkContexts(tree, ctxs, ctx); msg != "" {
+			t.Errorf("mutant %d: @G@ToNativeContexts: %s", i, msg)
+		}
 		if msg := wellFormed(tree); msg != "" {
 			t.Errorf("mutant %d: %s\n%s", i, msg, src)
 			continue
@@ -203,6 +212,34 @@ func TestConvertRecoveredTrees(t *testing.T) {
 		t.Fatal("no mutant was rejected, so no recovered tree was converted")
 	}
 	t.Logf("%d recovered trees converted, %d with error tokens", converted, withErrors)
+}
+
+// checkContexts checks what @G@ToNativeContexts returns beside tree: one
+// context per node, of the node's rule and starting at its first token, the
+// root's last, each once.
+func checkContexts(tree *gn.@G@Tree, ctxs []antlr.ParserRuleContext, root antlr.ParserRuleContext) string {
+	if len(ctxs) != len(tree.Nodes) {
+		return fmt.Sprintf("%d contexts for %d nodes", len(ctxs), len(tree.Nodes))
+	}
+	if ctxs[len(ctxs)-1] != root {
+		return "the root node's context is not the root"
+	}
+	seen := make(map[antlr.ParserRuleContext]bool, len(ctxs))
+	for i, c := range ctxs {
+		switch {
+		case c.GetRuleIndex() != int(tree.Nodes[i].Rule):
+			return fmt.Sprintf("node %d is rule %d, its context rule %d", i, tree.Nodes[i].Rule, c.GetRuleIndex())
+		case seen[c]:
+			return fmt.Sprintf("node %d's context is another node's too", i)
+		}
+		seen[c] = true
+		if n := tree.Nodes[i]; n.Stop >= n.Start {
+			if s, tok := tree.Tokens[n.Start], c.GetStart(); int(s.Line) != tok.GetLine() || int(s.Column) != tok.GetColumn() {
+				return fmt.Sprintf("node %d starts at %d:%d, its context at %d:%d", i, s.Line, s.Column, tok.GetLine(), tok.GetColumn())
+			}
+		}
+	}
+	return ""
 }
 
 // wellFormed describes the first way tree breaks the native tree's

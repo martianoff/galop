@@ -5,6 +5,8 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Added:** `<Grammar>ToNativeContexts`, the antlr flavor's converter that also
+  returns the ANTLR context of each native node, by node index.
 - **Changed:** in the native flavor, the getter of a non-list label that matches
   more than once in a node (`a=ID ',' a=ID`, or a label inside a loop) returns its
   last match, as ANTLR's does; it returned the first. The tree still records every
