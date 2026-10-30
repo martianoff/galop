@@ -84,11 +84,44 @@ back to ANTLR on a syntax error.
 | M1 | Analysis and conflict report | The report names every decision static lookahead cannot settle, including the six above | **done**: gala.g4 has 107 decisions, 86 static (LL(1)–LL(3)) and 21 adaptive |
 | M2 | Codegen spike | Within 2× of the hand-written parser, and at least 2× faster than ANTLR warm | **done**, and past the 10× goal: the native flavor parses the GALA corpus 11× faster than ANTLR warm (44 ms vs 466 ms) and 30× in a fresh process (49 ms vs 1.48 s); on code it was not tuned on, 97× and 114×. `array.gala` takes 0.73 ms warm, as fast as the hand-written parser measured earlier on the same machine (0.74 ms). The antlr flavor is 2.9× and 8.5× on the corpus. See the [README](../README.md) for the full table |
 | M3 | Codegen: all of `gala.g4`, recognizer and tree | Every corpus file gives a tree identical to ANTLR's | **done**: 722/722 (ANTLR rejects the 723rd), checked in CI by the Bazel differential test |
-| B1 | Bazel: a `galop_parser` rule in rules_gala, using galop's release binaries | A Bazel build generates the same files as the CLI, with no GALA toolchain needed to run galop | **done**: rules_gala 0.5.0 with galop 0.1.0 (`galop.toolchain(version = "0.1.0")`) |
-| M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | errors ready: a failed parse reports ANTLR's first syntax error (message, line and column), so the fallback is needed only for errors after the first |
+| B1 | Bazel: a `galop_parser` rule in rules_gala, using galop's release binaries | A Bazel build generates the same files as the CLI, with no GALA toolchain needed to run galop | **done**: rules_gala 0.5.0 with galop 0.1.0; now rules_gala 0.6.5 with galop 0.2.5 (both flavors, plus the converter) |
+| M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | **stage A shipped** in GALA 0.94.0; **stage B in progress** (see [M4 in GALA](#m4-in-gala)) |
 | M5 | Expression entry points on the generated parser | No ANTLR call on the success path | |
 | M6 | Generated error recovery | Editor diagnostics match ANTLR on a broken-input corpus | first error done: it matches ANTLR on 60,000+ broken files of both corpora; recovery past it remains |
 | T2 | Standalone track begins | M4 shipped; differential harness over grammars-v4 running | |
+
+## M4 in GALA
+
+GALA adopts galop in two stages. ANTLR stays selectable throughout
+(`gala --parser antlr`, or `GALA_PARSER=antlr`) and keeps its own CI lane.
+
+```mermaid
+flowchart LR
+    A["Stage A<br/>galop antlr flavor<br/>is the default parser"] --> B["Stage B<br/>compiler reads the<br/>native tree, piece by piece"]
+    B --> F["Flip<br/>parse native directly,<br/>no ANTLR tree"]
+```
+
+**Stage A: done (GALA 0.94.0).**
+- galop's `antlr` flavor is GALA's default parser. On a syntax error GALA falls back to ANTLR.
+- galop is required to build GALA.
+- Generated Go is byte-identical on 7,280 files.
+- On a real project, GALA→Go transpiling is 48% faster, `gala build` 31% faster and `gala test` 23% faster. Peak memory is about 45% lower.
+
+**Stage B: in progress.**
+- GALA's tree consumers move from ANTLR's contexts to the native tree. While both trees exist, galop's converter (`<G>ToNativeContexts`, galop 0.2.5) builds the native tree from ANTLR's.
+- Each step keeps generated Go byte-identical, under both parsers, and is checked by a test that compares the two trees.
+
+| Step | Scope | Status |
+|---|---|---|
+| Plumbing, parser utilities, scope walk | lazy native tree, type text, scope walk | done (gala #904, #905, #906) |
+| Analyzer | top-level collection | done (gala #910) |
+| | package-level value inference | done (gala #916) |
+| | undefined-symbol check | in review |
+| | the rest | next |
+| Transformer | top-down: declarations, statements, expressions, calls, lambdas, patterns, types | started |
+| LSP and tools | | not started |
+
+**The flip** comes after stage B. GALA then parses natively without building ANTLR's tree, and `--parser antlr` keeps working through the converter. It ships only if it beats stage A on build time, test time and editor latency.
 
 ## Beyond ANTLR (track 2)
 
