@@ -117,9 +117,9 @@ flowchart LR
 | Analyzer | top-level collection | done (gala #910) |
 | | package-level value inference | done (gala #916) |
 | | undefined-symbol check | done (gala #923) |
-| | the rest | in progress |
+| | the rest | done (gala #932) |
 | Transformer | top-level walk and declarations | done (gala #922) |
-| | statements and blocks | in progress |
+| | statements and blocks | in review (gala #933) |
 | | expressions, calls, lambdas, patterns, types | next |
 | LSP and tools | | not started |
 
