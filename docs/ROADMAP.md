@@ -116,9 +116,10 @@ flowchart LR
 | Plumbing, parser utilities, scope walk | lazy native tree, type text, scope walk | done (gala #904, #905, #906) |
 | Analyzer | top-level collection | done (gala #910) |
 | | package-level value inference | done (gala #916) |
-| | undefined-symbol check | in review |
-| | the rest | next |
-| Transformer | top-down: declarations, statements, expressions, calls, lambdas, patterns, types | started |
+| | undefined-symbol check | done (gala #923) |
+| | the rest | in progress |
+| Transformer | top-level walk and declarations | in review (gala #922) |
+| | statements, expressions, calls, lambdas, patterns, types | next |
 | LSP and tools | | not started |
 
 **The flip** comes after stage B. GALA then parses natively without building ANTLR's tree, and `--parser antlr` keeps working through the converter. It ships only if it beats stage A on build time, test time and editor latency.
