@@ -121,7 +121,7 @@ flowchart LR
 | Transformer | top-level walk and declarations | done (gala #922) |
 | | statements and blocks | in review (gala #933) |
 | | expressions, calls, lambdas, patterns, types | next |
-| LSP and tools | | in progress |
+| LSP and tools | signature help, hover, `gala imports`, `gala doc`, capture analysis | done (gala #934, #935) |
 
 **The flip** comes after stage B. GALA then parses natively without building ANTLR's tree, and `--parser antlr` keeps working through the converter. It ships only if it beats stage A on build time, test time and editor latency.
 
