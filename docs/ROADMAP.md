@@ -126,7 +126,7 @@ flowchart LR
 | | match and patterns | done (gala #945) |
 | | member access and indexing | done (gala #949) |
 | | calls | done (gala #954) |
-| | argument values and expected-type checks | in progress |
+| | argument values and expected-type checks | done (gala #955) |
 | LSP and tools | signature help, hover, `gala imports`, `gala doc`, capture analysis | done (gala #934, #935) |
 | Removing ANTLR from the transformer | partial functions, composite literals, defaults, interpolation; statements and match; declarations and error paths | in progress |
 | The flip (prep) | native token handling, doc comments, expression parse | in progress |
