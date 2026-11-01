@@ -129,7 +129,7 @@ flowchart LR
 | | argument values and expected-type checks | done (gala #955) |
 | LSP and tools | signature help, hover, `gala imports`, `gala doc`, capture analysis | done (gala #934, #935) |
 | Removing ANTLR from the transformer | partial functions, composite literals, defaults, interpolation; statements and match; declarations and error paths | in progress |
-| The flip (prep) | native token handling, doc comments, expression parse | in progress |
+| The flip (prep) | native token handling, doc comments, expression parse | done (gala #957) |
 
 **The flip** comes after stage B. GALA then parses natively without building ANTLR's tree, and `--parser antlr` keeps working through the converter. It ships only if it beats stage A on build time, test time and editor latency.
 
