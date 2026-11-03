@@ -135,7 +135,8 @@ flowchart LR
 | | cut-over plumbing: native tree for every clean parse, siblings, imports and editor buffers | done (gala #968) |
 | | defaults and string interpolation | done (gala #969) |
 | | transformer reads only the native tree; ANTLR twins deleted | done (gala #977) |
-| | delete the analyzer and LSP twins | in progress (gala #984) |
+| | analyzer and scope walk read only the native tree | done (gala #984) |
+| | LSP reads only the native tree | in review (gala #986) |
 | The flip (prep) | native token handling, doc comments, expression parse | done (gala #957) |
 
 **The flip** comes after stage B. GALA then parses natively without building ANTLR's tree, and `--parser antlr` keeps working through the converter. It ships only if it beats stage A on build time, test time and editor latency.
