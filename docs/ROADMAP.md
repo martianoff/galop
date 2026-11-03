@@ -138,7 +138,7 @@ flowchart LR
 | | analyzer and scope walk read only the native tree | done (gala #984) |
 | | LSP reads only the native tree | done (gala #986) |
 | The flip (prep) | native token handling, doc comments, expression parse | done (gala #957) |
-| The flip | GALA parses with the native parser by default; no ANTLR tree on a clean parse | in review (gala #987) |
+| The flip | GALA parses with the native parser by default; no ANTLR tree on a clean parse | done (gala #987) |
 
 **The flip** comes after stage B. GALA then parses natively without building ANTLR's tree, and `--parser antlr` keeps working through the converter. It ships only if it beats stage A on build time, test time and editor latency.
 
