@@ -85,8 +85,8 @@ back to ANTLR on a syntax error.
 | M2 | Codegen spike | Within 2× of the hand-written parser, and at least 2× faster than ANTLR warm | **done**, and past the 10× goal: the native flavor parses the GALA corpus 11× faster than ANTLR warm (44 ms vs 466 ms) and 30× in a fresh process (49 ms vs 1.48 s); on code it was not tuned on, 97× and 114×. `array.gala` takes 0.73 ms warm, as fast as the hand-written parser measured earlier on the same machine (0.74 ms). The antlr flavor is 2.9× and 8.5× on the corpus. See the [README](../README.md) for the full table |
 | M3 | Codegen: all of `gala.g4`, recognizer and tree | Every corpus file gives a tree identical to ANTLR's | **done**: 722/722 (ANTLR rejects the 723rd), checked in CI by the Bazel differential test |
 | B1 | Bazel: a `galop_parser` rule in rules_gala, using galop's release binaries | A Bazel build generates the same files as the CLI, with no GALA toolchain needed to run galop | **done**: rules_gala 0.5.0 with galop 0.1.0; now rules_gala 0.6.5 with galop 0.2.5 (both flavors, plus the converter) |
-| M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | **stage A shipped** in GALA 0.94.0; **stage B in progress** (see [M4 in GALA](#m4-in-gala)) |
-| M5 | Expression entry points on the generated parser | No ANTLR call on the success path | |
+| M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | **done**: stage A shipped in GALA 0.94.0; stage B and the flip ship in GALA 0.100.0. The parse is under 1% of a CLI transpile (see [M4 in GALA](#m4-in-gala)) |
+| M5 | Expression entry points on the generated parser | No ANTLR call on the success path | **done**: defaults and string interpolation parse with the native expression parser (GALA #957, #969, #987) |
 | M6 | Generated error recovery | Editor diagnostics match ANTLR on a broken-input corpus | first error done: it matches ANTLR on 60,000+ broken files of both corpora; recovery past it remains |
 | T2 | Standalone track begins | M4 shipped; differential harness over grammars-v4 running | |
 
@@ -107,7 +107,7 @@ flowchart LR
 - Generated Go is byte-identical on 7,280 files.
 - On a real project, GALA→Go transpiling is 48% faster, `gala build` 31% faster and `gala test` 23% faster. Peak memory is about 45% lower.
 
-**Stage B: in progress.**
+**Stage B: done (GALA 0.100.0).**
 - GALA's tree consumers move from ANTLR's contexts to the native tree. While both trees exist, galop's converter (`<G>ToNativeContexts`, galop 0.2.5) builds the native tree from ANTLR's.
 - Each step keeps generated Go byte-identical, under both parsers, and is checked by a test that compares the two trees.
 
@@ -140,7 +140,26 @@ flowchart LR
 | The flip (prep) | native token handling, doc comments, expression parse | done (gala #957) |
 | The flip | GALA parses with the native parser by default; no ANTLR tree on a clean parse | done (gala #987) |
 
-**The flip** comes after stage B. GALA then parses natively without building ANTLR's tree, and `--parser antlr` keeps working through the converter. It ships only if it beats stage A on build time, test time and editor latency.
+**The flip: done (GALA 0.100.0).**
+- GALA parses with galop's native parser and builds no ANTLR tree for a clean file.
+- ANTLR is still used for three things: to re-parse a file with a syntax error (so error messages stay the same), for editor error recovery, and when `--parser antlr` is selected (ANTLR parse, then galop's converter).
+- Generated Go is byte-identical to the previous release, under both parsers.
+
+Measured on gala-tui, all versions in one alternating run on a quiet machine (medians):
+
+| | GALA 0.93.2 (ANTLR) | GALA 0.95.0 (stage A) | GALA 0.100.0 (flip) |
+|---|---:|---:|---:|
+| `gala build` | 10.0 s | 7.43 s | 6.03 s |
+| GALA→Go transpile | 7.91 s | 5.33 s | 3.65 s |
+| parsing (all files) | 491 ms | 114 ms | 32 ms |
+| `gala build` peak memory | 859 MB | 484 MB | 178 MB |
+| `gala test` | 15.4 s | 12.3 s | 9.14 s |
+| `gala test` peak memory | 880 MB | 527 MB | 180 MB |
+| `gala imports --json`, 737 files | 1.70 s | 349 ms | 182 ms |
+| editor keystroke, file with a syntax error | 655 ms | 313 ms | 166 ms |
+| build worker memory kept | 510 MB | 406 MB | 112 MB |
+
+Parsing is now under 1% of a build; the rest is Go type loading, analysis, transformation and the Go compiler. Removing ANTLR entirely needs generated error recovery (M6).
 
 ## Beyond ANTLR (track 2)
 

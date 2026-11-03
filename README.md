@@ -105,10 +105,20 @@ What you keep:
   renaming; it has no dependency.
 
 What you get: a faster parser, especially when many goroutines parse at once
-(see the table above). galop's first user is the GALA compiler itself: since GALA
-0.94.0 it is GALA's default parser. On a real project, that made GALA→Go transpiling
-48% faster and `gala build` 31% faster, and cut peak memory by about 45%. GALA's move
-to the native tree is under way (see the [roadmap](docs/ROADMAP.md#m4-in-gala)).
+(see the table above). galop's first user is the GALA compiler itself. It has been
+GALA's default parser since GALA 0.94.0, and since GALA 0.100.0 GALA parses with
+galop's native parser and builds no ANTLR tree for a clean file. On a real project
+(gala-tui), GALA 0.100.0 compared with 0.93.2, the last release before galop:
+
+| | GALA 0.93.2 | GALA 0.100.0 | change |
+|---|---:|---:|---:|
+| `gala build` | 10.0 s | 6.03 s | −40% |
+| GALA→Go transpile | 7.91 s | 3.65 s | −54% |
+| parsing | 491 ms | 32 ms | 15× faster |
+| `gala test` | 15.4 s | 9.14 s | −41% |
+| peak memory (`gala build`) | 859 MB | 178 MB | −79% |
+
+See the [roadmap](docs/ROADMAP.md#m4-in-gala) for how GALA moved over.
 
 ## Install
 
