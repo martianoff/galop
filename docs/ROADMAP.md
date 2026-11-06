@@ -88,6 +88,7 @@ back to ANTLR on a syntax error.
 | M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | **done**: stage A shipped in GALA 0.94.0; stage B and the flip ship in GALA 0.100.0. The parse is under 1% of a CLI transpile (see [M4 in GALA](#m4-in-gala)) |
 | M5 | Expression entry points on the generated parser | No ANTLR call on the success path | **done**: defaults and string interpolation parse with the native expression parser (GALA #957, #969, #987) |
 | M6 | Generated error recovery | Editor diagnostics match ANTLR on a broken-input corpus | first error done: it matches ANTLR on 60,000+ broken files of both corpora; recovery past it remains |
+| M7 | ANTLR removed from GALA | GALA builds with no ANTLR runtime or generated ANTLR parser: syntax errors, their hints and editor recovery come from galop (needs M6); the `--parser antlr` engine, the ANTLR-to-native converter and the `antlr` flavor build are deleted; the ANTLR Go runtime leaves `go.mod` and `MODULE.bazel`. The IntelliJ plugin's ANTLR-generated Java parser is a separate decision | planned, not started. The performance comparison it was kept for is done (see [M4 in GALA](#m4-in-gala)) |
 | T2 | Standalone track begins | M4 shipped; differential harness over grammars-v4 running | |
 
 ## M4 in GALA
@@ -159,7 +160,7 @@ Measured on gala-tui, all versions in one alternating run on a quiet machine (me
 | editor keystroke, file with a syntax error | 655 ms | 313 ms | 166 ms |
 | build worker memory kept | 510 MB | 406 MB | 112 MB |
 
-Parsing is now under 1% of a build; the rest is Go type loading, analysis, transformation and the Go compiler. Removing ANTLR entirely needs generated error recovery (M6).
+Parsing is now under 1% of a build; the rest is Go type loading, analysis, transformation and the Go compiler. Removing ANTLR entirely is M7, which needs generated error recovery (M6).
 
 ## Beyond ANTLR (track 2)
 
