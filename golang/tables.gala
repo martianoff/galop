@@ -195,9 +195,9 @@ func errorTables(e env) string {
     val states = a.States
     val next = analysis.NextTokens(a, e.analysis)
     val looks = analysis.DecisionLookahead(a, e.analysis)
-    val loops = HashMapFromSlice(e.rules.FlatMap((r) => r.Alts.FlatMap((alt) => loopsIn(alt.Steps))).Map((l) => (l.Decision, l)).ToGoSlice())
+    val loopAlts = HashMapFromSlice(e.rules.FlatMap((r) => r.Alts.FlatMap((alt) => loopsIn(alt.Steps))).ToGoSlice())
     // ANTLR's code generator never makes a non-greedy decision a switch.
-    val ll1 = a.Decisions.Map((d) => d.Greedy && analysis.GeneratesSwitch(looks.Get(d.Id)) && !loops.Get(d.Id).Exists(_.Choice))
+    val ll1 = a.Decisions.Map((d) => d.Greedy && analysis.GeneratesSwitch(looks.Get(d.Id)))
     val sets = next.Map(_.Tokens).AppendAll(looks.FlatMap((l) => l)).Distinct()
     val lookIds = looks.Map((l) => l.Map((set) => sets.IndexOf(set)))
     // The first state of every `+` loop's body: ANTLR syncs there before the
@@ -225,7 +225,7 @@ func errorTables(e env) string {
         goSlice(s"${x}DecisionKind", "uint8", a.Decisions.Map((d) => s"${decisionKindCode(d.Kind)}")),
         goSlice(s"${x}DecisionSetAfter", "int32", a.Decisions.Map((d) => s"${if (isSetDecision(e.rules, d.Id)) setAfter(a, d.State) else -1}")),
         goSlice(s"${x}DecisionLL1", "bool", ll1.Map((b) => s"$b")),
-        goSlice(s"${x}DecisionLoopAlt", "uint8", a.Decisions.Map((d) => s"${loops.Get(d.Id).Map(_.Continue).GetOrElse(0)}")),
+        goSlice(s"${x}DecisionLoopAlt", "uint8", a.Decisions.Map((d) => s"${loopAlts.Get(d.Id).GetOrElse(0)}")),
         goSlice(s"${x}AltLookStart", "int32", codegen.Offsets(lookIds.Map(_.Size())).Map((n) => s"$n")),
         goSlice(s"${x}AltLook", "int32", lookIds.FlatMap((l) => l).Map((n) => s"$n")),
         goSlice(s"${x}TokenDisplay", "string", ArrayTabulate(e.vocab.MaxType() + 1, (t) => strconv.Quote(if (t == 0) "<INVALID>" else e.vocab.Display(t)))),
@@ -241,17 +241,10 @@ func goSets(name string, sets Array[atn.IntervalSet]) string = sets match {
         sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},").MkString("\n") + "\n}"
 }
 
-// loopInfo is what ANTLR's code generator reads of a `*` or `+` loop's
-// decision: the alternative that runs the body again, and whether the body
-// is one block of several alternatives, which ANTLR predicts adaptively even
-// where one token decides.
-struct loopInfo(Decision int, Continue int, Choice bool)
-
-func loopsIn(steps Array[atn.Step]) Array[loopInfo] = steps.FlatMap((s) => s match {
-    case atn.Loop(_, d, cont, body) => ArrayOf(loopInfo(d, cont, body match {
-        case Array(atn.Choose(_, _, None())) => true
-        case _ => false
-    })).AppendAll(loopsIn(body))
+// loopsIn lists each `*` or `+` loop in steps as its decision and the
+// alternative that runs the body again, which the error emulator reads.
+func loopsIn(steps Array[atn.Step]) Array[Tuple[int, int]] = steps.FlatMap((s) => s match {
+    case atn.Loop(_, d, cont, body) => ArrayOf((d, cont)).AppendAll(loopsIn(body))
     case atn.Choose(_, alts, _) => alts.FlatMap((a) => loopsIn(a))
-    case _ => EmptyArray[loopInfo]()
+    case _ => EmptyArray[Tuple[int, int]]()
 })

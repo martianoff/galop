@@ -118,6 +118,27 @@ both corpora and both generated sets:
   rule's or labeled alternative's handle, and the walk must report the order
   ANTLR's `ParseTreeWalker` does.
 
+The native flavor's error recovery (see
+[design](DESIGN.md#recovering-from-syntax-errors-as-antlr-does)) is checked against
+ANTLR's LL parse with its default error strategy, over a DFA that starts empty:
+
+- **`TestRecoveryMatchesANTLR`** takes rejected inputs of two kinds: mutants
+  (`mutate.Mutate`) and editor-style edits (the file cut off at a token, an
+  opening bracket added, a closing one removed, or the rest of a line removed).
+  `-recovery_mutants` and `-recovery_edits` set how many; 300 each on pull
+  requests (`diff_test`, `heldout_test`, `generated_test`, `generated_deep_test`)
+  and thousands in the large runs. For each it requires every syntax error
+  ANTLR reports, in order, the error-recovered tree converted by galop's
+  converter, error tokens and made-up tokens included, and for every error the
+  node, its child count and the token the GALA compiler's error hints read.
+  It logs the share of inputs that match on the first error, on all errors,
+  on the tree and on the error contexts.
+- **`TestRecoveryWalkOnValidInput`** runs the recovering walk on every input
+  native parsing accepts: no errors, and native parsing's tree.
+- **`//differential/convert`** runs `TestRecoveryMatchesANTLR` on mutants of every
+  test grammar. Inputs where ANTLR's runtime panics (`MatchWildcard` at EOF) are
+  counted and skipped.
+
 **`TestParseAtMatchesANTLR`** (`diff_test`, `heldout_test`) re-parses expressions cut
 from the corpus at their line and column, as the GALA compiler re-parses interpolated
 expressions and default values. It parses each one alone and with a stray `)` after it.

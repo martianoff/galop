@@ -59,7 +59,7 @@ func nativeParser(
         decisionCode.MkString("\n"),
         guessCode(e),
     ))
-    val runtime = ArrayOf(tables(e), errorTables(e), predictor(e))
+    val runtime = ArrayOf(tables(e), errorTables(e), predictor(e), recoveryCode(e))
     parts.AppendAll(runtime).Filter(_ != "").MkString("\n")
 }
 
@@ -96,7 +96,14 @@ func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
 	}
 	return HANDLE{@X@NodeRef{t, root}}, nil
 }
-`, "METHOD", e.names.RuleMethod(r.Name), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
+
+// ParseMETHODWithRecovery is ParseMETHOD that recovers from syntax errors as
+// ANTLR does, returning a tree and every error (see @X@ParseWithRecovery).
+func ParseMETHODWithRecovery(ts *@X@Tokens) (HANDLE, []@X@ParseError) {
+	root, errs := @X@ParseWithRecovery(ts, RULEINDEX)
+	return HANDLE{root}, errs
+}
+`, "RULEINDEX", s"${r.Index}", "METHOD", e.names.RuleMethod(r.Name), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
     "HANDLE", nodeType(r.Name), "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported(),
     "REPAIR", s"${e.repairPlan.Repairs(r.Index)}", "START", s"${e.parser.RuleStart.Get(r.Index)}")
 

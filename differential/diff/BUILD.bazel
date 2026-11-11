@@ -8,6 +8,7 @@ DIFF_TEST_SRCS = [
     "convert_test.go",
     "at_test.go",
     "mutations_test.go",
+    "recovery_test.go",
 ]
 
 DIFF_TEST_DEPS = [
@@ -61,20 +62,24 @@ go_test(
     deps = DIFF_TEST_DEPS,
 ) for name, corpus, size, tags, args in [
     ("heldout_test", "//differential:heldout", "medium", [], [
-        "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestConvertMatchesNative|TestConvertRecoveredTrees|TestParseAtMatchesANTLR|TestMutations|TestSyntaxErrors)$$",
+        "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestConvertMatchesNative|TestConvertRecoveredTrees|TestParseAtMatchesANTLR|TestMutations|TestSyntaxErrors|TestRecoveryMatchesANTLR|TestRecoveryWalkOnValidInput)$$",
     ]),
     ("mutations_large_test", "//differential:corpus", "enormous", ["manual"], [
-        "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees)$$",
+        "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees|TestRecoveryMatchesANTLR)$$",
         "-mutants=20000",
         "-error_mutants=5000",
         "-recovered_trees=2000",
+        "-recovery_mutants=5000",
+        "-recovery_edits=5000",
         "-mutant_seed=2",
     ]),
     ("heldout_mutations_large_test", "//differential:heldout", "enormous", ["manual"], [
-        "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees)$$",
+        "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees|TestRecoveryMatchesANTLR)$$",
         "-mutants=10000",
         "-error_mutants=3000",
         "-recovered_trees=1000",
+        "-recovery_mutants=3000",
+        "-recovery_edits=3000",
         "-mutant_seed=2",
     ]),
 ]]
@@ -89,7 +94,7 @@ go_test(
     srcs = DIFF_TEST_SRCS + ["generated_test.go"],
     args = [
         "-samples=$(rlocationpath %s)" % samples,
-        "-test.run=^(TestGeneratedMatchesANTLR|TestParseWithStatsMatchesParse|TestConvertMatchesNative|TestConvertRecoveredTrees|TestMutations|TestSyntaxErrors)$$",
+        "-test.run=^(TestGeneratedMatchesANTLR|TestParseWithStatsMatchesParse|TestConvertMatchesNative|TestConvertRecoveredTrees|TestMutations|TestSyntaxErrors|TestRecoveryMatchesANTLR|TestRecoveryWalkOnValidInput)$$",
     ] + args,
     data = [samples],
     embed = [":diff"],
@@ -109,6 +114,8 @@ go_test(
         "-mutants=2500",
         "-error_mutants=750",
         "-recovered_trees=500",
+        "-recovery_mutants=750",
+        "-recovery_edits=750",
         "-mutant_seed=2",
     ])
     for i in range(1, 5)

@@ -45,6 +45,11 @@ type PFXExpected struct {
 	in []bool // indexed by token type + 1
 }
 
+// PFXNewExpected is an empty PFXExpected.
+func PFXNewExpected() *PFXExpected {
+	return &PFXExpected{in: make([]bool, PFXMaxTokenType+2)}
+}
+
 func (x *PFXExpected) add(set []int32) {
 	for i := 0; i < len(set); i += 2 {
 		for t := set[i]; t <= set[i+1]; t++ {
@@ -113,7 +118,7 @@ func (p *PARSER) antlrError(start int32, err error) error {
 // what can follow s, through the rules on the stack while their ends can be
 // reached, and EOF past the outermost.
 func (e *PFXEmu) expected(s int32) *PFXExpected {
-	x := &PFXExpected{in: make([]bool, PFXMaxTokenType+2)}
+	x := PFXNewExpected()
 	x.add(PFXTokenSets[PFXStateNext[s]])
 	reaches := PFXStateReachesEnd[s]
 	for i := len(e.p.stack) - 1; i >= 0 && reaches; i-- {

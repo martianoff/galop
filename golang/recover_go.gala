@@ -1,0 +1,802 @@
+package golang
+
+import (
+    "strconv"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/codegen"
+)
+
+// recoverySource is the native flavor's error recovery: on input with a
+// syntax error it parses again the way ANTLR 4.13.1's Go runtime parses with
+// its default error strategy, and returns every error ANTLR reports and the
+// tree ANTLR's recovery builds, converted as galop's converter converts it.
+// PFX, PARSER and @X@ are filled as in nativeCoreTemplate, @EOF@ as in
+// predictorSource.
+//
+// It is the replay of errorsSource (PFXEmu), carried past the first error:
+// the same walk over the ATN, deciding where and how ANTLR's generated code
+// decides, with the same Sync points and predictions. Where the replay stops
+// at an error, this walk does what ANTLR does next:
+//
+//   - a token match deletes one token or conjures the missing one
+//     (RecoverInline), or leaves its mismatch pending;
+//   - Sync deletes one token, leaves a mismatch pending, or, at a loop back,
+//     skips to what can follow the loop or the rules being parsed;
+//   - a pending error at an error check (ANTLR's `goto errorExit`) is
+//     reported, the input is skipped to what can follow a rule on the stack
+//     (Recover), and the rule returns;
+//   - errors are reported only outside ANTLR's error recovery mode, which a
+//     report starts and a matched token ends.
+//
+// The tree is built as ANTLR's parser builds its contexts: a rule's node
+// starts at the token after the ones before it, tokens consumed in recovery
+// mode are error tokens, a conjured token is a child of the rule whose match
+// conjured it, choosing a labeled alternative drops the children the rule
+// had before (Go's CopyFrom keeps none), and labels hold what ANTLR's label
+// fields hold.
+val recoverySource = `
+// @X@ParseError is a syntax error a recovering parse reports, as ANTLR's
+// default error strategy reports it, with what code that explains an error
+// reads of ANTLR's parser when the error is reported.
+type @X@ParseError struct {
+	@X@SyntaxError
+	// Token is the index in Tokens of the offending token; -1, as Node, for
+	// the error of tokens that do not end with EOF.
+	Token int
+	// Node is the node of the rule being parsed (ANTLR's
+	// GetParserRuleContext()), and Kids the number of children it had
+	// then. Where ANTLR replaced that rule's context to enter a labeled
+	// alternative, Node is the replacement's.
+	Node int32
+	Kids int
+}
+
+// @X@ParseWithRecovery parses the tokens of ts as the rule with index rule
+// (an @X@RULE_ constant), as the rule's Parse function does, and recovers
+// from syntax errors as ANTLR's default error strategy does. Without a
+// syntax error it returns the Parse function's tree and no errors. Otherwise
+// it returns the tree ANTLR's parser builds while it recovers, as galop's
+// converter converts it, with its error tokens (see @X@Tree), and every
+// syntax error ANTLR reports, in order. The root is missing (its Ok is
+// false) only when the tokens do not end with EOF or there is no such rule.
+func @X@ParseWithRecovery(ts *@X@Tokens, rule int) (@X@NodeRef, []@X@ParseError) {
+	if rule < 0 || rule >= len(PFXRuleFuncs) {
+		return @X@NodeRef{}, []@X@ParseError{{@X@SyntaxError: @X@SyntaxError{Msg: "no rule with index " + strconv.Itoa(rule)}, Token: -1, Node: -1}}
+	}
+	p := newPARSER(ts)
+	p.keepErr = true
+	t, root, err := p.run(PFXRuleFuncs[rule], PFXRuleStartState[rule], PFXRuleRepairs[rule])
+	if err == nil {
+		return @X@NodeRef{t, root}, nil
+	}
+	if n := len(p.types); n == 0 || p.types[n-1] != @EOF@ {
+		return @X@NodeRef{}, []@X@ParseError{{@X@SyntaxError: *err.(*@X@SyntaxError), Token: -1, Node: -1}}
+	}
+	t, root, errs := p.recoverParse(rule)
+	return @X@NodeRef{t, root}, errs
+}
+
+// recoverParse parses from the first token with ANTLR's error recovery; see
+// recoverySource. It predicts as antlrError's replay does: in LL mode over
+// the tokens alone, reusing the full-context answers a repair recorded.
+func (p *PARSER) recoverParse(rule int) (*@X@Tree, int32, []@X@ParseError) {
+	p.ll, p.group = true, false
+	if len(p.rp.recs) > 0 {
+		p.rp.indexRecs()
+		defer func() { p.rp.byPos = nil }()
+	}
+	// The failed parse's tree is dropped; its arrays are reused.
+	t := p.tree
+	t.Nodes, t.Kids, t.TokenLabels = t.Nodes[:0], t.Kids[:0], t.TokenLabels[:0]
+	r := &PFXRecovery{
+		e:         PFXEmu{p: p},
+		tree:      t,
+		last:      -1,
+		lastIndex: -1,
+	}
+	root := r.parse(rule)
+	r.tree.Next = p.pos
+	errs := make([]@X@ParseError, len(r.errs))
+	for i, x := range r.errs {
+		tok := p.ts.Tokens[x.err.at]
+		errs[i] = @X@ParseError{
+			@X@SyntaxError: @X@SyntaxError{Line: int(tok.Line), Column: int(tok.Column), Msg: x.err.msg},
+			Token:          x.err.at,
+			Node:           r.nodeOf[x.frame],
+			Kids:           x.kids,
+		}
+	}
+	return r.tree, root, errs
+}
+
+// PFXRecovery is the state of a recovering parse: ANTLR's parser state
+// (GetState, the error strategy's fields), the rules being parsed and the
+// tree being built.
+type PFXRecovery struct {
+	e PFXEmu
+	// frames are the rules being parsed, innermost last; the parser's stack
+	// holds their return states, as in the replay.
+	frames []PFXRecFrame
+	// kids are the children of the rules being parsed, as in the native
+	// parser; errPos the positions in kids of error tokens; labs the label
+	// assignments of the rules being parsed.
+	kids   []int32
+	errPos []int
+	labs   []PFXRecLabel
+	tree   *@X@Tree
+	// last is the last real token added to the tree, -1 for none: a
+	// conjured token sits at the start of the token after it.
+	last int32
+	// state is ANTLR's GetState(): the ATN state of the generated code's
+	// last SetState.
+	state int32
+	// The default error strategy's errorRecoveryMode, lastErrorIndex and
+	// lastErrorStates.
+	recovering bool
+	lastIndex  int
+	lastStates []int32
+	// errs are the errors reported; nodeOf maps a frame's serial number to
+	// its node, once the rule is done.
+	errs   []PFXRecError
+	nodeOf []int32
+	// aligner aligns the children of nodes whose labels ANTLR keeps only
+	// the last match of (see labelNode).
+	aligner PFXAligner
+}
+
+// PFXRecFrame is a rule being parsed: ANTLR's context for it.
+type PFXRecFrame struct {
+	rule int32
+	// invoking is the state that called the rule (ANTLR's invokingState),
+	// -1 for the entry rule.
+	invoking int32
+	// start is the rule's first token; kids, errs and labs where its
+	// children, error tokens and label assignments start; last the tree's
+	// last real token when the rule started.
+	start, kids, errs, labs int
+	last                    int32
+	serial                  int32
+	alt                     uint8
+	// exc says the rule recovered from an error (ANTLR's exception field).
+	exc bool
+}
+
+// PFXRecLabel is one assignment to a label field of a rule being parsed:
+// label (PFXStateLabel's encoding) gets node, or token tok when node < 0
+// (-1 for none, as ANTLR stores nil).
+type PFXRecLabel struct {
+	label     uint8
+	node, tok int32
+}
+
+// PFXRecError is a reported error with the frame it was reported in and
+// that frame's number of children then.
+type PFXRecError struct {
+	err   PFXEmuError
+	frame int32
+	kids  int
+}
+
+// The bits of PFXStateLabel: the label's number (as the native parser
+// numbers a rule's labels, from 1) and whether it collects a list.
+const (
+	PFXLabelNumber = 0x7f
+	PFXLabelList   = 0x80
+)
+
+// parse walks the ATN from the start of rule, as errorsSource's run does,
+// recovering from errors as ANTLR does, and returns the root node.
+func (r *PFXRecovery) parse(rule int) int32 {
+	e := &r.e
+	p := e.p
+	p.pos = 0
+	p.stack = p.stack[:0]
+	r.enter(int32(rule), -1)
+	s := PFXRuleStartState[rule]
+	// back says the walk just left a loop back, which synced already: a
+	// loop's next iteration does not sync at its start.
+	back := false
+	var root int32
+	for {
+		fromBack := back
+		back = false
+		if PFXStateIsStop[s] {
+			// The end of a rule function checks for an error.
+			if s, root = r.leave(); root >= 0 {
+				return root
+			}
+			continue
+		}
+		if d := int(PFXStateDecision[s]); d >= 0 {
+			// ANTLR matches the alternatives of a set decision as one set.
+			if after := PFXDecisionSetAfter[d]; after >= 0 {
+				r.state = s
+				if e.ll1Alt(d) > 0 {
+					r.reportMatch()
+					r.take(false)
+				} else {
+					r.recoverInline(s, after, false)
+				}
+				s = after
+				continue
+			}
+			alt, ok := r.decide(d, s, fromBack)
+			if !ok {
+				if s, root = r.leave(); root >= 0 {
+					return root
+				}
+				continue
+			}
+			if k := PFXOuterAltStart[d]; k >= 0 {
+				r.enterOuterAlt(PFXOuterAlt[int(k)+alt-1])
+			}
+			back = PFXDecisionKind[d] == PFXDecisionPlus && alt == int(PFXDecisionLoopAlt[d])
+			s = PFXTransTarget[PFXTransStart[s]+int32(alt)-1]
+			continue
+		}
+		// The generated code checks for an error after these Syncs.
+		checked := false
+		switch PFXStateSync[s] {
+		case PFXSyncLoopBack:
+			r.state = s
+			r.sync(s, false)
+			back, checked = true, true
+		case PFXSyncBlockStart:
+			if !fromBack {
+				r.state = s
+				r.sync(s, true)
+				checked = true
+			}
+		}
+		if checked && e.pending != nil {
+			if s, root = r.leave(); root >= 0 {
+				return root
+			}
+			continue
+		}
+		i := PFXTransStart[s]
+		t := PFXTransTarget[i]
+		switch PFXTransKind[i] {
+		case PFXKindEpsilon:
+		case PFXKindRule:
+			r.state = s
+			p.stack = append(p.stack, PFXTransArg[i])
+			r.enter(PFXStateRule[t], s)
+		case PFXKindAtom:
+			r.state = s
+			r.matchToken(s, t, p.la(1) == PFXTransArg[i])
+			// The generated code checks for an error after a token match.
+			if e.pending != nil {
+				if s, root = r.leave(); root >= 0 {
+					return root
+				}
+				continue
+			}
+		default:
+			r.state = s
+			if PFXIsWildcard(i) {
+				r.matchToken(s, t, p.la(1) != @EOF@)
+			} else {
+				r.matchSet(s, i, t)
+			}
+		}
+		s = t
+	}
+}
+
+// PFXIsWildcard reports whether set transition i matches every token type,
+// as a wildcard does, which ANTLR matches with MatchWildcard.
+func PFXIsWildcard(i int32) bool {
+	set := PFXSets[PFXTransArg[i]]
+	return len(set) == 2 && set[0] == 1 && set[1] == PFXMaxTokenType
+}
+
+// decide makes decision d at state s as ANTLR's generated code does (see
+// PFXEmu.decide), and reports false where that code goes to its error exit.
+func (r *PFXRecovery) decide(d int, s int32, fromBack bool) (int, bool) {
+	e := &r.e
+	pos := e.p.pos
+	kind := PFXDecisionKind[d]
+	// A star loop's next iteration decides at its loop back's state.
+	if !(kind == PFXDecisionStar && fromBack) {
+		r.state = s
+	}
+	ll1 := PFXDecisionLL1[d]
+	// A token an alternative accepts passes Sync too.
+	if ll1 && e.pending == nil {
+		if alt := e.ll1Alt(d); alt > 0 {
+			return alt, true
+		}
+	}
+	switch kind {
+	case PFXDecisionAlt:
+		r.sync(s, true)
+		if e.pending != nil {
+			return 0, false
+		}
+	case PFXDecisionOpt:
+		// Adaptive prediction follows Sync with no error check.
+		r.sync(s, true)
+		if ll1 && e.pending != nil {
+			return 0, false
+		}
+	case PFXDecisionStar:
+		if !fromBack {
+			r.sync(s, true)
+			if e.pending != nil {
+				return 0, false
+			}
+		}
+	case PFXDecisionPlus:
+		r.sync(s, false)
+		if ll1 && e.pending != nil {
+			return 0, false
+		}
+	}
+	if !ll1 {
+		alt, err := e.predict(d)
+		if err != nil {
+			e.pending = err
+			return 0, false
+		}
+		return alt, true
+	}
+	if alt := e.ll1Alt(d); alt > 0 {
+		return alt, true
+	}
+	// An LL(1) choice fails; an optional block or a loop exits.
+	if kind == PFXDecisionAlt {
+		e.pending = e.noViable(pos, pos)
+		return 0, false
+	}
+	return int(PFXAltLookStart[d+1] - PFXAltLookStart[d]), true
+}
+
+// enter starts rule, called from state invoking: ANTLR's EnterRule, which
+// starts the rule's context at the current token. A rule with one labeled
+// alternative enters it at once.
+func (r *PFXRecovery) enter(rule, invoking int32) {
+	serial := int32(len(r.nodeOf))
+	r.nodeOf = append(r.nodeOf, -1)
+	r.frames = append(r.frames, PFXRecFrame{
+		rule: rule, invoking: invoking, start: r.e.p.pos,
+		kids: len(r.kids), errs: len(r.errPos), labs: len(r.labs), last: r.last,
+		serial: serial, alt: PFXRuleAlt[rule],
+	})
+}
+
+// enterOuterAlt makes the rule being parsed the labeled alternative alt:
+// ANTLR replaces the rule's context with the alternative's, which keeps none
+// of its children.
+func (r *PFXRecovery) enterOuterAlt(alt uint8) {
+	f := &r.frames[len(r.frames)-1]
+	f.alt = alt
+	r.kids = r.kids[:f.kids]
+	r.errPos = r.errPos[:f.errs]
+	r.last = f.last
+}
+
+// exit ends the rule being parsed: ANTLR's ExitRule. It adds the rule's node
+// and returns the state its caller goes on at, or the node when the rule is
+// the entry rule (and -1 otherwise).
+func (r *PFXRecovery) exit() (int32, int32) {
+	p := r.e.p
+	f := r.frames[len(r.frames)-1]
+	r.frames = r.frames[:len(r.frames)-1]
+	t := r.tree
+	off := len(t.Kids)
+	t.Kids = append(t.Kids, r.kids[f.kids:]...)
+	for _, k := range r.errPos[f.errs:] {
+		t.ErrorKids = append(t.ErrorKids, int32(off+k-f.kids))
+	}
+	r.errPos = r.errPos[:f.errs]
+	r.kids = r.kids[:f.kids]
+	t.Nodes = append(t.Nodes, @X@NodeData{Rule: uint16(f.rule), Alt: f.alt, Kids: int32(off), NKids: int32(len(t.Kids) - off), Start: int32(f.start), Stop: int32(p.pos - 1)})
+	id := int32(len(t.Nodes) - 1)
+	r.labelNode(f, id)
+	r.labs = r.labs[:f.labs]
+	r.nodeOf[f.serial] = id
+	if len(r.frames) == 0 {
+		return -1, id
+	}
+	r.kids = append(r.kids, id)
+	if l := PFXStateLabel[f.invoking]; l != 0 {
+		r.labs = append(r.labs, PFXRecLabel{l, id, -1})
+	}
+	r.state = f.invoking
+	follow := p.stack[len(p.stack)-1]
+	p.stack = p.stack[:len(p.stack)-1]
+	return follow, -1
+}
+
+// labelNode records the labels of node id, of frame f, as galop's converter
+// records them from ANTLR's label fields: a list label every node or token
+// assigned to it, another label the last one; tokens ANTLR's recovery made
+// up are left out.
+func (r *PFXRecovery) labelNode(f PFXRecFrame, id int32) {
+	// Where a label field holds only a label's last match, the converter
+	// first aligns the children of a node ANTLR did not recover in.
+	if len(PFXAlignKinds) > 0 && !f.exc {
+		if nfa := PFXAlignKinds[uint32(f.rule)<<8|uint32(f.alt)]; nfa != nil && r.align(nfa, id) {
+			return
+		}
+	}
+	labs := r.labs[f.labs:]
+	if len(labs) == 0 {
+		return
+	}
+	t := r.tree
+	first := len(t.TokenLabels)
+	var seen uint64
+	for i := len(labs) - 1; i >= 0; i-- {
+		l := labs[i]
+		num := l.label & PFXLabelNumber
+		if l.label&PFXLabelList == 0 {
+			if seen&(1<<(num&63)) != 0 {
+				continue
+			}
+			seen |= 1 << (num & 63)
+		}
+		switch {
+		case l.node >= 0:
+			t.Nodes[l.node].Label = num
+		case l.tok >= 0 && int(l.tok) < len(t.Tokens):
+			t.TokenLabels = append(t.TokenLabels, @X@TokenLabel{Node: id, Token: l.tok, Label: num})
+		}
+	}
+	// The labels were found last first; the converter lists them by token.
+	slices.Reverse(t.TokenLabels[first:])
+	slices.SortStableFunc(t.TokenLabels[first:], func(a, b @X@TokenLabel) int { return int(a.Token - b.Token) })
+}
+
+// label records that the match at state s stored tok in its label, if any.
+func (r *PFXRecovery) label(s int32, tok int32) {
+	if l := PFXStateLabel[s]; l != 0 {
+		r.labs = append(r.labs, PFXRecLabel{l, -1, tok})
+	}
+}
+
+// take adds the current token to the rule being parsed, as an error token
+// when isErr, and moves past it (not past EOF); it returns the token.
+func (r *PFXRecovery) take(isErr bool) int32 {
+	p := r.e.p
+	i := p.pos
+	if isErr {
+		r.errPos = append(r.errPos, len(r.kids))
+	}
+	r.kids = append(r.kids, int32(-i-1))
+	r.last = int32(i)
+	if p.types[i] != @EOF@ {
+		p.pos++
+	}
+	return int32(i)
+}
+
+// report reports err, unless the parser is in error recovery mode, and
+// enters that mode, as ANTLR's ReportError, ReportUnwantedToken and
+// ReportMissingToken do.
+func (r *PFXRecovery) report(err *PFXEmuError) {
+	if r.recovering {
+		return
+	}
+	r.recovering = true
+	f := r.frames[len(r.frames)-1]
+	r.errs = append(r.errs, PFXRecError{*err, f.serial, len(r.kids) - f.kids})
+}
+
+// reportMatch is ANTLR's ReportMatch: a token matched, so error recovery ends.
+func (r *PFXRecovery) reportMatch() {
+	r.recovering = false
+	r.lastIndex = -1
+	r.lastStates = r.lastStates[:0]
+}
+
+// recoverInline is ANTLR's RecoverInline at match state s, whose transition
+// leads to next. It returns the token single-token deletion consumes (the
+// one after the current), or the token single-token insertion conjures (added
+// to the tree only when add is set, as ANTLR's Match adds it), or -1 for a
+// mismatch, which it leaves pending.
+func (r *PFXRecovery) recoverInline(s, next int32, add bool) int32 {
+	e := &r.e
+	p := e.p
+	exp := e.expected(s)
+	switch {
+	case exp.has(p.la(2)):
+		r.deleteOne(exp)
+		return r.take(false)
+	case e.expected(next).has(p.la(1)):
+		pos := p.pos
+		r.report(&PFXEmuError{pos, "missing " + exp.String() + " at " + PFXQuote(p.tokenDisplay(pos))})
+		if add {
+			return r.conjure(exp)
+		}
+		return -1
+	}
+	e.pending = e.report("mismatched", exp)
+	return -1
+}
+
+// deleteOne is ANTLR's single-token deletion: the current token, which exp
+// does not expect, is reported and skipped as an error token.
+func (r *PFXRecovery) deleteOne(exp *PFXExpected) {
+	r.report(r.e.report("extraneous", exp))
+	r.take(true)
+	r.reportMatch()
+}
+
+// matchToken is ANTLR's Match (or MatchWildcard) at state s, whose transition
+// leads to next, where ok says the current token matches.
+func (r *PFXRecovery) matchToken(s, next int32, ok bool) {
+	if ok {
+		r.reportMatch()
+		r.label(s, r.take(false))
+		return
+	}
+	r.label(s, r.recoverInline(s, next, true))
+}
+
+// matchSet is the generated code's match of the set at state s, whose
+// transition i leads to next: its label first gets the current token, and
+// then what RecoverInline returns; a conjured token is not added to the tree.
+func (r *PFXRecovery) matchSet(s, i, next int32) {
+	r.label(s, int32(r.e.p.pos))
+	if PFXMatches(i, r.e.p.la(1)) {
+		r.reportMatch()
+		r.take(false)
+		return
+	}
+	r.label(s, r.recoverInline(s, next, false))
+}
+
+// first is ANTLR's IntervalSet.first(): the smallest type in x, EOF first,
+// or 0 for an empty set.
+func (x *PFXExpected) first() int32 {
+	for i, ok := range x.in {
+		if ok {
+			return int32(i - 1)
+		}
+	}
+	return 0
+}
+
+// conjure adds the token ANTLR's GetMissingSymbol makes up, the first type
+// of exp, as an error token of the rule being parsed, and returns it.
+func (r *PFXRecovery) conjure(exp *PFXExpected) int32 {
+	p := r.e.p
+	t := r.tree
+	typ := exp.first()
+	var text string
+	switch {
+	case typ == @EOF@:
+		text = "<missing EOF>"
+	case typ > 0 && int(typ) < len(PFXLiteralNames):
+		text = "<missing " + PFXLiteralNames[typ] + ">"
+	default:
+		text = "<missing undefined>"
+	}
+	at := p.ts.Tokens[p.pos]
+	if at.Type == @EOF@ && p.pos > 0 {
+		at = p.ts.Tokens[p.pos-1]
+	}
+	pos := t.Tokens[min(int(r.last)+1, len(t.Tokens)-1)].Start
+	t.Conjured = append(t.Conjured, @X@Token{Type: typ, Start: pos, End: pos, Line: at.Line, Column: at.Column})
+	t.ConjuredText = append(t.ConjuredText, text)
+	ref := int32(len(t.Tokens) + len(t.Conjured) - 1)
+	r.errPos = append(r.errPos, len(r.kids))
+	r.kids = append(r.kids, -ref-1)
+	return ref
+}
+
+// sync is ANTLR's Sync at state s, a block start or a loop back. It does
+// nothing in error recovery mode or where the current token can follow s.
+// At a block start it deletes one token when the token after it can follow,
+// and otherwise leaves a mismatch pending; at a loop back it reports the
+// token and skips to what can follow s or a rule being parsed.
+func (r *PFXRecovery) sync(s int32, blockStart bool) {
+	e := &r.e
+	p := e.p
+	if r.recovering || PFXStateReachesEnd[s] || PFXInSet(PFXTokenSets[PFXStateNext[s]], p.la(1)) {
+		return
+	}
+	exp := e.expected(s)
+	switch {
+	case !blockStart:
+		r.report(e.report("extraneous", exp))
+		r.recoverySet(exp)
+		r.consumeUntil(exp)
+	case exp.has(p.la(2)):
+		r.deleteOne(exp)
+	default:
+		e.pending = e.report("mismatched", exp)
+	}
+}
+
+// leave ends the rule being parsed as the end of its generated function
+// does: a pending error is reported and recovered from (errorExit), and the
+// rule returns (see exit).
+func (r *PFXRecovery) leave() (int32, int32) {
+	if r.e.pending != nil {
+		r.errorExit()
+	}
+	return r.exit()
+}
+
+// errorExit reports the pending error and recovers as ANTLR's Recover does:
+// a second error at the same token and state first skips that token, then
+// the input is skipped to a token that can follow a rule being parsed.
+func (r *PFXRecovery) errorExit() {
+	e := &r.e
+	p := e.p
+	r.frames[len(r.frames)-1].exc = true
+	r.report(e.pending)
+	e.pending = nil
+	if r.lastIndex == p.pos && slices.Contains(r.lastStates, r.state) {
+		r.take(r.recovering)
+	}
+	r.lastIndex = p.pos
+	r.lastStates = append(r.lastStates, r.state)
+	set := PFXNewExpected()
+	r.recoverySet(set)
+	r.consumeUntil(set)
+}
+
+// recoverySet adds ANTLR's error recovery set to x: what can follow each
+// rule being parsed but the entry rule.
+func (r *PFXRecovery) recoverySet(x *PFXExpected) {
+	for _, f := range r.e.p.stack {
+		x.add(PFXTokenSets[PFXStateNext[f]])
+	}
+}
+
+// consumeUntil skips tokens until one in set, or EOF.
+func (r *PFXRecovery) consumeUntil(set *PFXExpected) {
+	p := r.e.p
+	for t := p.la(1); t != @EOF@ && !set.has(t); t = p.la(1) {
+		r.take(r.recovering)
+	}
+}
+
+// align records the labels of node id as galop's converter's align does:
+// along the first path through nfa that matches the node's children, trying
+// each state's edges in ANTLR's order. It reports false, recording nothing,
+// when the node has an error token or the children do not match.
+func (r *PFXRecovery) align(nfa *PFXAlignNFA, id int32) bool {
+	t := r.tree
+	n := t.Nodes[id]
+	if k := len(t.ErrorKids); k > 0 && t.ErrorKids[k-1] >= n.Kids {
+		return false
+	}
+	a := &r.aligner
+	a.nfa, a.kids = nfa, t.Kids[n.Kids:n.Kids+n.NKids]
+	size := len(nfa.edges) * (len(a.kids) + 1)
+	a.failed = slices.Grow(a.failed[:0], size)[:size]
+	clear(a.failed)
+	a.labels = slices.Grow(a.labels[:0], len(a.kids))[:len(a.kids)]
+	if !a.path(t, 0, 0) {
+		return false
+	}
+	first := len(t.TokenLabels)
+	for j, label := range a.labels {
+		switch k := a.kids[j]; {
+		case label == 0:
+		case k >= 0:
+			t.Nodes[k].Label = label
+		default:
+			t.TokenLabels = append(t.TokenLabels, @X@TokenLabel{Node: id, Token: -k - 1, Label: label})
+		}
+	}
+	slices.SortStableFunc(t.TokenLabels[first:], func(a, b @X@TokenLabel) int { return int(a.Token - b.Token) })
+	return true
+}
+
+// PFXAligner is align's state, kept between nodes.
+type PFXAligner struct {
+	nfa    *PFXAlignNFA
+	kids   []int32
+	labels []uint8
+	failed []bool
+}
+
+// path reports whether the automaton gets from state s at child pos to its
+// accepting state after the last child, noting each child's label.
+func (a *PFXAligner) path(t *@X@Tree, s int32, pos int) bool {
+	if s == a.nfa.accept && pos == len(a.kids) {
+		return true
+	}
+	key := int(s)*(len(a.kids)+1) + pos
+	if a.failed[key] {
+		return false
+	}
+	a.failed[key] = true
+	for i := range a.nfa.edges[s] {
+		e := &a.nfa.edges[s][i]
+		if e.op == PFXAlignOpEps {
+			if a.path(t, e.to, pos) {
+				return true
+			}
+		} else if pos < len(a.kids) && e.matches(t, a.kids[pos]) {
+			a.labels[pos] = e.label
+			if a.path(t, e.to, pos+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// matches reports whether child k is what edge e matches.
+func (e *PFXAlignEdge) matches(t *@X@Tree, k int32) bool {
+	if e.op == PFXAlignOpRule {
+		return k >= 0 && int32(t.Nodes[k].Rule) == e.sym
+	}
+	if k >= 0 {
+		return false
+	}
+	ty := t.Token(int(-k - 1)).Type
+	if e.op == PFXAlignOpToken {
+		return ty == e.sym
+	}
+	for i := 0; i+1 < len(e.set); i += 2 {
+		if e.set[i] <= ty && ty <= e.set[i+1] {
+			return true
+		}
+	}
+	return false
+}
+ALIGNNFA`
+
+// recoveryCode is the native flavor's error recovery for e's parser: its
+// tables and recoverySource.
+func recoveryCode(e env) string =
+    recoveryTables(e) + fill(recoverySource, "ALIGNNFA", fill(alignNFASource, "NFAP", e.pfx + "Align"),
+        "@EOF@", e.exported() + "EOF", "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported())
+
+// recoveryTables emits what the recovering parse needs beyond the error
+// emulator's tables: the label of each labeled match, the labeled
+// alternative each alternative of a labeled rule is, and ANTLR's literal
+// names, which name the tokens its recovery makes up.
+func recoveryTables(e env) string {
+    val a = e.parser
+    val x = e.pfx
+    // Numbered as the native parser numbers them (see ruleLabels).
+    val byRule = e.rules.Map(ruleLabels)
+    val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => {
+        val number = byRule.Get(s.Rule).IndexOf(l.Name) + 1
+        if (l.Append) number + 128 else number
+    }).GetOrElse(0))
+    // The alternatives of each labeled rule's top-level decision, as node Alts.
+    val altLabels = e.rules.Map(altLabelsOf)
+    val outer = a.Decisions.Map((d) => e.rules.Find((r) => r.Decision == Some(d.Id) && altLabels.Get(r.Index).NonEmpty()).Map((r) =>
+        r.Alts.Map((alt) => altLabels.Get(r.Index).IndexOf(alt.Label.GetOrElse("")) + 1)
+    ))
+    val outerStarts = codegen.Offsets(outer.Map((o) => o.Map(_.Size()).GetOrElse(0)))
+    // A labeled rule with one alternative enters it at once.
+    val ruleAlt = e.rules.Map((r) => if (r.Decision.IsEmpty() && altLabels.Get(r.Index).NonEmpty()) 1 else 0)
+    val literals = e.vocab.Literals.Map((l) => l.Map((lit) => s"'$lit'").GetOrElse(""))
+    val lastLiteral = literals.ZipWithIndex().Collect({ case (l, i) if l != "" => i }).LastOption().GetOrElse(0)
+    // The automata of the kinds whose children the converter aligns (see aligns).
+    val aligned = nodeKinds(e).Filter(aligns).Map((k) =>
+        s"\t${k.Rule.Index * 256 + k.Alt}: ${x}AlignNewNFA([]${x}AlignStep{{op: ${x}AlignOpChoose, exit: -1, alts: ${altsLiteral(x + "Align", kindAlts(k).Map(_.Steps), ruleLabels(k.Rule))}}}),"
+    )
+    // gofmt writes an empty composite literal on one line.
+    val alignKinds = s"var ${x}AlignKinds = map[uint32]*${x}AlignNFA" + (aligned match {
+        case Array() => "{}\n"
+        case _ => "{\n" + aligned.MkString("\n") + "\n}\n"
+    })
+    ArrayOf(
+        "// What a recovering parse reads beyond the error tables: each labeled match's",
+        "// label, the labeled alternatives, and ANTLR's literal names.",
+        goSlice(s"${x}StateLabel", "uint8", labels.Map((l) => s"$l")),
+        goSlice(s"${x}OuterAltStart", "int32", outer.Zip(outerStarts).Map((os) => os match {
+            case (Some(_), start) => s"$start"
+            case _ => "-1"
+        })),
+        goSlice(s"${x}OuterAlt", "uint8", outer.FlatMap((o) => o.GetOrElse(EmptyArray[int]())).Map((n) => s"$n")),
+        goSlice(s"${x}RuleAlt", "uint8", ruleAlt.Map((n) => s"$n")),
+        goSlice(s"${x}LiteralNames", "string", literals.Take(lastLiteral + 1).Map((l) => strconv.Quote(l))),
+        s"// ${x}AlignKinds are the automata of the kinds whose children are aligned, by rule << 8 | alt.",
+        alignKinds,
+    ).MkString("\n") + "\n"
+}

@@ -455,3 +455,31 @@ func TestNativePackageIsTrimmed(t T) T {
         case Left(errs) => t.Error(errs.MkString("; "))
     }
 }
+
+func TestNativeRecovery(t T) T {
+    val parser = nativeFiles(`grammar L;
+r : 'if' cond=e (ops+=('+' | '-') e)* # If
+  | X # Bare
+  ;
+e : X ;
+X : 'x' ;
+WS : ' ' -> skip ;
+`).Get("l_parser.go").GetOrElse("")
+    val expected = ArrayOf(
+        // The entry points.
+        "func LParseWithRecovery(ts *LTokens, rule int) (LNodeRef, []LParseError)",
+        "func ParseRWithRecovery(ts *LTokens) (RNode, []LParseError)",
+        // ANTLR's literal names, up to the last token that has one (WS is one literal).
+        "var LGalopLiteralNames = []string{\n\t\"\", \"'if'\", \"'+'\", \"'-'\", \"'x'\", \"' '\",\n}",
+        // r's top-level decision is labeled: If is alternative 1, Bare 2.
+        "var LGalopOuterAlt = []uint8{\n\t1, 2,\n}",
+        // No label of r matches more than once, so no node is aligned.
+        "var LGalopAlignKinds = map[uint32]*LGalopAlignNFA{}",
+    )
+    val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(parser, s)))
+    // Labels by state: cond is label 1, ops a list (128) and label 2.
+    val rest = ArrayFromSlice(strings.SplitN(parser, "var LGalopStateLabel = []uint8{", 2)).Last()
+    val table = ArrayFromSlice(strings.SplitN(rest, "}", 2)).Head()
+    val labels = ArrayFromSlice(strings.Split(table, ",")).Map(strings.TrimSpace).Filter((s) => s != "" && s != "0")
+    Eq(t1, labels.Sorted(), ArrayOf("1", "130"))
+}

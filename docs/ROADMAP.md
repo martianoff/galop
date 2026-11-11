@@ -72,9 +72,9 @@ contexts ports by changing imports.
 **Lexer.** Generated (regex → DFA, longest match, rule priority).
 
 **Errors.** A failed parse reports the same first syntax error as ANTLR parsing that
-input in a fresh process, with the same message and position; the expected-token sets come out of the analysis. Until generated
-error recovery is good enough for editor use, a consumer that needs every error can fall
-back to ANTLR on a syntax error.
+input in a fresh process, with the same message and position; the expected-token sets come out of the analysis. For an
+editor, the native flavor also recovers as ANTLR's default error strategy does: every
+error ANTLR reports, and ANTLR's error-recovered tree.
 
 ## Milestones
 
@@ -87,7 +87,7 @@ back to ANTLR on a syntax error.
 | B1 | Bazel: a `galop_parser` rule in rules_gala, using galop's release binaries | A Bazel build generates the same files as the CLI, with no GALA toolchain needed to run galop | **done**: rules_gala 0.5.0 with galop 0.1.0; now rules_gala 0.6.5 with galop 0.2.5 (both flavors, plus the converter) |
 | M4 | Used by the GALA compiler behind an ANTLR fallback, built with B1 | GALA's test suite green; parse share of a CLI transpile under 5% | **done**: stage A shipped in GALA 0.94.0; stage B and the flip ship in GALA 0.100.0. The parse is under 1% of a CLI transpile (see [M4 in GALA](#m4-in-gala)) |
 | M5 | Expression entry points on the generated parser | No ANTLR call on the success path | **done**: defaults and string interpolation parse with the native expression parser (GALA #957, #969, #987) |
-| M6 | Generated error recovery | Editor diagnostics match ANTLR on a broken-input corpus | first error done: it matches ANTLR on 60,000+ broken files of both corpora; recovery past it remains |
+| M6 | Generated error recovery | Editor diagnostics match ANTLR on a broken-input corpus | **done**: `Parse<Rule>WithRecovery` (native flavor) reports every error ANTLR reports, in order, and builds ANTLR's error-recovered tree, on every one of 19,000 broken GALA files (mutants and editor-style edits of both corpora and of generated sentences) and 15,000 mutants of five test grammars; the first error alone matches on 60,000+. See [DESIGN.md](DESIGN.md#recovering-from-syntax-errors-as-antlr-does) |
 | M7 | ANTLR removed from GALA | GALA builds with no ANTLR runtime or generated ANTLR parser: syntax errors, their hints and editor recovery come from galop (needs M6); the `--parser antlr` engine, the ANTLR-to-native converter and the `antlr` flavor build are deleted; the ANTLR Go runtime leaves `go.mod` and `MODULE.bazel`. The IntelliJ plugin's ANTLR-generated Java parser is a separate decision | planned, not started. The performance comparison it was kept for is done (see [M4 in GALA](#m4-in-gala)) |
 | T2 | Standalone track begins | M4 shipped; differential harness over grammars-v4 running | |
 
@@ -183,6 +183,6 @@ Roughly by payoff, and not before M4 ships:
 - **Ordered-choice speculation vs ANTLR's full-context prediction** can disagree on
   unusual input. Differential testing (corpus plus mutation fuzzing against ANTLR)
   catches it; any accepted divergence is documented.
-- **Error recovery** is the long tail; the ANTLR fallback keeps it off the critical path
-  until M6.
+- **Error recovery** past what the differential corpora exercise could still differ from
+  ANTLR's; the large fuzz runs keep looking.
 - **Scope creep from track 2.** It waits for M4.

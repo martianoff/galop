@@ -5,6 +5,15 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Added:** error recovery in the native flavor. `Parse<Rule>WithRecovery` and
+  `<Grammar>ParseWithRecovery(tokens, rule)` recover from syntax errors as ANTLR's
+  default error strategy does: they return every syntax error ANTLR reports, in
+  order (`<Grammar>ParseError`, with the offending token and the node of the rule
+  being parsed), and ANTLR's error-recovered tree, as the converter converts it.
+  Without a syntax error they return `Parse<Rule>`'s tree.
+- **Fixed:** the first-error replay decides a `*` or `+` loop whose body is a block
+  of alternatives with one token where ANTLR's generated code does, rather than
+  predicting it. No first error changed on the corpora.
 - **Added:** `<Grammar>ToNativeContexts`, the antlr flavor's converter that also
   returns the ANTLR context of each native node, by node index.
 - **Changed:** in the native flavor, the getter of a non-list label that matches
