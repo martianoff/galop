@@ -154,32 +154,72 @@ func (e *PFXEmu) noViable(start, off int) *PFXEmuError {
 	return &PFXEmuError{off, "no viable alternative at input " + PFXQuote(input)}
 }
 
+// How ANTLR's RecoverInline and Sync recover (see inlineFix and syncFix):
+// the token fits (Sync only), the current token is deleted, the missing
+// token is inserted (RecoverInline only), the input is skipped to what can
+// follow (Sync at a loop back), or a mismatch is left pending.
+const (
+	PFXFixNone = iota
+	PFXFixDelete
+	PFXFixInsert
+	PFXFixSkip
+	PFXFixMismatch
+)
+
+// inlineFix is how ANTLR's RecoverInline recovers at match state s, whose
+// transition leads to next, with exp, the tokens expected at s, and the
+// error it reports or, for a mismatch, sets. The first-error replay and the
+// recovering parse both decide with it.
+func (e *PFXEmu) inlineFix(s, next int32) (fix int, exp *PFXExpected, err *PFXEmuError) {
+	exp = e.expected(s)
+	switch {
+	case exp.has(e.p.la(2)):
+		return PFXFixDelete, exp, e.report("extraneous", exp)
+	case e.expected(next).has(e.p.la(1)):
+		pos := e.p.pos
+		return PFXFixInsert, exp, &PFXEmuError{pos, "missing " + exp.String() + " at " + PFXQuote(e.p.tokenDisplay(pos))}
+	}
+	return PFXFixMismatch, exp, e.report("mismatched", exp)
+}
+
+// syncFix is how ANTLR's Sync recovers at s, a block start or a loop back
+// (outside error recovery mode), like inlineFix.
+func (e *PFXEmu) syncFix(s int32, blockStart bool) (fix int, exp *PFXExpected, err *PFXEmuError) {
+	if PFXStateReachesEnd[s] || PFXInSet(PFXTokenSets[PFXStateNext[s]], e.p.la(1)) {
+		return PFXFixNone, nil, nil
+	}
+	exp = e.expected(s)
+	switch {
+	case !blockStart:
+		return PFXFixSkip, exp, e.report("extraneous", exp)
+	case exp.has(e.p.la(2)):
+		return PFXFixDelete, exp, e.report("extraneous", exp)
+	}
+	return PFXFixMismatch, exp, e.report("mismatched", exp)
+}
+
 // recoverInline is ANTLR's RecoverInline at match state s, whose transition
 // leads to next: an error it reports is returned, a mismatch it only sets
 // becomes pending.
 func (e *PFXEmu) recoverInline(s, next int32) *PFXEmuError {
-	exp := e.expected(s)
-	switch {
-	case exp.has(e.p.la(2)):
-		return e.report("extraneous", exp)
-	case e.expected(next).has(e.p.la(1)):
-		pos := e.p.pos
-		return &PFXEmuError{pos, "missing " + exp.String() + " at " + PFXQuote(e.p.tokenDisplay(pos))}
+	fix, _, err := e.inlineFix(s, next)
+	if fix == PFXFixMismatch {
+		e.pending = err
+		return nil
 	}
-	e.pending = e.report("mismatched", exp)
-	return nil
+	return err
 }
 
 // sync is ANTLR's Sync at s, of a block start or a loop back, followed by the
 // generated code's error check if check is set: an error it reports is
 // returned; a mismatch at a block start becomes pending.
 func (e *PFXEmu) sync(s int32, blockStart, check bool) *PFXEmuError {
-	if !PFXStateReachesEnd[s] && !PFXInSet(PFXTokenSets[PFXStateNext[s]], e.p.la(1)) {
-		exp := e.expected(s)
-		if !blockStart || exp.has(e.p.la(2)) {
-			return e.report("extraneous", exp)
-		}
-		e.pending = e.report("mismatched", exp)
+	switch fix, _, err := e.syncFix(s, blockStart); fix {
+	case PFXFixNone:
+	case PFXFixMismatch:
+		e.pending = err
+	default:
+		return err
 	}
 	if check {
 		return e.pending

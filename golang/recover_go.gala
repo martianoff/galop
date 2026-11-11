@@ -65,14 +65,13 @@ func @X@ParseWithRecovery(ts *@X@Tokens, rule int) (@X@NodeRef, []@X@ParseError)
 	if rule < 0 || rule >= len(PFXRuleFuncs) {
 		return @X@NodeRef{}, []@X@ParseError{{@X@SyntaxError: @X@SyntaxError{Msg: "no rule with index " + strconv.Itoa(rule)}, Token: -1, Node: -1}}
 	}
+	if err := PFXNoEOF(ts); err != nil {
+		return @X@NodeRef{}, []@X@ParseError{{@X@SyntaxError: *err, Token: -1, Node: -1}}
+	}
 	p := newPARSER(ts)
 	p.keepErr = true
-	t, root, err := p.run(PFXRuleFuncs[rule], PFXRuleStartState[rule], PFXRuleRepairs[rule])
-	if err == nil {
+	if t, root, err := p.run(PFXRuleFuncs[rule], PFXRuleStartState[rule], PFXRuleRepairs[rule]); err == nil {
 		return @X@NodeRef{t, root}, nil
-	}
-	if n := len(p.types); n == 0 || p.types[n-1] != @EOF@ {
-		return @X@NodeRef{}, []@X@ParseError{{@X@SyntaxError: *err.(*@X@SyntaxError), Token: -1, Node: -1}}
 	}
 	t, root, errs := p.recoverParse(rule)
 	return @X@NodeRef{t, root}, errs
@@ -488,34 +487,30 @@ func (r *PFXRecovery) reportMatch() {
 }
 
 // recoverInline is ANTLR's RecoverInline at match state s, whose transition
-// leads to next. It returns the token single-token deletion consumes (the
-// one after the current), or the token single-token insertion conjures (added
-// to the tree only when add is set, as ANTLR's Match adds it), or -1 for a
-// mismatch, which it leaves pending.
+// leads to next (see PFXEmu.inlineFix). It returns the token single-token
+// deletion consumes (the one after the current), or the token single-token
+// insertion conjures (added to the tree only when add is set, as ANTLR's
+// Match adds it), or -1 for a mismatch, which it leaves pending.
 func (r *PFXRecovery) recoverInline(s, next int32, add bool) int32 {
-	e := &r.e
-	p := e.p
-	exp := e.expected(s)
-	switch {
-	case exp.has(p.la(2)):
-		r.deleteOne(exp)
+	switch fix, exp, err := r.e.inlineFix(s, next); fix {
+	case PFXFixDelete:
+		r.deleteOne(err)
 		return r.take(false)
-	case e.expected(next).has(p.la(1)):
-		pos := p.pos
-		r.report(&PFXEmuError{pos, "missing " + exp.String() + " at " + PFXQuote(p.tokenDisplay(pos))})
+	case PFXFixInsert:
+		r.report(err)
 		if add {
 			return r.conjure(exp)
 		}
-		return -1
+	default:
+		r.e.pending = err
 	}
-	e.pending = e.report("mismatched", exp)
 	return -1
 }
 
-// deleteOne is ANTLR's single-token deletion: the current token, which exp
-// does not expect, is reported and skipped as an error token.
-func (r *PFXRecovery) deleteOne(exp *PFXExpected) {
-	r.report(r.e.report("extraneous", exp))
+// deleteOne is ANTLR's single-token deletion: the current token is reported
+// with err and skipped as an error token.
+func (r *PFXRecovery) deleteOne(err *PFXEmuError) {
+	r.report(err)
 	r.take(true)
 	r.reportMatch()
 }
@@ -539,16 +534,19 @@ func (r *PFXRecovery) matchToken(s, next int32, ok, match bool) {
 }
 
 // matchSet is the generated code's match of the set at state s, whose
-// transition i leads to next: its label first gets the current token, and
-// then what RecoverInline returns; a conjured token is not added to the tree.
+// transition i leads to next. Its label gets the current token, or what
+// RecoverInline returns, and a list label appends that once (ANTLR assigns
+// an implicit label first and appends its final value); a conjured token is
+// not added to the tree.
 func (r *PFXRecovery) matchSet(s, i, next int32) {
-	r.label(s, int32(r.e.p.pos))
+	tok := int32(r.e.p.pos)
 	if PFXMatches(i, r.e.p.la(1)) {
 		r.reportMatch()
 		r.take(false)
-		return
+	} else {
+		tok = r.recoverInline(s, next, false)
 	}
-	r.label(s, r.recoverInline(s, next, false))
+	r.label(s, tok)
 }
 
 // first is ANTLR's IntervalSet.first(): the smallest type in x, EOF first,
@@ -596,21 +594,18 @@ func (r *PFXRecovery) conjure(exp *PFXExpected) int32 {
 // and otherwise leaves a mismatch pending; at a loop back it reports the
 // token and skips to what can follow s or a rule being parsed.
 func (r *PFXRecovery) sync(s int32, blockStart bool) {
-	e := &r.e
-	p := e.p
-	if r.recovering || PFXStateReachesEnd[s] || PFXInSet(PFXTokenSets[PFXStateNext[s]], p.la(1)) {
+	if r.recovering {
 		return
 	}
-	exp := e.expected(s)
-	switch {
-	case !blockStart:
-		r.report(e.report("extraneous", exp))
+	switch fix, exp, err := r.e.syncFix(s, blockStart); fix {
+	case PFXFixSkip:
+		r.report(err)
 		r.recoverySet(exp)
 		r.consumeUntil(exp)
-	case exp.has(p.la(2)):
-		r.deleteOne(exp)
-	default:
-		e.pending = e.report("mismatched", exp)
+	case PFXFixDelete:
+		r.deleteOne(err)
+	case PFXFixMismatch:
+		r.e.pending = err
 	}
 }
 
@@ -748,10 +743,14 @@ func (e *PFXAlignEdge) matches(t *@X@Tree, k int32) bool {
 }
 ALIGNNFA`
 
+// alignPrefix is the prefix of the native flavor's alignment names
+// (alignNFASource): `galaGalopAlign`.
+func alignPrefix(e env) string = e.pfx + "Align"
+
 // recoveryCode is the native flavor's error recovery for e's parser: its
 // tables and recoverySource.
 func recoveryCode(e env) string =
-    recoveryTables(e) + fill(recoverySource, "ALIGNNFA", fill(alignNFASource, "NFAP", e.pfx + "Align"),
+    recoveryTables(e) + fill(recoverySource, "ALIGNNFA", fill(alignNFASource, "NFAP", alignPrefix(e)),
         "@EOF@", e.exported() + "EOF", "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported())
 
 // recoveryTables emits what the recovering parse needs beyond the error
@@ -761,6 +760,7 @@ func recoveryCode(e env) string =
 func recoveryTables(e env) string {
     val a = e.parser
     val x = e.pfx
+    val ax = alignPrefix(e)
     // Numbered as the native parser numbers them (see ruleLabels).
     val byRule = e.rules.Map(ruleLabels)
     val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => {
@@ -769,7 +769,8 @@ func recoveryTables(e env) string {
     }).GetOrElse(0))
     // The alternatives of each labeled rule's top-level decision, as node Alts.
     val altLabels = e.rules.Map(altLabelsOf)
-    val outer = a.Decisions.Map((d) => e.rules.Find((r) => r.Decision == Some(d.Id) && altLabels.Get(r.Index).NonEmpty()).Map((r) =>
+    val byDecision = decisionRules(e.rules)
+    val outer = a.Decisions.Map((d) => byDecision.Get(d.Id).Filter((r) => altLabels.Get(r.Index).NonEmpty()).Map((r) =>
         r.Alts.Map((alt) => altLabels.Get(r.Index).IndexOf(alt.Label.GetOrElse("")) + 1)
     ))
     val outerStarts = codegen.Offsets(outer.Map((o) => o.Map(_.Size()).GetOrElse(0)))
@@ -779,10 +780,10 @@ func recoveryTables(e env) string {
     val lastLiteral = literals.ZipWithIndex().Collect({ case (l, i) if l != "" => i }).LastOption().GetOrElse(0)
     // The automata of the kinds whose children the converter aligns (see aligns).
     val aligned = nodeKinds(e).Filter(aligns).Map((k) =>
-        s"\t${k.Rule.Index * 256 + k.Alt}: ${x}AlignNewNFA([]${x}AlignStep{{op: ${x}AlignOpChoose, exit: -1, alts: ${altsLiteral(x + "Align", kindAlts(k).Map(_.Steps), ruleLabels(k.Rule))}}}),"
+        s"\t${k.Rule.Index * 256 + k.Alt}: ${ax}NewNFA([]${ax}Step{{op: ${ax}OpChoose, exit: -1, alts: ${altsLiteral(ax, kindAlts(k).Map(_.Steps), ruleLabels(k.Rule))}}}),"
     )
     // gofmt writes an empty composite literal on one line.
-    val alignKinds = s"var ${x}AlignKinds = map[uint32]*${x}AlignNFA" + (aligned match {
+    val alignKinds = s"var ${x}AlignKinds = map[uint32]*${ax}NFA" + (aligned match {
         case Array() => "{}\n"
         case _ => "{\n" + aligned.MkString("\n") + "\n}\n"
     })

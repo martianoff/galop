@@ -269,6 +269,9 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 				shown++
 			}
 		}
+		if stats.inputs == 0 {
+			t.Fatalf("%s: no rejected input was compared", kind.name)
+		}
 		t.Log(stats)
 	}
 }

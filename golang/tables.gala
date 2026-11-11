@@ -160,11 +160,15 @@ func decisionKindCode(k atn.DecisionKind) int = k match {
     case atn.PlusBack() => 3
 }
 
-// isSetDecision reports whether decision d is a rule's alternatives that
-// ANTLR's tool turns into one set match (its BlockSetTransformer): more than
-// one alternative, each a single unlabeled token, the first without an
-// alternative label.
-func isSetDecision(rules Array[atn.RuleIR], d int) bool = rules.Find((r) => r.Decision == Some(d)) match {
+// decisionRules maps each rule's top-level decision to the rule.
+func decisionRules(rules Array[atn.RuleIR]) HashMap[int, atn.RuleIR] =
+    HashMapFromSlice(rules.Collect({ case r if r.Decision.IsDefined() => (r.Decision.Get(), r) }).ToGoSlice())
+
+// isSetDecision reports whether ruleOf, the rule whose top-level decision a
+// decision is (if any), has alternatives that ANTLR's tool turns into one set
+// match (its BlockSetTransformer): more than one alternative, each a single
+// unlabeled token, the first without an alternative label.
+func isSetDecision(ruleOf Option[atn.RuleIR]) bool = ruleOf match {
     case Some(r) => r.Alts.Size() > 1 && r.Alts.Head().Label.IsEmpty() && r.Alts.ForAll((a) => a.Steps.Size() == 1 && (a.Steps.Head() match {
         case atn.MatchToken(_, None()) => true
         case _ => false
@@ -195,6 +199,7 @@ func errorTables(e env) string {
     val states = a.States
     val next = analysis.NextTokens(a, e.analysis)
     val looks = analysis.DecisionLookahead(a, e.analysis)
+    val byDecision = decisionRules(e.rules)
     val loopAlts = HashMapFromSlice(e.rules.FlatMap((r) => r.Alts.FlatMap((alt) => loopsIn(alt.Steps))).ToGoSlice())
     // ANTLR's code generator never makes a non-greedy decision a switch.
     val ll1 = a.Decisions.Map((d) => d.Greedy && analysis.GeneratesSwitch(looks.Get(d.Id)))
@@ -223,7 +228,7 @@ func errorTables(e env) string {
         // themselves (the differential harness counts a parse's work).
         goSlice(s"${x}RuleRepairs", "bool", ArrayTabulate(a.RuleStart.Size(), (r) => s"${e.repairPlan.Repairs(r)}")),
         goSlice(s"${x}DecisionKind", "uint8", a.Decisions.Map((d) => s"${decisionKindCode(d.Kind)}")),
-        goSlice(s"${x}DecisionSetAfter", "int32", a.Decisions.Map((d) => s"${if (isSetDecision(e.rules, d.Id)) setAfter(a, d.State) else -1}")),
+        goSlice(s"${x}DecisionSetAfter", "int32", a.Decisions.Map((d) => s"${if (isSetDecision(byDecision.Get(d.Id))) setAfter(a, d.State) else -1}")),
         goSlice(s"${x}DecisionLL1", "bool", ll1.Map((b) => s"$b")),
         goSlice(s"${x}DecisionLoopAlt", "uint8", a.Decisions.Map((d) => s"${loopAlts.Get(d.Id).GetOrElse(0)}")),
         goSlice(s"${x}AltLookStart", "int32", codegen.Offsets(lookIds.Map(_.Size())).Map((n) => s"$n")),

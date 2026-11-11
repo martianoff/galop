@@ -365,13 +365,8 @@ func newPARSER(ts *@X@Tokens) *PARSER {
 // llParse). A syntax error is the one ANTLR reports (see antlrError). The
 // tokens must end with EOF, as the lexer's do: the parse never reads past it.
 func (p *PARSER) run(rule func(*PARSER) int32, start int32, repair bool) (*@X@Tree, int32, error) {
-	if n := len(p.types); n == 0 || p.types[n-1] != @X@EOF {
-		// Reported at the last token, or at the start of an empty input.
-		line, col := 1, 0
-		if n > 0 {
-			line, col = int(p.ts.Tokens[n-1].Line), int(p.ts.Tokens[n-1].Column)
-		}
-		return nil, -1, &@X@SyntaxError{Line: line, Column: col, Msg: "the tokens do not end with EOF"}
+	if err := PFXNoEOF(p.ts); err != nil {
+		return nil, -1, err
 	}GROUPON
 	root, err := p.attempt(rule)RETRYERRORS
 	if err != nil {
@@ -379,6 +374,20 @@ func (p *PARSER) run(rule func(*PARSER) int32, start int32, repair bool) (*@X@Tr
 	}
 	p.tree.Next = p.pos
 	return p.tree, root, nil
+}
+
+// PFXNoEOF is the error of tokens that do not end with EOF, or nil: reported
+// at the last token, or at the start of an empty input.
+func PFXNoEOF(ts *@X@Tokens) *@X@SyntaxError {
+	n := len(ts.Tokens)
+	if n > 0 && ts.Tokens[n-1].Type == @X@EOF {
+		return nil
+	}
+	line, col := 1, 0
+	if n > 0 {
+		line, col = int(ts.Tokens[n-1].Line), int(ts.Tokens[n-1].Column)
+	}
+	return &@X@SyntaxError{Line: line, Column: col, Msg: "the tokens do not end with EOF"}
 }
 
 // attempt parses once from the first token; a syntax error is returned, not panicked.

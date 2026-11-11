@@ -570,7 +570,8 @@ flowchart LR
 ```
 
 The recovering walk is the replay of the previous section carried past the
-first error. It walks the ATN from the entry rule with the call stack, deciding
+first error, and decides how to recover a match or a `Sync` with the same
+functions as that replay (`inlineFix`, `syncFix`). It walks the ATN from the entry rule with the call stack, deciding
 where and how ANTLR's generated code decides, syncing where it syncs and
 predicting with the same predictor in LL mode, and does at each error what the
 generated code and `DefaultErrorStrategy` do next:
@@ -593,8 +594,9 @@ the rule's context with the alternative's, and Go's `CopyFrom` keeps none of the
 children the rule had, so tokens a `Sync` deleted at the rule's start are not in
 the tree. Labels hold what ANTLR's label fields hold: the last assignment of a
 label that is not a list (a failed token match, or one while an error is
-pending, assigns nil), every assignment of
-a list label, and no token ANTLR's recovery made up. A node whose labels the
+pending, assigns nil), what each match of a list label ends with (a set
+match appends once, after RecoverInline; a failed token match appends
+nothing), and no token ANTLR's recovery made up. A node whose labels the
 converter aligns with its alternatives, and that ANTLR did not recover in, is
 aligned the same way.
 

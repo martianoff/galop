@@ -8,7 +8,7 @@ load(":defs.bzl", "convert_test")
 [convert_test(
     name = name,
     grammar = grammar,
-    extra_srcs = ["labels_getters_test.go"] if name == "labels" else [],
+    extra_srcs = {"labels": ["labels_getters_test.go"], "recovery": ["recovery_cases_test.go"]}.get(name, []),
     grammar_name = grammar_name,
     sample_flags = flags,
     start = start,

@@ -483,3 +483,11 @@ WS : ' ' -> skip ;
     val labels = ArrayFromSlice(strings.Split(table, ",")).Map(strings.TrimSpace).Filter((s) => s != "" && s != "0")
     Eq(t1, labels.Sorted(), ArrayOf("1", "258"))
 }
+
+func TestTooManyLabelsAreRejected(t T) T {
+    val elements = ArrayTabulate(256, (i) => s"l$i=X").MkString(" ")
+    generate(s"grammar M;\nr : $elements ;\nX : 'x' ;\n", EmptyArray[g4.OptionEntry]()) match {
+        case Left(errs) => IsTrue(t, errs.Exists((m) => strings.Contains(m, "at most 255 labels: r")))
+        case Right(_) => t.Error("a rule with 256 labels was generated")
+    }
+}

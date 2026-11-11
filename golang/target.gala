@@ -142,6 +142,11 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
     if predicates {
         return Left(ArrayOf("Go target: semantic predicates are not supported yet"))
     }
+    // A node stores its label's number in a byte.
+    val crowded = compiled.Rules.Filter((r) => ruleLabels(r).Size() > maxRuleLabels).Map(_.Name)
+    if crowded.NonEmpty() {
+        return Left(ArrayOf(s"Go target: a rule may have at most $maxRuleLabels labels: ${crowded.MkString(", ")}"))
+    }
     (compiled.Parser, in.Analysis) match {
         case (Some(parser), Some(an)) => {
             // ANTLR rewrites directly left-recursive rules into precedence loops
@@ -193,3 +198,6 @@ func isPredicate(s atn.Step) bool = s match {
     case atn.CheckPredicate(_) => true
     case _ => false
 }
+
+// maxRuleLabels is how many labels a rule may have: a node's Label is a byte.
+val maxRuleLabels = 255
