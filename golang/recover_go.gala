@@ -167,7 +167,7 @@ type PFXRecFrame struct {
 // label (PFXStateLabel's encoding) gets node, or token tok when node < 0
 // (-1 for none, as ANTLR stores nil).
 type PFXRecLabel struct {
-	label     uint8
+	label     uint16
 	node, tok int32
 }
 
@@ -180,10 +180,11 @@ type PFXRecError struct {
 }
 
 // The bits of PFXStateLabel: the label's number (as the native parser
-// numbers a rule's labels, from 1) and whether it collects a list.
+// numbers a rule's labels, from 1; a node's Label is a uint8) and whether it
+// collects a list.
 const (
-	PFXLabelNumber = 0x7f
-	PFXLabelList   = 0x80
+	PFXLabelNumber = 0xff
+	PFXLabelList   = 0x100
 )
 
 // parse walks the ATN from the start of rule, as errorsSource's run does,
@@ -266,7 +267,7 @@ func (r *PFXRecovery) parse(rule int) int32 {
 			r.enter(PFXStateRule[t], s)
 		case PFXKindAtom:
 			r.state = s
-			r.matchToken(s, t, p.la(1) == PFXTransArg[i])
+			r.matchToken(s, t, p.la(1) == PFXTransArg[i], true)
 			// The generated code checks for an error after a token match.
 			if e.pending != nil {
 				if s, root = r.leave(); root >= 0 {
@@ -276,21 +277,14 @@ func (r *PFXRecovery) parse(rule int) int32 {
 			}
 		default:
 			r.state = s
-			if PFXIsWildcard(i) {
-				r.matchToken(s, t, p.la(1) != @EOF@)
+			if PFXStateWildcard[s] {
+				r.matchToken(s, t, p.la(1) != @EOF@, false)
 			} else {
 				r.matchSet(s, i, t)
 			}
 		}
 		s = t
 	}
-}
-
-// PFXIsWildcard reports whether set transition i matches every token type,
-// as a wildcard does, which ANTLR matches with MatchWildcard.
-func PFXIsWildcard(i int32) bool {
-	set := PFXSets[PFXTransArg[i]]
-	return len(set) == 2 && set[0] == 1 && set[1] == PFXMaxTokenType
 }
 
 // decide makes decision d at state s as ANTLR's generated code does (see
@@ -429,15 +423,15 @@ func (r *PFXRecovery) labelNode(f PFXRecFrame, id int32) {
 	}
 	t := r.tree
 	first := len(t.TokenLabels)
-	var seen uint64
+	var seen [256]bool
 	for i := len(labs) - 1; i >= 0; i-- {
 		l := labs[i]
-		num := l.label & PFXLabelNumber
+		num := uint8(l.label & PFXLabelNumber)
 		if l.label&PFXLabelList == 0 {
-			if seen&(1<<(num&63)) != 0 {
+			if seen[num] {
 				continue
 			}
-			seen |= 1 << (num & 63)
+			seen[num] = true
 		}
 		switch {
 		case l.node >= 0:
@@ -526,12 +520,19 @@ func (r *PFXRecovery) deleteOne(exp *PFXExpected) {
 	r.reportMatch()
 }
 
-// matchToken is ANTLR's Match (or MatchWildcard) at state s, whose transition
-// leads to next, where ok says the current token matches.
-func (r *PFXRecovery) matchToken(s, next int32, ok bool) {
+// matchToken is ANTLR's Match (match set) or MatchWildcard at state s, whose
+// transition leads to next, where ok says the current token matches. Match
+// returns nil, adding no conjured token, while an error is pending, as after
+// a failed set match; MatchWildcard does not check.
+func (r *PFXRecovery) matchToken(s, next int32, ok, match bool) {
 	if ok {
 		r.reportMatch()
 		r.label(s, r.take(false))
+		return
+	}
+	if match && r.e.pending != nil {
+		r.recoverInline(s, next, false)
+		r.label(s, -1)
 		return
 	}
 	r.label(s, r.recoverInline(s, next, true))
@@ -764,7 +765,7 @@ func recoveryTables(e env) string {
     val byRule = e.rules.Map(ruleLabels)
     val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => {
         val number = byRule.Get(s.Rule).IndexOf(l.Name) + 1
-        if (l.Append) number + 128 else number
+        if (l.Append) number + 256 else number
     }).GetOrElse(0))
     // The alternatives of each labeled rule's top-level decision, as node Alts.
     val altLabels = e.rules.Map(altLabelsOf)
@@ -787,8 +788,9 @@ func recoveryTables(e env) string {
     })
     ArrayOf(
         "// What a recovering parse reads beyond the error tables: each labeled match's",
-        "// label, the labeled alternatives, and ANTLR's literal names.",
-        goSlice(s"${x}StateLabel", "uint8", labels.Map((l) => s"$l")),
+        "// label, its wildcard matches, the labeled alternatives, and ANTLR's literal names.",
+        goSlice(s"${x}StateLabel", "uint16", labels.Map((l) => s"$l")),
+        goSlice(s"${x}StateWildcard", "bool", a.Wildcards.Map((w) => s"$w")),
         goSlice(s"${x}OuterAltStart", "int32", outer.Zip(outerStarts).Map((os) => os match {
             case (Some(_), start) => s"$start"
             case _ => "-1"

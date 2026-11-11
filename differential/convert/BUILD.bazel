@@ -18,4 +18,5 @@ load(":defs.bzl", "convert_test")
     ("labels", "grammars/Labels.g4", "Labels", "prog", "-n 400 -seed 1 -nesting 3 -tokens 200"),
     ("errors", "//differential/errors:Errors.g4", "Errors", "prog", "-n 300 -seed 1 -nesting 3 -tokens 300"),
     ("repair", "//differential/repair:Repair.g4", "Repair", "s3", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("recovery", "grammars/Recovery.g4", "Recovery", "prog", "-n 300 -seed 1 -nesting 3 -tokens 200"),
 ]]

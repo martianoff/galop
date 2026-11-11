@@ -577,8 +577,9 @@ generated code and `DefaultErrorStrategy` do next:
 
 | Where | What ANTLR does | The walk |
 |---|---|---|
-| a token match fails | `RecoverInline`: delete one token if the next one matches, else conjure the missing token if the current one can follow it, else set an input mismatch | the same; a conjured token is an error token of the rule, named from ANTLR's literal names (`<missing ';'>`, `<missing EOF>`, `<missing >` for a token without a literal) |
+| a token match fails | `RecoverInline`: delete one token if the next one matches, else conjure the missing token if the current one can follow it, else set an input mismatch | the same; a conjured token is an error token of the rule, named from ANTLR's literal names: `<missing ';'>`, `<missing EOF>`, `<missing >` for a type within the literal names that has none, `<missing undefined>` past them. While an error is pending (after a failed set match) `Match` returns nil and adds no conjured token |
 | a set match fails | the same, but the conjured token is not added to the tree and the mismatch waits for the next error check | the same |
+| a wildcard (`.`) fails, at EOF | `MatchWildcard`: as a token match, but with no error check | the same (ANTLR's runtime then panics on a mismatch; see below) |
 | `Sync` at a block or loop start | delete one token, else set an input mismatch | the same |
 | `Sync` at a loop back | report the token, skip to what can follow the loop or a rule on the stack | the same |
 | an error check finds an error (`goto errorExit`) | report it, `Recover`: skip one token if this token and state failed before, then skip to a token in the follow sets of the rules on the stack; return from the rule | the same, with ANTLR's `lastErrorIndex` and `lastErrorStates` and the state of the generated code's last `SetState` |
@@ -591,7 +592,8 @@ error recovery mode is an error token. Choosing a labeled alternative replaces
 the rule's context with the alternative's, and Go's `CopyFrom` keeps none of the
 children the rule had, so tokens a `Sync` deleted at the rule's start are not in
 the tree. Labels hold what ANTLR's label fields hold: the last assignment of a
-label that is not a list (a failed token match assigns nil), every assignment of
+label that is not a list (a failed token match, or one while an error is
+pending, assigns nil), every assignment of
 a list label, and no token ANTLR's recovery made up. A node whose labels the
 converter aligns with its alternatives, and that ANTLR did not recover in, is
 aligned the same way.

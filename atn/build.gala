@@ -80,6 +80,8 @@ type builder struct {
     var ruleStop Array[int]
     // labels is the label of each state's labeled transition, by state.
     var labels Array[Option[LabelRef]]
+    // wildcards marks the states that match a parser wildcard.
+    var wildcards Array[bool]
     lexer bool
     vocab Vocabulary
     rules Array[g4.Rule]
@@ -100,6 +102,7 @@ func newBuilder(lexer bool, vocab Vocabulary, rules Array[g4.Rule]) Ptr[builder]
         ruleStart: EmptyArray[int](),
         ruleStop: EmptyArray[int](),
         labels: EmptyArray[Option[LabelRef]](),
+        wildcards: EmptyArray[bool](),
         lexer: lexer,
         vocab: vocab,
         rules: rules,
@@ -119,6 +122,7 @@ func (b Ptr[builder]) state(rule int, kind StateKind) int {
     b.outs = b.outs.Append(EmptyArray[Transition]())
     b.decisionOf = b.decisionOf.Append(None[int]())
     b.labels = b.labels.Append(None[LabelRef]())
+    b.wildcards = b.wildcards.Append(false)
     id
 }
 
@@ -162,7 +166,7 @@ func (b Ptr[builder]) ruleName(rule int) string = b.names.Get(rule)
 
 func (b Ptr[builder]) finish(kind ATNKind, name string, tokensStart Option[int], tokenTypes Array[Option[int]]) ATN {
     val states = ArrayTabulate(b.kinds.Size(), (i) => State(i, b.owner.Get(i), b.kinds.Get(i), b.outs.Get(i), b.decisionOf.Get(i)))
-    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes, b.labels)
+    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes, b.labels, b.wildcards)
 }
 
 // tokensStart creates a lexer's start state: one alternative per token rule,
@@ -265,6 +269,11 @@ func (b Ptr[builder]) compileElement(rule int, e g4.Element, label Option[LabelR
         case Left(d) => b.empty(rule, d)
     }
     case g4.Range(from, to) if !b.lexer => b.empty(rule, diag.TokenRangeInParser.New(s"'$from'", s"'$to'"))
+    case g4.Wildcard() if !b.lexer => {
+        val p = b.matchSet(rule, b.universe(), label, false)
+        b.wildcards = b.wildcards.Updated(p.Frag.Entry, true)
+        p
+    }
     case _ => b.setOf(e) match {
         case Some(set) => b.matchSet(rule, set, label, false)
         case None() => b.empty(rule, diag.NotAllowedHere.New(g4.FormatElement(e), if (b.lexer) "lexer" else "parser"))

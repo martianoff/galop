@@ -64,7 +64,7 @@ one known exception (see [design](docs/DESIGN.md#reporting-syntax-errors-as-antl
 The native flavor also recovers from syntax errors as ANTLR does: on 19,000 broken
 GALA files from both corpora and the generated sentences (mutants, and edits like a
 file being typed: cut off, a bracket left open or removed, a line half written) and
-15,000 mutants of five test grammars, it reports every error ANTLR reports, in
+18,000 mutants of six test grammars, it reports every error ANTLR reports, in
 order, and builds the error-recovered tree ANTLR builds, more than 10 times faster.
 
 ## Why

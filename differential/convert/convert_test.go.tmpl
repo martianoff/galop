@@ -55,6 +55,17 @@ func parseANTLR(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStream, 
 	return p.@START@(), stream, errs.err
 }
 
+// parseANTLRSafely is parseANTLR, reporting whether ANTLR's runtime panicked:
+// its MatchWildcard dereferences the nil token RecoverInline returns for a
+// wildcard at EOF.
+func parseANTLRSafely(src string) (ctx antlr.ParserRuleContext, stream *antlr.CommonTokenStream, err error, crashed bool) {
+	defer func() {
+		crashed = recover() != nil
+	}()
+	ctx, stream, err = parseANTLR(src)
+	return ctx, stream, err, false
+}
+
 // parseFlavor parses src with galop's antlr flavor.
 func parseFlavor(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStream, error) {
 	stream := antlr.NewCommonTokenStream(ga.New@G@GalopLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel)
@@ -184,8 +195,8 @@ func TestConvertRecoveredTrees(t *testing.T) {
 		if len(gn.@G@Lex(src).Errors) > 0 {
 			continue
 		}
-		ctx, stream, err := parseANTLR(src)
-		if err == nil {
+		ctx, stream, err, crashed := parseANTLRSafely(src)
+		if crashed || err == nil {
 			continue
 		}
 		converted++
@@ -368,12 +379,7 @@ func (l *allErrors) SyntaxError(_ antlr.Recognizer, _ interface{}, line, column 
 // DFA starts empty) and returns every syntax error and the error-recovered
 // tree, converted. crashed says ANTLR's runtime panicked: its MatchWildcard
 // dereferences the nil token RecoverInline returns for a wildcard at EOF.
-func recoverANTLR(src string) (errs []string, tree *gn.@G@Tree, crashed bool) {
-	defer func() {
-		if recover() != nil {
-			errs, tree, crashed = nil, nil, true
-		}
-	}()
+func recoverANTLR(src string) ([]string, *gn.@G@Tree, bool) {
 	lexer := ga.New@G@Lexer(antlr.NewInputStream(src))
 	lexer.RemoveErrorListeners()
 	stream := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
@@ -387,8 +393,16 @@ func recoverANTLR(src string) (errs []string, tree *gn.@G@Tree, crashed bool) {
 	listener := &allErrors{DefaultErrorListener: antlr.NewDefaultErrorListener()}
 	p.RemoveErrorListeners()
 	p.AddErrorListener(listener)
-	ctx := p.@START@()
-	tree, _ = ga.@G@ToNative(ctx, stream, src)
+	ctx, crashed := func() (ctx antlr.ParserRuleContext, crashed bool) {
+		defer func() {
+			crashed = recover() != nil
+		}()
+		return p.@START@(), false
+	}()
+	if crashed {
+		return nil, nil, true
+	}
+	tree, _ := ga.@G@ToNative(ctx, stream, src)
 	return listener.errs, tree, false
 }
 

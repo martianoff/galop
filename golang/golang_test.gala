@@ -477,9 +477,9 @@ WS : ' ' -> skip ;
         "var LGalopAlignKinds = map[uint32]*LGalopAlignNFA{}",
     )
     val t1 = expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(parser, s)))
-    // Labels by state: cond is label 1, ops a list (128) and label 2.
-    val rest = ArrayFromSlice(strings.SplitN(parser, "var LGalopStateLabel = []uint8{", 2)).Last()
+    // Labels by state: cond is label 1, ops a list (256) and label 2.
+    val rest = ArrayFromSlice(strings.SplitN(parser, "var LGalopStateLabel = []uint16{", 2)).Last()
     val table = ArrayFromSlice(strings.SplitN(rest, "}", 2)).Head()
     val labels = ArrayFromSlice(strings.Split(table, ",")).Map(strings.TrimSpace).Filter((s) => s != "" && s != "0")
-    Eq(t1, labels.Sorted(), ArrayOf("1", "130"))
+    Eq(t1, labels.Sorted(), ArrayOf("1", "258"))
 }
