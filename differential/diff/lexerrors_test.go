@@ -17,17 +17,60 @@ var lexErrorInputs = flag.Int("lex_error_inputs", 300, "TestLexAndSyntaxErrorOrd
 // strayChars are characters GALA's lexer has no token for.
 var strayChars = []string{"#", "@", "$", "`", "\\", "\x01", "¤"}
 
-// withStrayChars puts one to three of strayChars at token boundaries of src,
-// and half the time also mutates it (see mutate.Mutate), so that lexical and
-// syntax errors mix.
+// openers start a token that runs to the end of its line or of the input when
+// nothing closes it: an unterminated string, character or raw string.
+var openers = []string{"\"", "'", "`"}
+
+// withStrayChars breaks src lexically one to three times, and half the time
+// also mutates it (see mutate.Mutate), so that lexical and syntax errors mix.
+// Each break puts text where a token starts or ends, inside a token, at the
+// end of a line or at the end of the input: one of strayChars, a run of them,
+// or an opener left unclosed.
 func withStrayChars(r *rand.Rand, src string) string {
 	if r.Intn(2) == 0 {
 		src = mutate.Mutate(r, src)
 	}
 	for n := 1 + r.Intn(3); n > 0; n-- {
 		toks := nativegala.Tokens(src).Tokens
-		at := int(toks[r.Intn(len(toks))].Start)
-		src = src[:at] + strayChars[r.Intn(len(strayChars))] + src[at:]
+		tok := toks[r.Intn(len(toks))]
+		var at int
+		switch r.Intn(5) {
+		case 0:
+			at = int(tok.Start)
+		case 1:
+			at = int(tok.End)
+		case 2:
+			// Inside the token, on a rune boundary (it splits it in two).
+			at = int(tok.Start)
+			if text := src[tok.Start:tok.End]; len(text) > 1 {
+				for i := range text {
+					if i > 0 && r.Intn(2) == 0 {
+						at = int(tok.Start) + i
+						break
+					}
+				}
+			}
+		case 3:
+			// At the end of the token's line.
+			at = int(tok.End)
+			if nl := strings.IndexByte(src[at:], '\n'); nl >= 0 {
+				at += nl
+			} else {
+				at = len(src)
+			}
+		default:
+			at = len(src)
+		}
+		var text string
+		switch r.Intn(4) {
+		case 0:
+			text = openers[r.Intn(len(openers))]
+		case 1:
+			text = strings.Repeat(strayChars[r.Intn(len(strayChars))], 2+r.Intn(3))
+		default:
+			text = strayChars[r.Intn(len(strayChars))]
+		}
+		src = src[:at] + text + src[at:]
 	}
 	return src
 }
