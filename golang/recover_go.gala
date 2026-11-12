@@ -182,8 +182,8 @@ type PFXRecError struct {
 // numbers a rule's labels, from 1; a node's Label is a uint8) and whether it
 // collects a list.
 const (
-	PFXLabelNumber = 0xff
-	PFXLabelList   = 0x100
+	PFXLabelNumber = @LABELMAX@
+	PFXLabelList   = @LABELMAX@ + 1
 )
 
 // parse walks the ATN from the start of rule, as errorsSource's run does,
@@ -422,7 +422,7 @@ func (r *PFXRecovery) labelNode(f PFXRecFrame, id int32) {
 	}
 	t := r.tree
 	first := len(t.TokenLabels)
-	var seen [256]bool
+	var seen [PFXLabelList]bool
 	for i := len(labs) - 1; i >= 0; i-- {
 		l := labs[i]
 		num := uint8(l.label & PFXLabelNumber)
@@ -751,7 +751,7 @@ func alignPrefix(e env) string = e.pfx + "Align"
 // tables and recoverySource.
 func recoveryCode(e env) string =
     recoveryTables(e) + fill(recoverySource, "ALIGNNFA", fill(alignNFASource, "NFAP", alignPrefix(e)),
-        "@EOF@", e.exported() + "EOF", "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported())
+        "@EOF@", e.exported() + "EOF", "@LABELMAX@", s"$maxRuleLabels", "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported())
 
 // recoveryTables emits what the recovering parse needs beyond the error
 // emulator's tables: the label of each labeled match, the labeled
@@ -765,7 +765,7 @@ func recoveryTables(e env) string {
     val byRule = e.rules.Map(ruleLabels)
     val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => {
         val number = byRule.Get(s.Rule).IndexOf(l.Name) + 1
-        if (l.Append) number + 256 else number
+        if (l.Append) number + maxRuleLabels + 1 else number
     }).GetOrElse(0))
     // The alternatives of each labeled rule's top-level decision, as node Alts.
     val altLabels = e.rules.Map(altLabelsOf)
@@ -783,7 +783,7 @@ func recoveryTables(e env) string {
         s"\t${k.Rule.Index * 256 + k.Alt}: ${ax}NewNFA([]${ax}Step{{op: ${ax}OpChoose, exit: -1, alts: ${altsLiteral(ax, kindAlts(k).Map(_.Steps), ruleLabels(k.Rule))}}}),"
     )
     // gofmt writes an empty composite literal on one line.
-    val alignKinds = s"var ${x}AlignKinds = map[uint32]*${ax}NFA" + (aligned match {
+    val alignKinds = s"var ${ax}Kinds = map[uint32]*${ax}NFA" + (aligned match {
         case Array() => "{}\n"
         case _ => "{\n" + aligned.MkString("\n") + "\n}\n"
     })

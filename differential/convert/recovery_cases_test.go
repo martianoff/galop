@@ -45,7 +45,8 @@ func TestRecoveryCases(t *testing.T) {
 		}
 		// The first-error replay of a plain parse agrees too.
 		_, err := gn.ParseProg(gn.RecoveryLex(tc.src))
-		if first, _, _ := strings.Cut(tc.want, "\n"); err == nil || !strings.HasSuffix(err.Error(), first[strings.Index(first, ": ")+2:]) {
+		first, _, _ := strings.Cut(tc.want, "\n")
+		if _, msg, _ := strings.Cut(first, ": "); err == nil || !strings.HasSuffix(err.Error(), msg) {
 			t.Errorf("%s: ParseProg reports %v, want %s", tc.name, err, first)
 		}
 	}

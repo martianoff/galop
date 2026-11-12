@@ -200,4 +200,6 @@ func isPredicate(s atn.Step) bool = s match {
 }
 
 // maxRuleLabels is how many labels a rule may have: a node's Label is a byte.
+// The recovering parse's label table masks a label's number with it and sets
+// the bit above it for a list label, so it is all ones (2^k - 1).
 val maxRuleLabels = 255

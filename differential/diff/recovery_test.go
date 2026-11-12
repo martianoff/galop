@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,6 +136,7 @@ type recoveryOutcome struct {
 }
 
 func compareRecovery(src string) recoveryOutcome {
+	begin := time.Now()
 	wantErrs, wantCtx, wantTree := recoveredByANTLR(src)
 	start := time.Now()
 	gotErrs, gotCtx, gotTree := recoveredByGalop(src)
@@ -151,6 +149,7 @@ func compareRecovery(src string) recoveryOutcome {
 		nConjured:  len(wantTree.Conjured),
 		contexts:   true,
 		galop:      galop,
+		elapsed:    time.Since(begin),
 	}
 	d := sameRecoveredTree(wantTree, gotTree)
 	o.tree = d == ""
@@ -295,20 +294,7 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 // DFA each time) is most of the cost, and the parses share nothing.
 func compareAll(srcs []string) []recoveryOutcome {
 	out := make([]recoveryOutcome, len(srcs))
-	var next atomic.Int64
-	var wg sync.WaitGroup
-	for range runtime.GOMAXPROCS(0) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := int(next.Add(1) - 1); i < len(srcs); i = int(next.Add(1) - 1) {
-				start := time.Now()
-				out[i] = compareRecovery(srcs[i])
-				out[i].elapsed = time.Since(start)
-			}
-		}()
-	}
-	wg.Wait()
+	parallel(srcs, func(i int, src string) { out[i] = compareRecovery(src) })
 	return out
 }
 

@@ -33,7 +33,7 @@ func TestNativeMatchesANTLR(t *testing.T) {
 	fs := files(t)
 	var mu sync.Mutex
 	var problems []string
-	parallel(fs, func(f corpus.File) {
+	parallel(fs, func(_ int, f corpus.File) {
 		if p := compareNative(f); p != "" {
 			mu.Lock()
 			problems = append(problems, p)
@@ -293,9 +293,9 @@ func BenchmarkParseNative(b *testing.B) {
 func BenchmarkParseNativeParallel(b *testing.B) {
 	fs := files(b)
 	b.SetBytes(int64(corpus.Bytes(fs)))
-	parallel(fs, func(f corpus.File) { nativegala.Parse(f.Src) })
+	parallel(fs, func(_ int, f corpus.File) { nativegala.Parse(f.Src) })
 	for b.Loop() {
-		parallel(fs, func(f corpus.File) { nativegala.Parse(f.Src) })
+		parallel(fs, func(_ int, f corpus.File) { nativegala.Parse(f.Src) })
 	}
 }
 

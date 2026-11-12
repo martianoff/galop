@@ -177,9 +177,9 @@ func BenchmarkParseGalopParallel(b *testing.B) {
 	fs := files(b)
 	galop := gala.Parsers()["galop"]
 	b.SetBytes(int64(corpus.Bytes(fs)))
-	parallel(fs, func(f corpus.File) { galop(gala.GalopTokens(f.Src)) })
+	parallel(fs, func(_ int, f corpus.File) { galop(gala.GalopTokens(f.Src)) })
 	for b.Loop() {
-		parallel(fs, func(f corpus.File) { galop(gala.GalopTokens(f.Src)) })
+		parallel(fs, func(_ int, f corpus.File) { galop(gala.GalopTokens(f.Src)) })
 	}
 }
 
@@ -188,26 +188,27 @@ func BenchmarkParseGalopParallel(b *testing.B) {
 func BenchmarkParseParallel(b *testing.B) {
 	fs := files(b)
 	b.SetBytes(int64(corpus.Bytes(fs)))
-	parallel(fs, func(f corpus.File) { gala.Lenient(gala.Tokens(f.Src)) }) // untimed: builds the DFAs
+	parallel(fs, func(_ int, f corpus.File) { gala.Lenient(gala.Tokens(f.Src)) }) // untimed: builds the DFAs
 	for b.Loop() {
-		parallel(fs, func(f corpus.File) { gala.Lenient(gala.Tokens(f.Src)) })
+		parallel(fs, func(_ int, f corpus.File) { gala.Lenient(gala.Tokens(f.Src)) })
 	}
 }
 
-func parallel(fs []corpus.File, do func(corpus.File)) {
+// parallel calls do with each of xs and its index, on every CPU at once.
+func parallel[T any](xs []T, do func(int, T)) {
 	var wg sync.WaitGroup
-	next := make(chan corpus.File)
+	next := make(chan int)
 	for range runtime.GOMAXPROCS(0) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for f := range next {
-				do(f)
+			for i := range next {
+				do(i, xs[i])
 			}
 		}()
 	}
-	for _, f := range fs {
-		next <- f
+	for i := range xs {
+		next <- i
 	}
 	close(next)
 	wg.Wait()
