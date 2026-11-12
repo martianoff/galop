@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/antlr4-go/antlr/v4"
 
@@ -128,11 +132,17 @@ type recoveryOutcome struct {
 	diff     string
 	// ANTLR's errors, error tokens and conjured tokens.
 	nErrors, nErrorKids, nConjured int
+	// elapsed is how long the comparison took, ANTLR's parse included.
+	elapsed time.Duration
+	// galop is how long galop's recovering parse took.
+	galop time.Duration
 }
 
 func compareRecovery(src string) recoveryOutcome {
 	wantErrs, wantCtx, wantTree := recoveredByANTLR(src)
+	start := time.Now()
 	gotErrs, gotCtx, gotTree := recoveredByGalop(src)
+	galop := time.Since(start)
 	o := recoveryOutcome{
 		firstError: len(wantErrs) > 0 && len(gotErrs) > 0 && wantErrs[0] == gotErrs[0],
 		errors:     slices.Equal(wantErrs, gotErrs),
@@ -140,6 +150,7 @@ func compareRecovery(src string) recoveryOutcome {
 		nErrorKids: len(wantTree.ErrorKids),
 		nConjured:  len(wantTree.Conjured),
 		contexts:   true,
+		galop:      galop,
 	}
 	d := sameRecoveredTree(wantTree, gotTree)
 	o.tree = d == ""
@@ -172,6 +183,8 @@ type recoveryStats struct {
 	inputs, first, errors, trees  int
 	multi, nErrors, nErrorKids    int
 	nConjured, contexts, replaced int
+	slowest                       time.Duration
+	slowestGalop                  time.Duration
 }
 
 func (s *recoveryStats) add(o recoveryOutcome) {
@@ -180,6 +193,8 @@ func (s *recoveryStats) add(o recoveryOutcome) {
 	s.nErrorKids += o.nErrorKids
 	s.nConjured += o.nConjured
 	s.replaced += o.replaced
+	s.slowest = max(s.slowest, o.elapsed)
+	s.slowestGalop = max(s.slowestGalop, o.galop)
 	if o.contexts {
 		s.contexts++
 	}
@@ -201,8 +216,8 @@ func (s recoveryStats) String() string {
 	pct := func(n int) string {
 		return strconv.FormatFloat(100*float64(n)/float64(max(s.inputs, 1)), 'f', 1, 64) + "%"
 	}
-	return fmt.Sprintf("%s: %d inputs (%d with several errors; ANTLR reports %d errors, %d error tokens, %d conjured), first error %s, all errors %s, tree %s, error contexts %s (%d errors in a replaced context)",
-		s.name, s.inputs, s.multi, s.nErrors, s.nErrorKids, s.nConjured, pct(s.first), pct(s.errors), pct(s.trees), pct(s.contexts), s.replaced)
+	return fmt.Sprintf("%s: %d inputs (%d with several errors; ANTLR reports %d errors, %d error tokens, %d conjured), first error %s, all errors %s, tree %s, error contexts %s (%d errors in a replaced context); slowest input %v (galop %v)",
+		s.name, s.inputs, s.multi, s.nErrors, s.nErrorKids, s.nConjured, pct(s.first), pct(s.errors), pct(s.trees), pct(s.contexts), s.replaced, s.slowest.Round(time.Millisecond), s.slowestGalop.Round(time.Microsecond))
 }
 
 // editLike changes src the way a file being edited is broken: cut off at a
@@ -259,8 +274,7 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 	} {
 		stats := recoveryStats{name: kind.name}
 		shown := 0
-		for _, src := range rejectedCopies(rand.New(rand.NewSource(*mutantSeed)), srcs, kind.change, kind.n) {
-			o := compareRecovery(src)
+		for _, o := range compareAll(rejectedCopies(rand.New(rand.NewSource(*mutantSeed)), srcs, kind.change, kind.n)) {
 			stats.add(o)
 			if !o.errors || !o.tree || !o.contexts {
 				if shown < 20 {
@@ -274,6 +288,28 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 		}
 		t.Log(stats)
 	}
+}
+
+// compareAll is compareRecovery of each of srcs, in order. The inputs are
+// compared on every CPU at once: ANTLR's parse in a fresh process (an empty
+// DFA each time) is most of the cost, and the parses share nothing.
+func compareAll(srcs []string) []recoveryOutcome {
+	out := make([]recoveryOutcome, len(srcs))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := int(next.Add(1) - 1); i < len(srcs); i = int(next.Add(1) - 1) {
+				start := time.Now()
+				out[i] = compareRecovery(srcs[i])
+				out[i].elapsed = time.Since(start)
+			}
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 // TestRecoveryWalkOnValidInput runs the recovering walk on every corpus file
