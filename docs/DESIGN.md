@@ -550,6 +550,80 @@ One known exception: ANTLR 4.13.1's Go runtime computes the complement of a
 set and reports a different first error. galop keeps the correct set. gala.g4
 has no such set.
 
+### Recovering from syntax errors as ANTLR does
+
+An editor needs more than the first error: every error in the file, and a tree
+of everything around them for hover and completion. The native flavor's
+`Parse<Rule>WithRecovery` gives both as ANTLR 4.13.1's Go runtime gives them
+with its default error strategy, parsing in LL mode in a fresh process (as the
+GALA compiler parses a file with a syntax error): the same errors in the same
+order, with the same messages and positions, and the tree galop's converter
+makes of ANTLR's error-recovered tree, error tokens and made-up tokens
+included. On input without errors it is `Parse<Rule>`, at no extra cost.
+
+```mermaid
+flowchart LR
+  p["Parse&lt;Rule&gt;<br/>(first pass, search, repair)"] -- parses --> t["tree, no errors"]
+  p -- "syntax error" --> w["recovering walk:<br/>ANTLR's generated parser<br/>and error strategy over the ATN"]
+  w --> e["every error ANTLR reports"]
+  w --> r["ANTLR's recovered tree,<br/>as the converter converts it"]
+```
+
+The recovering walk is the replay of the previous section carried past the
+first error, and decides how to recover a match or a `Sync` with the same
+functions as that replay (`inlineFix`, `syncFix`). It walks the ATN from the entry rule with the call stack, deciding
+where and how ANTLR's generated code decides, syncing where it syncs and
+predicting with the same predictor in LL mode, and does at each error what the
+generated code and `DefaultErrorStrategy` do next:
+
+| Where | What ANTLR does | The walk |
+|---|---|---|
+| a token match fails | `RecoverInline`: delete one token if the next one matches, else conjure the missing token if the current one can follow it, else set an input mismatch | the same; a conjured token is an error token of the rule, named from ANTLR's literal names: `<missing ';'>`, `<missing EOF>`, `<missing >` for a type within the literal names that has none, `<missing undefined>` past them. While an error is pending (after a failed set match) `Match` returns nil and adds no conjured token |
+| a set match fails | the same, but the conjured token is not added to the tree and the mismatch waits for the next error check | the same |
+| a wildcard (`.`) fails, at EOF | `MatchWildcard`: as a token match, but with no error check | the same (ANTLR's runtime then panics on a mismatch; see below) |
+| `Sync` at a block or loop start | delete one token, else set an input mismatch | the same |
+| `Sync` at a loop back | report the token, skip to what can follow the loop or a rule on the stack | the same |
+| an error check finds an error (`goto errorExit`) | report it, `Recover`: skip one token if this token and state failed before, then skip to a token in the follow sets of the rules on the stack; return from the rule | the same, with ANTLR's `lastErrorIndex` and `lastErrorStates` and the state of the generated code's last `SetState` |
+| any report | suppressed in error recovery mode, which a report starts and a matched token ends | the same |
+
+The tree is built the way ANTLR's parser builds its contexts, and laid out as
+the converter lays it out. A rule's node spans from the token current when it
+started to the token before the current one when it ended. A token consumed in
+error recovery mode is an error token. Choosing a labeled alternative replaces
+the rule's context with the alternative's, and Go's `CopyFrom` keeps none of the
+children the rule had, so tokens a `Sync` deleted at the rule's start are not in
+the tree. Labels hold what ANTLR's label fields hold: the last assignment of a
+label that is not a list (a failed token match, or one while an error is
+pending, assigns nil), what each match of a list label ends with (a set
+match appends once, after RecoverInline; a failed token match appends
+nothing), and no token ANTLR's recovery made up. A node whose labels the
+converter aligns with its alternatives, and that ANTLR did not recover in, is
+aligned the same way.
+
+Each error also records what the GALA compiler's error hints read of ANTLR's
+parser when the error is reported: the offending token, the node of the rule
+being parsed (`GetParserRuleContext()`) and how many children that node had
+then. Where ANTLR replaced the rule's context to enter a labeled alternative,
+the node is the replacement's.
+
+Comparing the walk with ANTLR found one place where the first error's replay
+decided differently from ANTLR's generated code without changing a first error:
+a loop whose body is a block of alternatives is an LL(1) loop wherever its
+lookahead sets are disjoint, as for any other loop; it was predicted
+adaptively. Recovery reaches such a loop in error recovery mode, where `Sync`
+does nothing, and there the two differ.
+
+ANTLR's Go runtime panics in `MatchWildcard` at EOF when single-token deletion
+and insertion both fail (it reads the token of the nil `RecoverInline` returns).
+The walk leaves the mismatch pending there, as for a set.
+
+**Cost.** The walk runs only after `Parse<Rule>` fails (whose own first-error
+replay it then skips, and whose tree arrays it reuses), and costs about one
+pass over the tokens with prediction at every runtime decision (no guessing,
+LL mode). On 200 corpus mutants and 200 editor-style edits, lexing included,
+a broken file takes 0.57 ms on average against 6.6 to 8.0 ms (two runs) for
+ANTLR's LL parse with a warm DFA, with a twentieth of the memory.
+
 ## Lexer (`lexgen`)
 
 Builds a DFA from the lexer ATN by subset construction over ordered configuration
@@ -648,11 +722,12 @@ tool rejects any other with error 508 before generating. The Go target has two
 
 Both flavors run the same decision functions and runtime predictor (SLL first,
 LL from the start on a syntax error), so they choose the same alternatives.
-Neither recovers from a syntax error yet: a parse stops at the first one and
-reports the same first error as ANTLR in a fresh process, with its message,
-line and column (see
-"Reporting syntax errors as ANTLR does"). The replay reads the tokens alone,
-so bracket abstraction does not change the error.
+A parse stops at the first syntax error and reports the same first error as
+ANTLR in a fresh process, with its message, line and column (see
+[Reporting syntax errors as ANTLR does](#reporting-syntax-errors-as-antlr-does)).
+The replay reads the tokens alone, so bracket abstraction does not change the
+error. The native flavor can also recover from errors as ANTLR does (see
+[Recovering from syntax errors as ANTLR does](#recovering-from-syntax-errors-as-antlr-does)).
 
 ### The native tree
 
@@ -688,7 +763,8 @@ columns are ANTLR's. `GalaRuleNames` and `GalaAltNames` name rules and labeled
 alternatives.
 
 A tree can hold **error tokens**, which the converter below produces from
-ANTLR's error-recovered trees; native parsing makes none. As ANTLR's
+ANTLR's error-recovered trees and a recovering parse makes the same way;
+parsing without errors makes none. As ANTLR's
 `ErrorNode` is a `TerminalNode`, an error token is a token child like any
 other, so token accessors (`n.RPAREN()`, `n.Token(t)`) and `ToStringTree` see
 it as ANTLR's do; `Child(i).IsError()` tells it apart. `Tree.ErrorKids` lists

@@ -109,7 +109,7 @@ both corpora and both generated sets:
   child exactly once, real tokens in order and at most once, spans in bounds. It
   must also print as ANTLR prints the recovered tree.
 - **`//differential/convert`** builds every test grammar (Expr, Calc, Labels, Errors,
-  Repair) with ANTLR, the antlr flavor with the converter and the native flavor with
+  Repair, Recovery) with ANTLR, the antlr flavor with the converter and the native flavor with
   its listener and visitor. It runs the two checks above on sentences `galop-sample`
   generates and on mutants of them, and walks every tree with `Typed`, `Accept` and
   `Walk`. Labels.g4 holds the labels ANTLR's fields keep only the last match of.
@@ -117,6 +117,28 @@ both corpora and both generated sets:
   `GalaWalk` on the corpus trees and on recovered trees. Each node must get its
   rule's or labeled alternative's handle, and the walk must report the order
   ANTLR's `ParseTreeWalker` does.
+
+The native flavor's error recovery (see
+[design](DESIGN.md#recovering-from-syntax-errors-as-antlr-does)) is checked against
+ANTLR's LL parse with its default error strategy, over a DFA that starts empty:
+
+- **`TestRecoveryMatchesANTLR`** takes rejected inputs of two kinds: mutants
+  (`mutate.Mutate`) and editor-style edits (the file cut off at a token, an
+  opening bracket added, a closing one removed, or the rest of a line removed).
+  `-recovery_mutants` and `-recovery_edits` set how many; 300 each on pull
+  requests (`diff_test`, `heldout_test`, `generated_test`, `generated_deep_test`)
+  and thousands in the large runs (`recovery_large_test` and
+  `heldout_recovery_large_test` for the corpora). For each it requires every syntax error
+  ANTLR reports, in order, the error-recovered tree converted by galop's
+  converter, error tokens and made-up tokens included, and for every error the
+  node, its child count and the token the GALA compiler's error hints read.
+  It logs the share of inputs that match on the first error, on all errors,
+  on the tree and on the error contexts.
+- **`TestRecoveryWalkOnValidInput`** runs the recovering walk on every input
+  native parsing accepts: no errors, and native parsing's tree.
+- **`//differential/convert`** runs `TestRecoveryMatchesANTLR` on mutants of every
+  test grammar. Inputs where ANTLR's runtime panics (`MatchWildcard` at EOF) are
+  counted and skipped.
 
 **`TestParseAtMatchesANTLR`** (`diff_test`, `heldout_test`) re-parses expressions cut
 from the corpus at their line and column, as the GALA compiler re-parses interpolated
@@ -205,7 +227,7 @@ ANTLR's recovered one where it does not). It is only reported.
 | Where | What | Judged |
 |---|---|---|
 | every PR and push: job `performance gate` | `perfgate` with the defaults above (about 2 minutes once built) | against `baseline.json`; enforcing (`PERF_ENFORCE: "true"` in `ci.yml`): a regression or a missing number fails the job |
-| pushes to main and `workflow_dispatch`: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, generated sets 1–4 | parity with ANTLR |
+| pushes to main and `workflow_dispatch`: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, corpus recovery, held-out recovery, generated sets 1–4 | parity with ANTLR |
 | pushes to main and `workflow_dispatch`: job `performance sweep` | `perfgate -every=1 -mutants=300 -runs=7 -passes=7` | not judged: a wider report |
 
 A cold cache never turns a pull request red. The gate's build and measurement run

@@ -240,3 +240,43 @@ func FirstSyntaxError(src string) (string, bool) {
 // HideNewlineTokens is hideNewlineTokens for messages from other parsers, so
 // that their errors read as the GALA compiler's do.
 func HideNewlineTokens(msg string) string { return hideNewlineTokens(msg) }
+
+// ReportedError is a syntax error ANTLR's parser reported, with what the
+// GALA compiler's error hints read when it is reported: the rule context the
+// parser is in, how many children that context has then, and the offending
+// token.
+type ReportedError struct {
+	// Text is "line:col: message".
+	Text  string
+	Ctx   antlr.ParserRuleContext
+	Kids  int
+	Token antlr.Token
+}
+
+// reportListener collects ReportedErrors.
+type reportListener struct {
+	*antlr.DefaultErrorListener
+	errs []ReportedError
+}
+
+func (l *reportListener) SyntaxError(r antlr.Recognizer, offending any, line, column int, msg string, _ antlr.RecognitionException) {
+	ctx := r.(antlr.Parser).GetParserRuleContext()
+	tok, _ := offending.(antlr.Token)
+	l.errs = append(l.errs, ReportedError{fmt.Sprintf("%d:%d: %s", line, column, hideNewlineTokens(msg)), ctx, ctx.GetChildCount(), tok})
+}
+
+// ParseRecovered parses src the way the GALA compiler parses a file with a
+// syntax error: with LL prediction alone and ANTLR's default error strategy,
+// in a fresh process (its DFA set starts empty). It returns the
+// error-recovered tree, the token stream it read and every syntax error.
+// Lexical errors are left out.
+func ParseRecovered(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStream, []ReportedError) {
+	stream := Tokens(src)
+	p := antlrgala.NewgalaParser(stream)
+	isolateParserCaches(p.BaseParser, newDFA(p.GetATN()))
+	p.GetInterpreter().SetPredictionMode(LL)
+	errs := &reportListener{}
+	p.RemoveErrorListeners()
+	p.AddErrorListener(errs)
+	return p.SourceFile(), stream, errs.errs
+}

@@ -148,6 +148,12 @@ struct ATN(
     // Lexer only: the start state, and the token type of each rule (None for fragments).
     TokensStart Option[int],
     RuleTokenType Array[Option[int]],
+    // Labels is, by state, the label of the state's labeled rule call or
+    // token match (`e=expr`, `ids+=ID`); None for every other state.
+    Labels Array[Option[LabelRef]],
+    // Wildcards marks, by state, a parser wildcard match (`.`), which ANTLR's
+    // generated code matches with MatchWildcard rather than as a set.
+    Wildcards Array[bool],
 )
 
 // State returns state id.

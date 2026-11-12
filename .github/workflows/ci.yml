@@ -157,6 +157,10 @@ jobs:
             targets: //differential/diff:mutations_large_test
           - name: held-out mutants
             targets: //differential/diff:heldout_mutations_large_test
+          - name: corpus recovery
+            targets: //differential/diff:recovery_large_test
+          - name: held-out recovery
+            targets: //differential/diff:heldout_recovery_large_test
           - name: generated 1
             targets: //differential/diff:generated_large_1_test
           - name: generated 2

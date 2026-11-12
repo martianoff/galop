@@ -48,3 +48,11 @@ func ParseByRerun(src string) (SourceFileNode, error) {
 	}
 	return SourceFileNode{GalaNodeRef{t, root}}, nil
 }
+
+// RecoverAlways parses ts as sourceFile with the recovering walk that
+// ParseSourceFileWithRecovery runs after a syntax error, even when there is
+// none: on valid input it must build the tree ParseSourceFile builds.
+func RecoverAlways(ts *GalaTokens) (*GalaTree, int32, []GalaParseError) {
+	p := newgalaGalopParser(ts)
+	return p.recoverParse(GalaRULE_sourceFile)
+}

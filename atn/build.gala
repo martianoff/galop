@@ -78,6 +78,10 @@ type builder struct {
     var current Option[g4.Element]
     var ruleStart Array[int]
     var ruleStop Array[int]
+    // labels is the label of each state's labeled transition, by state.
+    var labels Array[Option[LabelRef]]
+    // wildcards marks the states that match a parser wildcard.
+    var wildcards Array[bool]
     lexer bool
     vocab Vocabulary
     rules Array[g4.Rule]
@@ -97,6 +101,8 @@ func newBuilder(lexer bool, vocab Vocabulary, rules Array[g4.Rule]) Ptr[builder]
         current: None[g4.Element](),
         ruleStart: EmptyArray[int](),
         ruleStop: EmptyArray[int](),
+        labels: EmptyArray[Option[LabelRef]](),
+        wildcards: EmptyArray[bool](),
         lexer: lexer,
         vocab: vocab,
         rules: rules,
@@ -115,6 +121,8 @@ func (b Ptr[builder]) state(rule int, kind StateKind) int {
     b.owner = b.owner.Append(rule)
     b.outs = b.outs.Append(EmptyArray[Transition]())
     b.decisionOf = b.decisionOf.Append(None[int]())
+    b.labels = b.labels.Append(None[LabelRef]())
+    b.wildcards = b.wildcards.Append(false)
     id
 }
 
@@ -158,7 +166,7 @@ func (b Ptr[builder]) ruleName(rule int) string = b.names.Get(rule)
 
 func (b Ptr[builder]) finish(kind ATNKind, name string, tokensStart Option[int], tokenTypes Array[Option[int]]) ATN {
     val states = ArrayTabulate(b.kinds.Size(), (i) => State(i, b.owner.Get(i), b.kinds.Get(i), b.outs.Get(i), b.decisionOf.Get(i)))
-    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes)
+    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes, b.labels, b.wildcards)
 }
 
 // tokensStart creates a lexer's start state: one alternative per token rule,
@@ -261,6 +269,11 @@ func (b Ptr[builder]) compileElement(rule int, e g4.Element, label Option[LabelR
         case Left(d) => b.empty(rule, d)
     }
     case g4.Range(from, to) if !b.lexer => b.empty(rule, diag.TokenRangeInParser.New(s"'$from'", s"'$to'"))
+    case g4.Wildcard() if !b.lexer => {
+        val p = b.matchSet(rule, b.universe(), label, false)
+        b.wildcards = b.wildcards.Updated(p.Frag.Entry, true)
+        p
+    }
     case _ => b.setOf(e) match {
         case Some(set) => b.matchSet(rule, set, label, false)
         case None() => b.empty(rule, diag.NotAllowedHere.New(g4.FormatElement(e), if (b.lexer) "lexer" else "parser"))
@@ -388,6 +401,7 @@ func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Pi
     val from = b.state(rule, BasicState())
     val follow = b.state(rule, BasicState())
     b.edge(from, RuleCall(b.ruleStart.Get(target), target, follow))
+    b.labels = b.labels.Updated(from, label)
     Piece(Frag(from, follow), ArrayOf(CallRule(target, follow, label)))
 }
 
@@ -405,6 +419,7 @@ func (b Ptr[builder]) matchSet(rule int, set IntervalSet, label Option[LabelRef]
     val to = b.state(rule, BasicState())
     val atom = set.Size() == 1 && (b.lexer || (listed && !alternatives))
     if (atom) b.edge(from, Atom(to, set.Min().Get())) else b.edge(from, SetMatch(to, set))
+    b.labels = b.labels.Updated(from, label)
     val step = if (atom) MatchToken(set.Min().Get(), label) else MatchSet(set, label, listed)
     Piece(Frag(from, to), ArrayOf(step))
 }

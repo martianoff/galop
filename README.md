@@ -61,6 +61,12 @@ a fresh process. (ANTLR's error text can depend on what the same process parsed
 earlier, because its prediction cache is shared.) ANTLR's own `~set` bug is the
 one known exception (see [design](docs/DESIGN.md#reporting-syntax-errors-as-antlr-does)).
 
+The native flavor also recovers from syntax errors as ANTLR does: on 19,000 broken
+GALA files from both corpora and the generated sentences (mutants, and edits like a
+file being typed: cut off, a bracket left open or removed, a line half written) and
+18,000 mutants of six test grammars, it reports every error ANTLR reports, in
+order, and builds the error-recovered tree ANTLR builds, more than 10 times faster.
+
 ## Why
 
 A parser keeps choosing which grammar alternative comes next. ANTLR makes those
@@ -234,8 +240,23 @@ Both flavors decide exactly as ANTLR does and give the same tokens and trees.
 On input with a syntax error, both report the same first error as ANTLR
 parsing that input in a fresh process, with the same message, line and column.
 (ANTLR's error text can depend on what the same process parsed earlier, because
-its prediction cache is shared.) Neither recovers from syntax errors yet: a
-parse stops at that first error.
+its prediction cache is shared.) A parse stops at that first error.
+
+For an editor, the native flavor's `Parse<Rule>WithRecovery` (and
+`ExprParseWithRecovery(toks, rule)`) recovers as ANTLR's default error strategy
+does: it returns every syntax error ANTLR reports, in order, and the
+error-recovered tree, with ANTLR's error tokens and the tokens its recovery made
+up (`<missing ';'>`). Each error also names its token and the node of the rule
+being parsed when it was reported, which code that explains an error reads. On
+input without errors it is `Parse<Rule>` (see
+[design](docs/DESIGN.md#recovering-from-syntax-errors-as-antlr-does)):
+
+```go
+prog, errs := parser.ParseProgWithRecovery(toks) // errs: []parser.ExprParseError
+for _, e := range errs {
+	fmt.Println(e.Line, e.Column, e.Msg)
+}
+```
 
 The native flavor also generates a typed view, a listener (by default) and a
 visitor (with `-visitor`), so code written against ANTLR's trees can keep its
@@ -276,7 +297,8 @@ flowchart LR
 On input native parsing accepts, the converted tree is the one native parsing
 builds. On input with syntax errors it is ANTLR's error-recovered tree, with
 error tokens, which an editor needs while a file is being typed (see
-[design](docs/DESIGN.md#from-antlrs-tree-to-the-native-tree)).
+[design](docs/DESIGN.md#from-antlrs-tree-to-the-native-tree)); the native
+flavor's `Parse<Rule>WithRecovery` builds the same tree without ANTLR.
 
 ### Bazel
 

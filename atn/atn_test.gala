@@ -140,3 +140,18 @@ func TestCompileErrors(t T) T = RunCases[string, string](t,
     ),
     Case[string, string](Name = "every problem is reported", Input = "lexer grammar E;\nA : '\\q' ;\nB : [z-a] ;\n", Expected = "156 2:5: invalid escape sequence \\q; 507 3:5: reversed range z-a in set [z-a]"),
 )
+
+func TestLabelsByState(t T) T {
+    val a = compiled(t, "grammar L;\ns : x=A (ys+=b)* A ;\nb : A ;\nA : 'a' ;\n").Parser.Get()
+    // Each label sits on the state its labeled match or call leaves from.
+    val labeled = a.States.Collect((s) => a.Labels.Get(s.Id).Map((l) => (s.Out.Head(), l)))
+    val t1 = Eq(t, labeled.Size(), 2)
+    val t2 = IsTrue(t1, labeled.Exists((p) => p.V2 == LabelRef("x", false) && (p.V1 match {
+        case Atom(_, _) => true
+        case _ => false
+    })))
+    IsTrue(t2, labeled.Exists((p) => p.V2 == LabelRef("ys", true) && (p.V1 match {
+        case RuleCall(_, _, _) => true
+        case _ => false
+    })))
+}

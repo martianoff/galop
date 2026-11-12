@@ -42,7 +42,8 @@ func antlrConverter(
             s"var ${lp}Align${k.Method()} = ${lp}NewNFA([]${lp}Step{{op: ${lp}OpChoose, exit: -1, alts: ${altsLiteral(lp, kindAlts(k).Map(_.Steps), ruleLabels(k.Rule))}}})\n"
     ).MkString("\n")
     fill(converterTemplate, "VERSION", version, "FILE", grammarFile, "PACKAGE", pkg, "IMPORT", strconv.Quote(nativeImport),
-        "KINDS", kindCases, "LABELS", labelSwitch, "ALIGNED", aligned, "@N@", nx, "LPFX", internal(e))
+        "KINDS", kindCases, "LABELS", labelSwitch, "ALIGNED", aligned, "ALIGNNFA", fill(alignNFASource, "NFAP", internal(e)),
+        "@N@", nx, "LPFX", internal(e))
 }
 
 // internal is the prefix of the converter's unexported names: `exprGalop`.
@@ -381,114 +382,7 @@ func (c *LPFXToNative) labelToken(tok antlr.Token, label uint8, id int32) {
 func (c *LPFXToNative) labels(ctx antlr.ParserRuleContext, id int32, mark int) {
 LABELS
 }
-
-// LPFXStep is one step of an alternative, as generated: a token, a token set
-// (set holds lo, hi pairs), a rule (sym), a choice among alts (exit says where
-// the alternative that matches nothing is tried: -1 none, 0 first, 1 last) or
-// a loop over alts[0] (plus: once before deciding; cont: continuing is tried
-// before leaving). label is the label it stores under, or 0.
-type LPFXStep struct {
-	op    uint8
-	sym   int32
-	label uint8
-	set   []int32
-	alts  [][]LPFXStep
-	exit  int8
-	plus  bool
-	cont  bool
-}
-
-// The kinds of LPFXStep and LPFXEdge.
-const (
-	LPFXOpToken = iota
-	LPFXOpSet
-	LPFXOpRule
-	LPFXOpChoose
-	LPFXOpLoop
-	LPFXOpEps
-)
-
-// LPFXEdge is one transition of an LPFXNFA: on nothing (LPFXOpEps), or on a
-// child that is the token, in the token set or of the rule it names, which
-// it then stores under label.
-type LPFXEdge struct {
-	to    int32
-	op    uint8
-	sym   int32
-	label uint8
-	set   []int32
-}
-
-// LPFXNFA is a kind's alternatives as an automaton from state 0 to accept;
-// each state's edges are in the order ANTLR prefers them (the lower
-// alternative first).
-type LPFXNFA struct {
-	edges  [][]LPFXEdge
-	accept int32
-}
-
-// LPFXNewNFA builds the automaton of steps.
-func LPFXNewNFA(steps []LPFXStep) *LPFXNFA {
-	a := &LPFXNFA{}
-	a.accept = a.seq(steps, a.state())
-	return a
-}
-
-func (a *LPFXNFA) state() int32 {
-	a.edges = append(a.edges, nil)
-	return int32(len(a.edges) - 1)
-}
-
-func (a *LPFXNFA) eps(from, to int32) {
-	a.edges[from] = append(a.edges[from], LPFXEdge{to: to, op: LPFXOpEps})
-}
-
-// seq adds steps from state from on and returns the state they end in.
-func (a *LPFXNFA) seq(steps []LPFXStep, from int32) int32 {
-	for i := range steps {
-		from = a.step(&steps[i], from)
-	}
-	return from
-}
-
-func (a *LPFXNFA) step(s *LPFXStep, from int32) int32 {
-	switch s.op {
-	case LPFXOpChoose:
-		out := a.state()
-		if s.exit == 0 {
-			a.eps(from, out)
-		}
-		for _, alt := range s.alts {
-			in := a.state()
-			a.eps(from, in)
-			a.eps(a.seq(alt, in), out)
-		}
-		if s.exit == 1 {
-			a.eps(from, out)
-		}
-		return out
-	case LPFXOpLoop:
-		decide, out, body := a.state(), a.state(), a.state()
-		a.eps(a.seq(s.alts[0], body), decide)
-		if s.plus {
-			a.eps(from, body)
-		} else {
-			a.eps(from, decide)
-		}
-		if s.cont {
-			a.eps(decide, body)
-			a.eps(decide, out)
-		} else {
-			a.eps(decide, out)
-			a.eps(decide, body)
-		}
-		return out
-	}
-	to := a.state()
-	a.edges[from] = append(a.edges[from], LPFXEdge{to: to, op: s.op, sym: s.sym, label: s.label, set: s.set})
-	return to
-}
-
+ALIGNNFA
 // LPFXExceptionField is the index of the field of ANTLR's
 // BaseParserRuleContext that holds the error a rule recovered from (Go's
 // runtime has no getter for it), or nil when this runtime has none.
@@ -595,5 +489,117 @@ func LPFXNativeKind(ctx antlr.ParserRuleContext) (uint16, uint8) {
 KINDS
 	}
 	return uint16(ctx.GetRuleIndex()), 0
+}
+`
+
+// alignNFASource is the automaton the converter aligns a node's children
+// with (see align), shared with the native flavor's recovering parse, which
+// aligns the same nodes. NFAP is the prefix of its names.
+val alignNFASource = `
+// NFAPStep is one step of an alternative, as generated: a token, a token set
+// (set holds lo, hi pairs), a rule (sym), a choice among alts (exit says where
+// the alternative that matches nothing is tried: -1 none, 0 first, 1 last) or
+// a loop over alts[0] (plus: once before deciding; cont: continuing is tried
+// before leaving). label is the label it stores under, or 0.
+type NFAPStep struct {
+	op    uint8
+	sym   int32
+	label uint8
+	set   []int32
+	alts  [][]NFAPStep
+	exit  int8
+	plus  bool
+	cont  bool
+}
+
+// The kinds of NFAPStep and NFAPEdge.
+const (
+	NFAPOpToken = iota
+	NFAPOpSet
+	NFAPOpRule
+	NFAPOpChoose
+	NFAPOpLoop
+	NFAPOpEps
+)
+
+// NFAPEdge is one transition of an NFAPNFA: on nothing (NFAPOpEps), or on a
+// child that is the token, in the token set or of the rule it names, which
+// it then stores under label.
+type NFAPEdge struct {
+	to    int32
+	op    uint8
+	sym   int32
+	label uint8
+	set   []int32
+}
+
+// NFAPNFA is a kind's alternatives as an automaton from state 0 to accept;
+// each state's edges are in the order ANTLR prefers them (the lower
+// alternative first).
+type NFAPNFA struct {
+	edges  [][]NFAPEdge
+	accept int32
+}
+
+// NFAPNewNFA builds the automaton of steps.
+func NFAPNewNFA(steps []NFAPStep) *NFAPNFA {
+	a := &NFAPNFA{}
+	a.accept = a.seq(steps, a.state())
+	return a
+}
+
+func (a *NFAPNFA) state() int32 {
+	a.edges = append(a.edges, nil)
+	return int32(len(a.edges) - 1)
+}
+
+func (a *NFAPNFA) eps(from, to int32) {
+	a.edges[from] = append(a.edges[from], NFAPEdge{to: to, op: NFAPOpEps})
+}
+
+// seq adds steps from state from on and returns the state they end in.
+func (a *NFAPNFA) seq(steps []NFAPStep, from int32) int32 {
+	for i := range steps {
+		from = a.step(&steps[i], from)
+	}
+	return from
+}
+
+func (a *NFAPNFA) step(s *NFAPStep, from int32) int32 {
+	switch s.op {
+	case NFAPOpChoose:
+		out := a.state()
+		if s.exit == 0 {
+			a.eps(from, out)
+		}
+		for _, alt := range s.alts {
+			in := a.state()
+			a.eps(from, in)
+			a.eps(a.seq(alt, in), out)
+		}
+		if s.exit == 1 {
+			a.eps(from, out)
+		}
+		return out
+	case NFAPOpLoop:
+		decide, out, body := a.state(), a.state(), a.state()
+		a.eps(a.seq(s.alts[0], body), decide)
+		if s.plus {
+			a.eps(from, body)
+		} else {
+			a.eps(from, decide)
+		}
+		if s.cont {
+			a.eps(decide, body)
+			a.eps(decide, out)
+		} else {
+			a.eps(decide, out)
+			a.eps(decide, body)
+		}
+		return out
+	}
+	to := a.state()
+	a.edges[from] = append(a.edges[from], NFAPEdge{to: to, op: s.op, sym: s.sym, label: s.label, set: s.set})
+	return to
 }
 `

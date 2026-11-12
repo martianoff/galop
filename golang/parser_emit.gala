@@ -125,7 +125,7 @@ func tokenAssertions(e env) string {
 // the input's bracket pairs, group says prediction reads bracketed groups,
 // and stats counts the parse's work for the differential harness.
 func predictorFields(e env) string =
-    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats"
+    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats\n\n\t// keepErr skips antlrError: a recovering parse finds ANTLR's errors itself.\n\tkeepErr bool"
 
 // retryCode handles a failed SLL parse, whose result is in variable root.
 // With runtime prediction the parse runs in SLL mode first, as GALA does with
@@ -145,7 +145,7 @@ func retryCode(e env, root string) string =
 // errorsHook replaces the final parse's syntax error with the one ANTLR
 // reports (see errorsSource); start is the entry rule's start state.
 val errorsHook =
-    "\n\tif err != nil {\n\t\terr = p.antlrError(start, err)\n\t}"
+    "\n\tif err != nil && !p.keepErr {\n\t\terr = p.antlrError(start, err)\n\t}"
 
 // parserCore is the parser struct and the helpers every rule uses.
 func parserCore(e env) string {
