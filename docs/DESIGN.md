@@ -606,6 +606,24 @@ being parsed (`GetParserRuleContext()`) and how many children that node had
 then. Where ANTLR replaced the rule's context to enter a labeled alternative,
 the node is the replacement's.
 
+**Lexical errors among syntax errors.** ANTLR's lexer runs as its token
+stream is read, so a token recognition error is reported when the parser first
+reads the token after it: often a few tokens past the token a syntax error
+names (prediction's lookahead before "no viable alternative", `LA(2)` in
+single-token deletion), and never for a token the parse does not reach. The
+walk tracks how far ANTLR's stream has read: the current token (consuming one
+reads the next), the furthest token each prediction read (`peek`, noted by the
+predictor, which in the replay runs every full-context prediction instead of
+reusing a repair's recorded answers) and `LA(2)`. Each error records that
+extent as `Read`, and the tree records the whole parse's as `Tree.Read`. The
+native lexer records, for each token recognition error, the index of the token
+after it (`Tokens.ErrorAt`). A lexical error comes before the first syntax
+error whose `Read` reaches its `ErrorAt`, and one past `Tree.Read` is not
+reported at all. On input with token recognition errors and no syntax error,
+`ParseWithRecovery` runs the walk for `Tree.Read` alone, unless every one of
+them comes before `Next` (then `Tree.Read` is `Next`: ANTLR reads at least that
+far).
+
 Comparing the walk with ANTLR found one place where the first error's replay
 decided differently from ANTLR's generated code without changing a first error:
 a loop whose body is a block of alternatives is an LL(1) loop wherever its

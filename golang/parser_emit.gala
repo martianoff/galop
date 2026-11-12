@@ -125,7 +125,7 @@ func tokenAssertions(e env) string {
 // the input's bracket pairs, group says prediction reads bracketed groups,
 // and stats counts the parse's work for the differential harness.
 func predictorFields(e env) string =
-    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats\n\n\t// keepErr skips antlrError: a recovering parse finds ANTLR's errors itself.\n\tkeepErr bool"
+    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats\n\n\t// keepErr skips antlrError: a recovering parse finds ANTLR's errors itself.\n\tkeepErr bool\n\t// peek is the furthest token prediction read (see peekAt).\n\tpeek int"
 
 // retryCode handles a failed SLL parse, whose result is in variable root.
 // With runtime prediction the parse runs in SLL mode first, as GALA does with

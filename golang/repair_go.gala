@@ -289,6 +289,7 @@ func (p *PARSER) predictLLUncached(d int) int {
 	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
 	pr.startLL(d, p.stack, cur)
 	for offset := 0; ; {
+		p.peekAt(p.pos + offset)
 		t := p.la(offset + 1)
 		switch alt := pr.stepLL(cur, t, intermediate, next); {
 		case alt < 0:
@@ -416,6 +417,7 @@ func (p *PARSER) predictLL(d int) int {
 	p.llKey = key
 	st := PFXFull.start(d, p.stack, key)
 	for i := 1; st != nil; i++ {
+		p.peekAt(p.pos + i - 1)
 		t := p.la(i)
 		if t < -1 || int(t)+1 >= len(st.edges) {
 			break

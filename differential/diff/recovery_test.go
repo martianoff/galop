@@ -79,9 +79,14 @@ func recoveredByGalop(src string) ([]string, []errorContext, *nativegala.GalaTre
 func renderErrors(errs []nativegala.GalaParseError) []string {
 	out := make([]string, len(errs))
 	for i, e := range errs {
-		out[i] = fmt.Sprintf("%d:%d: %s", e.Line, e.Column, gala.HideNewlineTokens(e.Msg))
+		out[i] = renderError(e.GalaSyntaxError)
 	}
 	return out
+}
+
+// renderError renders a galop error as the harness renders ANTLR's.
+func renderError(e nativegala.GalaSyntaxError) string {
+	return fmt.Sprintf("%d:%d: %s", e.Line, e.Column, gala.HideNewlineTokens(e.Msg))
 }
 
 // sameRecoveredTree describes the first difference between two trees,

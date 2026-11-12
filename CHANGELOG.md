@@ -5,6 +5,14 @@ lists every merged pull request.
 
 ## Unreleased
 
+## 0.3.1
+
+- **Added:** `<Grammar>ParseError.Read` and `<Grammar>Tree.Read`, how far ANTLR's
+  parse had read when it reported an error and over the whole parse, and the native
+  lexer's `Tokens.ErrorAt`, the token after each token recognition error. Together
+  they place token recognition errors among syntax errors in the order ANTLR's lazy
+  lexer reports them, and drop those ANTLR never reports.
+
 ## 0.3.0
 
 - **Added:** error recovery in the native flavor. `Parse<Rule>WithRecovery` and

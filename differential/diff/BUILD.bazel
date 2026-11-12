@@ -9,6 +9,7 @@ DIFF_TEST_SRCS = [
     "at_test.go",
     "mutations_test.go",
     "recovery_test.go",
+    "lexerrors_test.go",
 ]
 
 DIFF_TEST_DEPS = [
@@ -62,7 +63,7 @@ go_test(
     deps = DIFF_TEST_DEPS,
 ) for name, corpus, size, tags, args in [
     ("heldout_test", "//differential:heldout", "medium", [], [
-        "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestConvertMatchesNative|TestConvertRecoveredTrees|TestParseAtMatchesANTLR|TestMutations|TestSyntaxErrors|TestRecoveryMatchesANTLR|TestRecoveryWalkOnValidInput)$$",
+        "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestConvertMatchesNative|TestConvertRecoveredTrees|TestParseAtMatchesANTLR|TestMutations|TestSyntaxErrors|TestRecoveryMatchesANTLR|TestRecoveryWalkOnValidInput|TestLexAndSyntaxErrorOrder)$$",
     ]),
     ("mutations_large_test", "//differential:corpus", "enormous", ["manual"], [
         "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees)$$",
@@ -81,15 +82,17 @@ go_test(
     # The error-recovery comparison of the same corpora, each a CI lane of its
     # own: ANTLR parses every input with an empty DFA, most of the time it takes.
     ("recovery_large_test", "//differential:corpus", "enormous", ["manual"], [
-        "-test.run=^TestRecoveryMatchesANTLR$$",
+        "-test.run=^(TestRecoveryMatchesANTLR|TestLexAndSyntaxErrorOrder)$$",
         "-recovery_mutants=5000",
         "-recovery_edits=5000",
+        "-lex_error_inputs=5000",
         "-mutant_seed=2",
     ]),
     ("heldout_recovery_large_test", "//differential:heldout", "enormous", ["manual"], [
-        "-test.run=^TestRecoveryMatchesANTLR$$",
+        "-test.run=^(TestRecoveryMatchesANTLR|TestLexAndSyntaxErrorOrder)$$",
         "-recovery_mutants=3000",
         "-recovery_edits=3000",
+        "-lex_error_inputs=3000",
         "-mutant_seed=2",
     ]),
 ]]
@@ -104,7 +107,7 @@ go_test(
     srcs = DIFF_TEST_SRCS + ["generated_test.go"],
     args = [
         "-samples=$(rlocationpath %s)" % samples,
-        "-test.run=^(TestGeneratedMatchesANTLR|TestParseWithStatsMatchesParse|TestConvertMatchesNative|TestConvertRecoveredTrees|TestMutations|TestSyntaxErrors|TestRecoveryMatchesANTLR|TestRecoveryWalkOnValidInput)$$",
+        "-test.run=^(TestGeneratedMatchesANTLR|TestParseWithStatsMatchesParse|TestConvertMatchesNative|TestConvertRecoveredTrees|TestMutations|TestSyntaxErrors|TestRecoveryMatchesANTLR|TestRecoveryWalkOnValidInput|TestLexAndSyntaxErrorOrder)$$",
     ] + args,
     data = [samples],
     embed = [":diff"],

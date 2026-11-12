@@ -134,6 +134,11 @@ ANTLR's LL parse with its default error strategy, over a DFA that starts empty:
   node, its child count and the token the GALA compiler's error hints read.
   It logs the share of inputs that match on the first error, on all errors,
   on the tree and on the error contexts.
+- **`TestLexAndSyntaxErrorOrder`** puts stray characters into corpus files and into
+  expressions re-parsed at their position (half of them mutated too), and requires
+  ANTLR's order of lexical and syntax errors (its lexer's listener and its parser's,
+  one list) from galop's token recognition errors merged with its syntax errors
+  by `ErrorAt` and `Read` (`-lex_error_inputs` per kind).
 - **`TestRecoveryWalkOnValidInput`** runs the recovering walk on every input
   native parsing accepts: no errors, and native parsing's tree.
 - **`//differential/convert`** runs `TestRecoveryMatchesANTLR` on mutants of every

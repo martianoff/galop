@@ -143,6 +143,12 @@ type @X@Tokens struct {
 	Tokens []@X@Token
 	Hidden []@X@HiddenToken
 	Errors []@X@SyntaxError
+
+	// ErrorAt is, for each of Errors, the index in Tokens of the first token
+	// after it. ANTLR's lexer runs as its token stream is read, so it
+	// reports Errors[i] when a parser first reads token ErrorAt[i] (see a
+	// parse error's Read).
+	ErrorAt []int32
 }
 
 // Text is the text of token i.
@@ -238,6 +244,7 @@ func (ts *@X@Tokens) recognitionError(start, stop @P@Pos) {
 		end += size
 	}
 	ts.Errors = append(ts.Errors, @X@SyntaxError{start.line, start.column(), "token recognition error at: '" + ts.Src[start.off:end] + "'"})
+	ts.ErrorAt = append(ts.ErrorAt, int32(len(ts.Tokens)))
 }
 
 // @P@Skip and @P@More are the token types of ANTLR's skip and more commands.
