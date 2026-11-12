@@ -143,7 +143,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
         return Left(ArrayOf("Go target: semantic predicates are not supported yet"))
     }
     // A node stores its label's number in a byte.
-    val crowded = compiled.Rules.Filter((r) => ruleLabels(r).Size() > maxRuleLabels).Map(_.Name)
+    val crowded = compiled.Rules.Collect({ case r if ruleLabels(r).Size() > maxRuleLabels => r.Name })
     if crowded.NonEmpty() {
         return Left(ArrayOf(s"Go target: a rule may have at most $maxRuleLabels labels: ${crowded.MkString(", ")}"))
     }
