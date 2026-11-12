@@ -127,7 +127,8 @@ ANTLR's LL parse with its default error strategy, over a DFA that starts empty:
   opening bracket added, a closing one removed, or the rest of a line removed).
   `-recovery_mutants` and `-recovery_edits` set how many; 300 each on pull
   requests (`diff_test`, `heldout_test`, `generated_test`, `generated_deep_test`)
-  and thousands in the large runs. For each it requires every syntax error
+  and thousands in the large runs (`recovery_large_test` and
+  `heldout_recovery_large_test` for the corpora). For each it requires every syntax error
   ANTLR reports, in order, the error-recovered tree converted by galop's
   converter, error tokens and made-up tokens included, and for every error the
   node, its child count and the token the GALA compiler's error hints read.
@@ -226,7 +227,7 @@ ANTLR's recovered one where it does not). It is only reported.
 | Where | What | Judged |
 |---|---|---|
 | every PR and push: job `performance gate` | `perfgate` with the defaults above (about 2 minutes once built) | against `baseline.json`; enforcing (`PERF_ENFORCE: "true"` in `ci.yml`): a regression or a missing number fails the job |
-| pushes to main and `workflow_dispatch`: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, generated sets 1–4 | parity with ANTLR |
+| pushes to main and `workflow_dispatch`: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, corpus recovery, held-out recovery, generated sets 1–4 | parity with ANTLR |
 | pushes to main and `workflow_dispatch`: job `performance sweep` | `perfgate -every=1 -mutants=300 -runs=7 -passes=7` | not judged: a wider report |
 
 A cold cache never turns a pull request red. The gate's build and measurement run

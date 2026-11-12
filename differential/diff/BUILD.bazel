@@ -65,19 +65,29 @@ go_test(
         "-test.run=^(TestGalopMatchesANTLR|TestNativeMatchesANTLR|TestConvertMatchesNative|TestConvertRecoveredTrees|TestParseAtMatchesANTLR|TestMutations|TestSyntaxErrors|TestRecoveryMatchesANTLR|TestRecoveryWalkOnValidInput)$$",
     ]),
     ("mutations_large_test", "//differential:corpus", "enormous", ["manual"], [
-        "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees|TestRecoveryMatchesANTLR)$$",
+        "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees)$$",
         "-mutants=20000",
         "-error_mutants=5000",
         "-recovered_trees=2000",
+        "-mutant_seed=2",
+    ]),
+    ("heldout_mutations_large_test", "//differential:heldout", "enormous", ["manual"], [
+        "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees)$$",
+        "-mutants=10000",
+        "-error_mutants=3000",
+        "-recovered_trees=1000",
+        "-mutant_seed=2",
+    ]),
+    # The error-recovery comparison of the same corpora, each a CI lane of its
+    # own: ANTLR parses every input with an empty DFA, most of the time it takes.
+    ("recovery_large_test", "//differential:corpus", "enormous", ["manual"], [
+        "-test.run=^TestRecoveryMatchesANTLR$$",
         "-recovery_mutants=5000",
         "-recovery_edits=5000",
         "-mutant_seed=2",
     ]),
-    ("heldout_mutations_large_test", "//differential:heldout", "enormous", ["manual"], [
-        "-test.run=^(TestMutations|TestSyntaxErrors|TestConvertRecoveredTrees|TestRecoveryMatchesANTLR)$$",
-        "-mutants=10000",
-        "-error_mutants=3000",
-        "-recovered_trees=1000",
+    ("heldout_recovery_large_test", "//differential:heldout", "enormous", ["manual"], [
+        "-test.run=^TestRecoveryMatchesANTLR$$",
         "-recovery_mutants=3000",
         "-recovery_edits=3000",
         "-mutant_seed=2",
