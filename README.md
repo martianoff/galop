@@ -247,7 +247,9 @@ For an editor, the native flavor's `Parse<Rule>WithRecovery` (and
 does: it returns every syntax error ANTLR reports, in order, and the
 error-recovered tree, with ANTLR's error tokens and the tokens its recovery made
 up (`<missing ';'>`). Each error also names its token and the node of the rule
-being parsed when it was reported, which code that explains an error reads. On
+being parsed when it was reported, which code that explains an error reads, and
+how far ANTLR's parse had read (`Read`): with the lexer's `ErrorAt`, that places
+token recognition errors among the syntax errors where ANTLR reports them. On
 input without errors it is `Parse<Rule>` (see
 [design](docs/DESIGN.md#recovering-from-syntax-errors-as-antlr-does)):
 

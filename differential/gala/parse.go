@@ -78,12 +78,17 @@ func seed(lexer *antlr.BaseLexer, line, column int) {
 	sim.Line, sim.CharPositionInLine = line, column
 }
 
-func tokens(src string, errs antlr.ErrorListener) *antlr.CommonTokenStream {
+// tokens is Tokens with errs listening to the lexer, if not nil; with at,
+// the lexer starts counting at line at[0] and column at[1] (see TokensAt).
+func tokens(src string, errs antlr.ErrorListener, at ...int) *antlr.CommonTokenStream {
 	lexer := antlrgala.NewgalaLexer(antlr.NewInputStream(StripBOM(src)))
 	isolateLexerCaches(lexer.BaseLexer)
 	lexer.RemoveErrorListeners()
 	if errs != nil {
 		lexer.AddErrorListener(errs)
+	}
+	if len(at) == 2 {
+		seed(lexer.BaseLexer, at[0], at[1])
 	}
 	return newTokenStream(lexer)
 }
@@ -100,11 +105,17 @@ func ParseANTLR(src string, mode int) (antlr.ParserRuleContext, []error) {
 // shared one (see sharedDFA) if dfa is nil.
 func parse(stream antlr.TokenStream, mode int, errs *errorListener, dfa []*antlr.DFA) antlr.ParserRuleContext {
 	p := antlrgala.NewgalaParser(stream)
-	isolateParserCaches(p.BaseParser, dfa)
+	setUp(p.BaseParser, mode, errs, dfa)
+	return p.SourceFile()
+}
+
+// setUp makes p predict in mode over the DFA set dfa (or the shared one, if
+// nil) and report to errs alone.
+func setUp(p *antlr.BaseParser, mode int, errs antlr.ErrorListener, dfa []*antlr.DFA) {
+	isolateParserCaches(p, dfa)
 	p.GetInterpreter().SetPredictionMode(mode)
 	p.RemoveErrorListeners()
 	p.AddErrorListener(errs)
-	return p.SourceFile()
 }
 
 // ANTLRParser is ANTLR's parser under one prediction mode.
@@ -273,10 +284,35 @@ func (l *reportListener) SyntaxError(r antlr.Recognizer, offending any, line, co
 func ParseRecovered(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStream, []ReportedError) {
 	stream := Tokens(src)
 	p := antlrgala.NewgalaParser(stream)
-	isolateParserCaches(p.BaseParser, newDFA(p.GetATN()))
-	p.GetInterpreter().SetPredictionMode(LL)
 	errs := &reportListener{}
-	p.RemoveErrorListeners()
-	p.AddErrorListener(errs)
+	setUp(p.BaseParser, LL, errs, newDFA(p.GetATN()))
 	return p.SourceFile(), stream, errs.errs
+}
+
+// AllErrors parses src as ANTLR does for the GALA compiler when src has an
+// error (LL prediction alone, the default error strategy, an empty DFA): as a
+// whole file, or with expression set as one expression whose text starts at
+// line and column. It returns every lexical and syntax error, as
+// "line:col: message", in the order ANTLR reports them: its lexer runs as the
+// parser reads tokens, so the two kinds interleave.
+func AllErrors(src string, expression bool, line, column int) []string {
+	errs := &errorListener{}
+	var stream *antlr.CommonTokenStream
+	if expression {
+		stream = tokens(src, errs, line, column)
+	} else {
+		stream = tokens(src, errs)
+	}
+	p := antlrgala.NewgalaParser(stream)
+	setUp(p.BaseParser, LL, errs, newDFA(p.GetATN()))
+	if expression {
+		p.Expression()
+	} else {
+		p.SourceFile()
+	}
+	out := make([]string, len(errs.errors))
+	for i, err := range errs.errors {
+		out[i] = err.Error()
+	}
+	return out
 }

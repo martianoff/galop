@@ -99,48 +99,29 @@ func (e *firstError) SyntaxError(_ antlr.Recognizer, _ any, line, column int, ms
 // which the rule leaves for the caller to report.
 func TestParseAtMatchesANTLR(t *testing.T) {
 	checked := 0
-	for fi, f := range files(t) {
-		if fi%4 != 0 {
-			continue
-		}
-		root, err := nativegala.Parse(f.Src)
-		if err != nil {
-			continue
-		}
-		src := gala.StripBOM(f.Src)
-		k := 0
-		root.Walk(func(n nativegala.GalaNodeRef) bool {
-			if n.Rule() != nativegala.GalaRULE_expression || n.StopIndex() < n.StartIndex() {
-				return true
-			}
-			if k++; k%5 != 0 {
-				return true
-			}
-			text := src[n.Start().Start:n.Stop().End]
-			line, column := int(n.Start().Line), int(n.Start().Column)
-			for _, in := range []string{text, text + " )"} {
-				checked++
-				want := antlrAt(in, line, column)
-				for _, p := range []struct {
-					name string
-					got  atResult
-				}{{"antlr flavor", galopAt(in, line, column)}, {"native", nativeAt(in, line, column)}} {
-					switch g := p.got; {
-					case want.err != "" || g.err != "":
-						if (want.err == "") != (g.err == "") {
-							t.Errorf("%s at %d:%d %q: %s error %q, ANTLR %q", f.Name, line, column, in, p.name, g.err, want.err)
-						}
-					case g.tree != want.tree:
-						t.Errorf("%s at %d:%d %q: %s tree differs\n%s", f.Name, line, column, in, p.name, firstDifference(want.tree, g.tree))
-					case !slices.Equal(g.tokens, want.tokens):
-						t.Errorf("%s at %d:%d %q: %s tokens\n%v\nwant\n%v", f.Name, line, column, in, p.name, g.tokens, want.tokens)
-					case g.next != want.next:
-						t.Errorf("%s at %d:%d %q: %s stops before token type %d, ANTLR %d", f.Name, line, column, in, p.name, g.next, want.next)
+	for _, x := range corpusExpressions(t) {
+		line, column := x.line, x.column
+		for _, in := range []string{x.text, x.text + " )"} {
+			checked++
+			want := antlrAt(in, line, column)
+			for _, p := range []struct {
+				name string
+				got  atResult
+			}{{"antlr flavor", galopAt(in, line, column)}, {"native", nativeAt(in, line, column)}} {
+				switch g := p.got; {
+				case want.err != "" || g.err != "":
+					if (want.err == "") != (g.err == "") {
+						t.Errorf("%s at %d:%d %q: %s error %q, ANTLR %q", x.file, line, column, in, p.name, g.err, want.err)
 					}
+				case g.tree != want.tree:
+					t.Errorf("%s at %d:%d %q: %s tree differs\n%s", x.file, line, column, in, p.name, firstDifference(want.tree, g.tree))
+				case !slices.Equal(g.tokens, want.tokens):
+					t.Errorf("%s at %d:%d %q: %s tokens\n%v\nwant\n%v", x.file, line, column, in, p.name, g.tokens, want.tokens)
+				case g.next != want.next:
+					t.Errorf("%s at %d:%d %q: %s stops before token type %d, ANTLR %d", x.file, line, column, in, p.name, g.next, want.next)
 				}
 			}
-			return true
-		})
+		}
 	}
 	if checked == 0 {
 		t.Fatal("no expression was re-parsed")

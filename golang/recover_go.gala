@@ -51,6 +51,12 @@ type @X@ParseError struct {
 	// alternative, Node is the replacement's.
 	Node int32
 	Kids int
+	// Read is the index of the furthest token ANTLR's parse had read when
+	// it reported the error: the current token, and the tokens past it that
+	// prediction or single-token deletion looked at. ANTLR's token stream
+	// lexes as it is read, so it reports the token recognition errors of
+	// tokens up to Read (Tokens.ErrorAt) before this error.
+	Read int
 }
 
 // @X@ParseWithRecovery parses the tokens of ts as the rule with index rule
@@ -70,22 +76,34 @@ func @X@ParseWithRecovery(ts *@X@Tokens, rule int) (@X@NodeRef, []@X@ParseError)
 	}
 	p := newPARSER(ts)
 	p.keepErr = true
-	if t, root, err := p.run(PFXRuleFuncs[rule], PFXRuleStartState[rule], PFXRuleRepairs[rule]); err == nil {
-		return @X@NodeRef{t, root}, nil
+	t, root, err := p.run(PFXRuleFuncs[rule], PFXRuleStartState[rule], PFXRuleRepairs[rule])
+	switch {
+	case err != nil:
+		t, root, errs := p.recoverParse(rule)
+		return @X@NodeRef{t, root}, errs
+	case len(ts.ErrorAt) > 0 && int(ts.ErrorAt[len(ts.ErrorAt)-1]) <= t.Next:
+		// ANTLR reads at least to Next, so it reports every token
+		// recognition error.
+		t.Read = t.Next
+	case len(ts.Errors) > 0:
+		// Where ANTLR's parse stops reading decides which of them it
+		// reports, so the replay runs for Read alone (on a parser of its
+		// own: the replay reuses its parser's tree).
+		r, _, _ := newPARSER(ts).recoverParse(rule)
+		t.Read = r.Read
+	default:
+		t.Read = -1
 	}
-	t, root, errs := p.recoverParse(rule)
-	return @X@NodeRef{t, root}, errs
+	return @X@NodeRef{t, root}, nil
 }
 
 // recoverParse parses from the first token with ANTLR's error recovery; see
-// recoverySource. It predicts as antlrError's replay does: in LL mode over
-// the tokens alone, reusing the full-context answers a repair recorded.
+// recoverySource. It predicts in LL mode over the tokens alone, as
+// antlrError's replay does, but runs every full-context prediction again
+// rather than reuse a repair's recorded answers, so that peek sees how far
+// each one reads.
 func (p *PARSER) recoverParse(rule int) (*@X@Tree, int32, []@X@ParseError) {
-	p.ll, p.group = true, false
-	if len(p.rp.recs) > 0 {
-		p.rp.indexRecs()
-		defer func() { p.rp.byPos = nil }()
-	}
+	p.ll, p.group, p.peek = true, false, 0
 	// The failed parse's tree is dropped; its arrays are reused.
 	t := p.tree
 	t.Nodes, t.Kids, t.TokenLabels = t.Nodes[:0], t.Kids[:0], t.TokenLabels[:0]
@@ -97,6 +115,7 @@ func (p *PARSER) recoverParse(rule int) (*@X@Tree, int32, []@X@ParseError) {
 	}
 	root := r.parse(rule)
 	r.tree.Next = p.pos
+	r.tree.Read = r.read()
 	errs := make([]@X@ParseError, len(r.errs))
 	for i, x := range r.errs {
 		tok := p.ts.Tokens[x.err.at]
@@ -105,6 +124,7 @@ func (p *PARSER) recoverParse(rule int) (*@X@Tree, int32, []@X@ParseError) {
 			Token:          x.err.at,
 			Node:           r.nodeOf[x.frame],
 			Kids:           x.kids,
+			Read:           x.read,
 		}
 	}
 	return r.tree, root, errs
@@ -176,6 +196,7 @@ type PFXRecError struct {
 	err   PFXEmuError
 	frame int32
 	kids  int
+	read  int
 }
 
 // The bits of PFXStateLabel: the label's number (as the native parser
@@ -476,7 +497,15 @@ func (r *PFXRecovery) report(err *PFXEmuError) {
 	}
 	r.recovering = true
 	f := r.frames[len(r.frames)-1]
-	r.errs = append(r.errs, PFXRecError{*err, f.serial, len(r.kids) - f.kids})
+	r.errs = append(r.errs, PFXRecError{*err, f.serial, len(r.kids) - f.kids, r.read()})
+}
+
+// read is the furthest token ANTLR's parse has read so far: the current one
+// (consuming a token reads the next) or one prediction or single-token
+// deletion looked ahead to.
+func (r *PFXRecovery) read() int {
+	p := r.e.p
+	return min(max(p.pos, p.peek), len(p.types)-1)
 }
 
 // reportMatch is ANTLR's ReportMatch: a token matched, so error recovery ends.

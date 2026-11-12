@@ -178,7 +178,7 @@ func LPFXConvert(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, 
 		c.tree, c.ctxs = nil, nil
 		LPFXScratch.Put(c)
 	}()
-	c.tree, c.last, c.nfa, c.alignKids, c.ctxs = &galopnative.@N@Tree{}, -1, nil, nil, ctxs
+	c.tree, c.last, c.nfa, c.alignKids, c.ctxs = &galopnative.@N@Tree{Read: -1}, -1, nil, nil, ctxs
 	c.offset, c.kids, c.errs = c.offset[:0], c.kids[:0], c.errs[:0]
 	c.tree.@N@Tokens = c.tokens(stream.GetAllTokens(), src)
 	// The native parser's estimates: a tree rarely outgrows them.

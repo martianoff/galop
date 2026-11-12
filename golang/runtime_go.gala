@@ -937,6 +937,15 @@ func (p *PARSER) symbolAt(d, i int) (t int32, sym int, isGroup bool, after int) 
 	return t, int(t) + 1, false, i
 }
 
+// peekAt notes that prediction read token i: peek is the furthest token an
+// error replay's predictions read, as ANTLR's lazy token stream fetches
+// them. i may be past EOF, which reads EOF (see PFXRecovery.read).
+func (p *PARSER) peekAt(i int) {
+	if i > p.peek {
+		p.peek = i
+	}
+}
+
 // adaptivePredict predicts decision d as ANTLR's SLL prediction does, over
 // the cached DFA, reading each bracketed group as one symbol unless p.group
 // is off. That over-approximates SLL: every path over the tokens has a path
@@ -955,6 +964,7 @@ func (p *PARSER) adaptivePredict(d int) int {
 		}
 	}
 	for i := p.pos; ; {
+		p.peekAt(i)
 		t, sym, isGroup, after := p.symbolAt(d, i)
 		next := st.edges[sym].Load()
 		if next == nil {
@@ -993,6 +1003,7 @@ func (p *PARSER) predictSLLUncached(d int) int {
 	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
 	pr.startSLL(d, next)
 	for i := p.pos; ; {
+		p.peekAt(i)
 		s := append(pr.sorted[:0], next.list...)
 		pr.sorted = s
 		PFXSortConfigs(s)

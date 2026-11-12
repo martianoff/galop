@@ -356,7 +356,7 @@ func newPARSER(ts *@X@Tokens) *PARSER {
 	}
 	// Grammars like GALA's have about four nodes and five child references
 	// per token; sizing for that saves growing the arrays.
-	p.tree = &@X@Tree{@X@Tokens: ts, Nodes: make([]@X@NodeData, 0, 4*n+4), Kids: make([]int32, 0, 5*n+4)}
+	p.tree = &@X@Tree{@X@Tokens: ts, Nodes: make([]@X@NodeData, 0, 4*n+4), Kids: make([]int32, 0, 5*n+4), Read: -1}
 	return p
 }
 
@@ -501,12 +501,20 @@ type @X@TokenLabel struct {
 // the recovery skipped or made up. Conjured are the made-up ones (ANTLR's
 // "<missing ')'>"), ConjuredText their texts: token len(Tokens)+k is
 // Conjured[k].
+//
+// Read is how far ANTLR's parse reads (see @X@ParseError.Read): its token
+// stream never lexes past Read, so ANTLR reports the token recognition errors
+// up to it (Tokens.ErrorAt) and no later one. @X@ParseWithRecovery sets it when
+// the input has syntax errors or token recognition errors: the furthest token
+// ANTLR reads, or Next when the parse has no syntax error and every token
+// recognition error comes before Next. Otherwise it is -1.
 type @X@Tree struct {
 	*@X@Tokens
 	Nodes        []@X@NodeData
 	Kids         []int32
 	TokenLabels  []@X@TokenLabel
 	Next         int
+	Read         int
 	ErrorKids    []int32
 	Conjured     []@X@Token
 	ConjuredText []string

@@ -173,7 +173,7 @@ const (
 func (e *PFXEmu) inlineFix(s, next int32) (fix int, exp *PFXExpected, err *PFXEmuError) {
 	exp = e.expected(s)
 	switch {
-	case exp.has(e.p.la(2)):
+	case exp.has(e.la2()):
 		return PFXFixDelete, exp, e.report("extraneous", exp)
 	case e.expected(next).has(e.p.la(1)):
 		pos := e.p.pos
@@ -192,7 +192,7 @@ func (e *PFXEmu) syncFix(s int32, blockStart bool) (fix int, exp *PFXExpected, e
 	switch {
 	case !blockStart:
 		return PFXFixSkip, exp, e.report("extraneous", exp)
-	case exp.has(e.p.la(2)):
+	case exp.has(e.la2()):
 		return PFXFixDelete, exp, e.report("extraneous", exp)
 	}
 	return PFXFixMismatch, exp, e.report("mismatched", exp)
@@ -225,6 +225,13 @@ func (e *PFXEmu) sync(s int32, blockStart, check bool) *PFXEmuError {
 		return e.pending
 	}
 	return nil
+}
+
+// la2 is LA(2), which makes ANTLR's token stream read the token after the
+// current one.
+func (e *PFXEmu) la2() int32 {
+	e.p.peekAt(e.p.pos + 1)
+	return e.p.la(2)
 }
 
 // ll1Alt is the alternative of decision d whose lookahead has LA(1), or 0.
