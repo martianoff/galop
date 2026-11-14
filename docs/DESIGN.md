@@ -706,7 +706,12 @@ so several grammars can share a package:
 - `GalaTokens.Tokens` holds the default-channel tokens, ending with EOF. A
   `GalaToken` is 20 bytes: type, the byte span `[Start, End)` of its text, and the
   line and column ANTLR gives it (columns count code points). Its text is a slice
-  of the source, so lexing allocates almost nothing.
+  of `GalaTokens.Src`, so lexing allocates almost nothing.
+- `Src` is the input itself when it is valid UTF-8. Otherwise the lexer first
+  decodes it as ANTLR's input stream does (`[]rune(src)`): each byte that is not
+  part of a valid encoding, a cut-short sequence at the end included, becomes
+  U+FFFD. `Src` is then that decoded text, so token text is ANTLR's. Checking
+  validity is one pass over the input; valid input is not copied.
 - Off-channel tokens (comments on `HIDDEN`, or a `channels {}` channel) go to
   `Hidden`, each with its channel and `Next`, the index of the default-channel
   token after it. `HiddenBefore(i)` is the comments in front of token `i` by

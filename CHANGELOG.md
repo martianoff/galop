@@ -5,6 +5,14 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Fixed:** for input that is not valid UTF-8, the native lexer's token text is now
+  ANTLR's: each byte that is not part of a valid encoding, and each byte of a
+  multibyte sequence cut short at the end, is U+FFFD, as ANTLR's input stream reads
+  it. `<Grammar>LexAt` decodes such input first, so `Tokens.Src` and token spans
+  refer to the decoded text; pass `Tokens.Src`, not the original input, to
+  `Token.Text`. The converter's `<Grammar>ToNative` does the same. Valid input is
+  not copied.
+
 ## 0.3.1
 
 - **Added:** `<Grammar>ParseError.Read` and `<Grammar>Tree.Read`, how far ANTLR's

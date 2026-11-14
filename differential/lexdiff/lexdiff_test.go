@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
+	"unsafe"
 
 	"github.com/antlr4-go/antlr/v4"
 
@@ -112,7 +114,10 @@ func compare(t *testing.T, name string, a lexed, other string, b lexed) bool {
 
 // variants derives inputs from a file that reach the lexer's error and EOF
 // paths: prefixes cut inside tokens, and characters inserted mid-file that
-// open an unterminated token or match no rule.
+// open an unterminated token or match no rule. Others are not valid UTF-8:
+// an invalid byte or a lone continuation byte mid-file, inside the first
+// comment and the first string, and a multibyte sequence cut short at the
+// end, which ANTLR reads as U+FFFD each.
 func variants(src string) map[string]string {
 	v := map[string]string{}
 	r := []rune(src)
@@ -120,10 +125,18 @@ func variants(src string) map[string]string {
 		cut := len(r) * k / 17
 		v[fmt.Sprintf("cut at %d", cut)] = string(r[:cut])
 	}
-	for _, ins := range []string{"§", "#", "\\", "'", "\"", "`", "s\"${", "/*", "@"} {
+	for _, ins := range []string{"§", "#", "\\", "'", "\"", "`", "s\"${", "/*", "@", "\x94", "\xff", "\x80"} {
 		mid := len(r) / 2
-		v["insert "+ins] = string(r[:mid]) + ins + string(r[mid:])
+		v[fmt.Sprintf("insert %q", ins)] = string(r[:mid]) + ins + string(r[mid:])
 	}
+	for _, in := range []string{"//", "\""} {
+		if at := strings.Index(src, in); at >= 0 {
+			at += len(in)
+			v[fmt.Sprintf("invalid byte after the first %s", in)] = src[:at] + "a\x94b" + src[at:]
+		}
+	}
+	v["truncated at the end"] = src + "\xe2\x82"
+	v["truncated in a comment at the end"] = src + "// €\xe2\x82"
 	return v
 }
 
@@ -171,6 +184,24 @@ func cases() map[string]string {
 		"backslash at end":     "\"a\\",
 		"lone dollar":          "s\"$\"",
 		"format string":        "f\"${x}%d ${\"a\"} $y\"",
+		// Not valid UTF-8: ANTLR reads each invalid byte as U+FFFD, in token
+		// text as in columns and error messages.
+		"invalid in comment":          "// Two placeho\x94 sum\nx",
+		"invalid in block comment":    "a /* \xff\xfe */ b",
+		"invalid in string":           "val s = \"a\x94b\"\n",
+		"invalid in raw string":       "val s = `a\x94b`\n",
+		"invalid in interpolation":    "s\"a ${b\x94} c\"",
+		"invalid before identifier":   "\x94abc",
+		"invalid after identifier":    "abc\x94 d",
+		"invalid inside identifier":   "ab\x94cd",
+		"lone continuation byte":      "a \x80 b",
+		"truncated at the end":        "x \xe2\x82",
+		"truncated in comment at end": "x // \xe2\x82",
+		"truncated in string at end":  "\"a\xe2\x82",
+		"truncated before ASCII":      "\"\xe2\x82a\"",
+		"surrogate encoding":          "\"\xed\xa0\x80\"",
+		"overlong encoding":           "// \xc0\xaf\nx",
+		"issue repro":                 "package main\n\n// Two placeho\x94 sum\nval s = \"a\x94b\"\n",
 	}
 	return cases
 }
@@ -250,7 +281,7 @@ func nativeList(src string, line, column int) lexed {
 		r.errors = append(r.errors, fmt.Sprintf("%d:%d %s", e.Line, e.Column, e.Msg))
 	}
 	render := func(t nativegala.GalaToken, channel int32) string {
-		return fmt.Sprintf("type=%d text=%q channel=%d at %d:%d", t.Type, t.Text(src), channel, t.Line, t.Column)
+		return fmt.Sprintf("type=%d text=%q channel=%d at %d:%d", t.Type, t.Text(ts.Src), channel, t.Line, t.Column)
 	}
 	h := 0
 	for i, t := range ts.Tokens {
@@ -275,6 +306,20 @@ func TestNativeCorpus(t *testing.T) { corpusAndVariants(t, sameNative) }
 
 // TestNativeCases is TestCases for the native lexer.
 func TestNativeCases(t *testing.T) { allCases(t, sameNative) }
+
+// TestNativeSrc checks the text the native tokens index: valid UTF-8 as
+// given, not copied; anything else decoded as ANTLR's input stream decodes it.
+func TestNativeSrc(t *testing.T) {
+	for _, src := range []string{"val é = 1 // ß\n", "a\x94b", "x \xe2\x82"} {
+		ts := nativegala.GalaLex(src)
+		switch {
+		case ts.Src != string([]rune(src)):
+			t.Errorf("%q: Src is %q, want %q", src, ts.Src, string([]rune(src)))
+		case utf8.ValidString(src) && unsafe.StringData(ts.Src) != unsafe.StringData(src):
+			t.Errorf("%q: valid input was copied", src)
+		}
+	}
+}
 
 // BenchmarkNative lexes the corpus with the native lexer into token lists.
 func BenchmarkNative(b *testing.B) {

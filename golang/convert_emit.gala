@@ -145,12 +145,14 @@ import (
 
 // @N@ToNative converts root, a parse tree of ANTLR's context types whose
 // tokens come from stream, to galop's native tree over src, the text stream
-// read, and returns the tree and its root. root may come from ANTLR's
-// parser, error-recovered or not, or from galop's antlr flavor. Where native
-// parsing accepts the input, the result is the tree it builds: the same
-// tokens, nodes, alternatives, labels and spans. ANTLR's error nodes become
-// error tokens (see galopnative.@N@Tree), and the tokens its recovery made up
-// ("<missing ')'>") the tree's conjured tokens.
+// read, and returns the tree and its root. If src is not valid UTF-8, the
+// tree's Src is src with each invalid byte replaced by U+FFFD, as ANTLR's
+// input stream reads it and the native lexer gives it. root may come from
+// ANTLR's parser, error-recovered or not, or from galop's antlr flavor.
+// Where native parsing accepts the input, the result is the tree it builds:
+// the same tokens, nodes, alternatives, labels and spans. ANTLR's error
+// nodes become error tokens (see galopnative.@N@Tree), and the tokens its
+// recovery made up ("<missing ')'>") the tree's conjured tokens.
 func @N@ToNative(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, src string) (*galopnative.@N@Tree, galopnative.@N@NodeRef) {
 	t := LPFXConvert(root, stream, src, nil)
 	return t, t.Root()
@@ -229,14 +231,19 @@ type LPFXToNative struct {
 // tokens converts the stream's tokens: the default channel's become the
 // native tokens, the others the hidden ones.
 func (c *LPFXToNative) tokens(all []antlr.Token, src string) *galopnative.@N@Tokens {
-	c.srcLen = int32(len(src))
 	if !LPFXIsASCII(src) {
+		if !utf8.ValidString(src) {
+			// Read src as the stream read it: each invalid byte is U+FFFD,
+			// so token text is ANTLR's, as the native lexer gives it.
+			src = string([]rune(src))
+		}
 		c.offset = slices.Grow(c.offset[:0], utf8.RuneCountInString(src)+1)
 		for i := range src {
 			c.offset = append(c.offset, int32(i))
 		}
-		c.offset = append(c.offset, c.srcLen)
+		c.offset = append(c.offset, int32(len(src)))
 	}
+	c.srcLen = int32(len(src))
 	ts := &galopnative.@N@Tokens{Src: src, Tokens: make([]galopnative.@N@Token, 0, len(all))}
 	c.index = slices.Grow(c.index[:0], len(all))[:len(all)]
 	for i, t := range all {
