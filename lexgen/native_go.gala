@@ -141,7 +141,7 @@ func (e *@X@SyntaxError) Error() string {
 type @X@Tokens struct {
 	// Src is the text the tokens' spans index: the input, or, when the
 	// input is not valid UTF-8, the input with each invalid byte replaced
-	// by U+FFFD (see @X@LexAt).
+	// by U+FFFD, as ANTLR's input stream reads it.
 	Src    string
 	Tokens []@X@Token
 	Hidden []@X@HiddenToken
