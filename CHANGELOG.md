@@ -5,6 +5,8 @@ lists every merged pull request.
 
 ## Unreleased
 
+## 0.3.3
+
 - **Fixed:** for input that is not valid UTF-8, the native flavor's token text is now
   ANTLR's: `Token.Text`, `Tokens.Text`, `SourceText` and token recognition error
   messages give U+FFFD for each byte that is not part of a valid encoding (a
