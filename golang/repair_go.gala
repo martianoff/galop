@@ -167,6 +167,10 @@ func (p *PARSER) llParse(rule @RULE@, repair bool, sllErr error) (@ROOT@, error)
 		}
 		r.on = false
 	}
+	if p.ll {
+		// The failed pass ran in LL mode already (see llFirst).
+		return @ZERO@, sllErr
+	}
 	p.ll = true
 	defer func() { p.ll = false }()
 	return p.attempt(rule)

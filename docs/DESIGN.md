@@ -81,7 +81,22 @@ galop's contract is "the same grammar means the same thing as in ANTLR 4":
        [repairing the failed SLL parse](#repairing-a-failed-sll-parse) rather than
        rerunning all of it in LL mode, and caches full-context predictions. A
        first pass that succeeds always gives the LL tree (see
-       [Why the first pass is exact](#why-the-first-pass-is-exact)).
+       [Why the first pass is exact](#why-the-first-pass-is-exact)) when the
+       entry rule ends with EOF. A rule that does not (an expression parsed on
+       its own) runs in LL mode from its first pass: at an SLL conflict, the
+       lowest alternative may end the rule early and succeed, where ANTLR's
+       full-context prediction drops an alternative that ended the entry rule
+       once another one ends it further on (`a {} b` as an expression is the
+       composite literal `a {}`, not `a`).
+     - **Falling back where prediction fails.** Where SLL prediction finds no
+       viable alternative but some configuration had already left the
+       decision's rule, ANTLR takes the lowest such alternative and parses on.
+       With an entry rule that ends with EOF the parse then fails anyway; one
+       that does not can stop early without an error (`a {}; b` as an
+       expression is `a`). The replay that finds ANTLR's syntax error (see
+       [Reporting syntax errors as ANTLR does](#reporting-syntax-errors-as-antlr-does))
+       makes those choices; when it finds no error, the parse runs again in LL
+       mode, taking them.
      - **Contexts** are graph-structured stacks, hash-consed and merged with ANTLR's
        rules (`merge`, `mergeSingletons`, `mergeArrays`, wildcard root in SLL), so
        configuration sets, conflict subsets and DFA states are exactly ANTLR's.

@@ -980,11 +980,12 @@ func (p *PARSER) adaptivePredict(d int) int {
 }
 
 // settleSLL ends a prediction of decision d at st when st ends it: with a
-// syntax error, an alternative or a conflict.
+// syntax error (or ANTLR's fallback; see deadEnd), an alternative or a
+// conflict.
 func (p *PARSER) settleSLL(d int, st *PFXDFAState) (int, bool) {
 	switch {
 	case st == PFXDFAError:
-		p.noViableAlt(d)
+		return p.deadEnd(d), true
 	case st.alt > 0:
 		return int(st.alt), true
 	case st.conflict > 0:

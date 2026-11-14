@@ -125,7 +125,7 @@ func tokenAssertions(e env) string {
 // the input's bracket pairs, group says prediction reads bracketed groups,
 // and stats counts the parse's work for the differential harness.
 func predictorFields(e env) string =
-    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats\n\n\t// keepErr skips antlrError: a recovering parse finds ANTLR's errors itself.\n\tkeepErr bool\n\t// peek is the furthest token prediction read (see peekAt).\n\tpeek int"
+    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats\n\n\t// keepErr skips antlrError: a recovering parse finds ANTLR's errors itself.\n\tkeepErr bool\n\t// peek is the furthest token prediction read (see peekAt).\n\tpeek int\n\t// fallbacks are where ANTLR's prediction falls back on an alternative (see deadEnd).\n\tfallbacks []${e.pfx}Fallback"
 
 // retryCode handles a failed SLL parse, whose result is in variable root.
 // With runtime prediction the parse runs in SLL mode first, as GALA does with
@@ -142,10 +142,13 @@ func predictorFields(e env) string =
 func retryCode(e env, root string) string =
     if (e.adaptive) s"\n\tif err != nil && p.first && p.gs.guessed() {\n\t\tr, ok := p.search(rule)\n\t\tp.first = false\n\t\tif ok {\n\t\t\t$root, err = r, nil\n\t\t} else {\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t}\n\tp.first = false\n\tif err != nil {\n\t\tgrouped := p.group\n\t\tp.group = false\n\t\tif grouped && p.rp.seen == 0 {\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t\tif err != nil {\n\t\t\t$root, err = p.llParse(rule, repair, err)\n\t\t}\n\t}" else ""
 
-// errorsHook replaces the final parse's syntax error with the one ANTLR
-// reports (see errorsSource); start is the entry rule's start state.
-val errorsHook =
-    "\n\tif err != nil && !p.keepErr {\n\t\terr = p.antlrError(start, err)\n\t}"
+// errorsHook replaces the final parse's syntax error, with its result in
+// variable root, by the one ANTLR reports (see errorsSource); start is the
+// entry rule's start state. Where ANTLR reports none, its prediction fell back
+// on an alternative where the parse's failed (see deadEnd), and the parse runs
+// again in LL mode, taking those.
+func errorsHook(root string) string =
+    s"\n\tif err != nil && !p.keepErr {\n\t\tif err = p.antlrError(start, err); err == nil {\n\t\t\tp.ll = true\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t}"
 
 // parserCore is the parser struct and the helpers every rule uses.
 func parserCore(e env) string {
@@ -275,7 +278,7 @@ func (p *PARSER) matchIf(ctx antlr.ParserRuleContext, ok bool) antlr.Token {
 func (p *PARSER) noViableAlt(decision int) {
 	panic(&PFXSyntaxError{p.toks[p.pos], "no viable alternative at input " + PFXTokenText(p.toks[p.pos])})
 }
-`, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "GROUPON", groupsOn(e), "RETRY", retry, "ERRORS", errorsHook, "RESETSTACK", resetPass)
+`, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "GROUPON", groupsOn(e), "RETRY", retry, "ERRORS", errorsHook("ctx"), "RESETSTACK", resetPass)
 }
 
 // entryMethod is the public method that parses input as one rule.
@@ -435,7 +438,7 @@ func emitLookahead(e env, d int, la analysis.Lookahead, ind string) Array[string
         val body = ArrayOf(s"${ind}switch $subject {")
             .AppendAll(disjoint.FlatMap((c) => ArrayOf(s"${ind}case ${e.tokenList(c.Tokens)}:").AppendAll(emitLookahead(e, d, c.Then, ind + "\t"))))
         if (otherwise) body.AppendAll(ArrayOf(s"${ind}default:", ind + "\t" + runtimeChoice(e, d, allAlts(e, d)), s"$ind}"))
-        else body.AppendAll(ArrayOf(s"$ind}", s"${ind}p.noViableAlt($d)", s"${ind}return 0"))
+        else body.AppendAll(ArrayOf(s"$ind}", s"${ind}return p.deadEnd($d)"))
     }
 }
 
@@ -462,7 +465,7 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
         val subject = if (readsAgain) ArrayOf("\ti++", "\tswitch p.la(i) {") else ArrayOf("\tswitch p.types[p.pos] {")
         label.AppendAll(subject)
             .AppendAll(si.V1.Edges.FlatMap((edge) => ArrayOf(s"\tcase ${e.tokenList(edge.Tokens)}:", s"\t\t${jump(edge.Target)}")))
-            .AppendAll(ArrayOf("\t}", s"\tp.noViableAlt($d)", "\treturn 0"))
+            .AppendAll(ArrayOf("\t}", s"\treturn p.deadEnd($d)"))
     }))
 }
 
@@ -477,9 +480,17 @@ func emitAutomaton(e env, d int, states Array[analysis.DFAState]) Array[string] 
 // a parse never reads groups.
 func groupsOn(e env) string =
     if (!e.adaptive) ""
-    else "\n\tp.first = repair" + (if (e.brackets.Families.NonEmpty())
+    else llFirst(e) + "\n\tp.first = repair" + (if (e.brackets.Families.NonEmpty())
         s"\n\tp.group = repair\n\tif p.group {\n\t\tvar balanced bool\n\t\tp.pairs, balanced = ${e.pfx}BracketMatch(p.types, p.pairs)\n\t\tp.first = p.first && balanced\n\t}"
     else "")
+
+// llFirst runs a parse in LL mode from its first pass when its entry rule
+// does not end with EOF. An SLL pass that succeeds has ANTLR's LL tree only
+// when it had to read the whole input (see llParse): a rule that can stop
+// early may succeed with the lowest alternative of an SLL conflict, where
+// ANTLR's full-context prediction drops an alternative that ended the entry
+// rule once another one ends it further on.
+func llFirst(e env) string = s"\n\tp.ll = !${e.pfx}RuleEndsWithEOF[${e.pfx}StateRule[start]]"
 
 // resetPass clears what one pass of a parse leaves behind (see attempt): the
 // call stack, the conflict count and the guess points met; and it counts the

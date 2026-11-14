@@ -22,7 +22,8 @@ import (
 // `n.IDENTIFIER()`, `n.GetGuard()`), so code written against ANTLR's trees
 // ports by renaming. Parsing decides exactly as the `antlr` flavor does: the
 // same decision functions and runtime predictor, SLL first and, on a
-// syntax error, ANTLR's LL result (repaired or rerun).
+// syntax error, ANTLR's LL result (repaired or rerun); LL from the start for
+// a rule that does not end with EOF.
 
 // nativeParser emits `<grammar>_parser.go` of the native flavor. withTokens
 // adds the token runtime, for a grammar without lexer rules (otherwise the
@@ -304,7 +305,7 @@ func nativeParserCore(e env) string {
     // what it inserts, so their own placeholders are filled first.
     val labelHelpers = if (e.tokenLabels) fill(nativeLabelHelpers, "PARSER", e.parserType, "@X@", e.exported()) else ""
     val ruleFuncs = e.rules.Map((r) => s"\n\t(*${e.parserType}).${e.ruleFunc(r.Index)},").MkString("")
-    fill(nativeCoreTemplate, "PREDICTOR", predictor, "RULEFUNCS", ruleFuncs, "GROUPON", groupsOn(e), "LABS", labs, "RETRY", retry, "ERRORS", errorsHook, "RESETSTACK", resetPass,
+    fill(nativeCoreTemplate, "PREDICTOR", predictor, "RULEFUNCS", ruleFuncs, "GROUPON", groupsOn(e), "LABS", labs, "RETRY", retry, "ERRORS", errorsHook("root"), "RESETSTACK", resetPass,
         "RESETLABS", resetLabs, "LABELHELPERS", labelHelpers, "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported())
 }
 
@@ -335,7 +336,8 @@ type PARSER struct {
 }
 
 // PFXParse parses the tokens of ts as the rule with index rule (an @X@RULE_
-// constant), SLL first and LL on a syntax error, as the antlr flavor does.
+// constant), SLL first and LL on a syntax error (LL from the start for a rule
+// that does not end with EOF), as the antlr flavor does.
 func PFXParse(ts *@X@Tokens, rule int) (*@X@Tree, int32, error) {
 	if rule < 0 || rule >= len(PFXRuleFuncs) {
 		return nil, -1, &@X@SyntaxError{Msg: "no rule with index " + strconv.Itoa(rule)}
