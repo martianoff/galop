@@ -1,0 +1,183 @@
+name: exp macos timing
+
+# Scratch experiment: why is a cold `gala test` so slow on macOS?
+# Not for merging.
+
+on:
+  push:
+    branches: [exp/macos-ci-timing]
+
+permissions:
+  contents: read
+
+env:
+  GALA_VERSION: "0.94.0"
+  GO_VERSION: "1.25.14"
+
+jobs:
+  timing:
+    name: cold ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: macos-latest p1, os: macos-latest, asset: gala-darwin-arm64, p: 1 }
+          - { label: macos-15-intel p1, os: macos-15-intel, asset: gala-darwin-amd64, p: 1 }
+          - { label: macos-latest-xlarge p1, os: macos-latest-xlarge, asset: gala-darwin-arm64, p: 1 }
+          - { label: ubuntu-latest p1, os: ubuntu-latest, asset: gala-linux-amd64, p: 1 }
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOGC: "25"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Install GALA CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/gala" \
+            "https://github.com/martianoff/gala/releases/download/${GALA_VERSION}/${{ matrix.asset }}"
+          chmod +x "$RUNNER_TEMP/bin/gala"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Machine
+        run: |
+          uname -a
+          if [ "$RUNNER_OS" = macOS ]; then
+            sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize vm.swapusage
+            vm_stat | head -5; df -h / "$RUNNER_TEMP"
+          else
+            nproc; free -m; swapon --show; df -h / "$RUNNER_TEMP"
+          fi
+          go version; go env GOCACHE CGO_ENABLED
+      - name: Cold gala test (instrumented)
+        timeout-minutes: 150
+        run: |
+          L="$RUNNER_TEMP/logs"; mkdir -p "$L"
+          # Per tool call: wall time, max RSS, page faults (macOS: time -l).
+          cat > "$RUNNER_TEMP/timeit.sh" <<'EOF'
+          #!/bin/bash
+          tool=$(basename "$1"); pkg=""; prev=""
+          for a in "$@"; do [ "$prev" = "-p" ] && pkg=$a; prev=$a; done
+          case "$*" in *-V=full*) exec "$@";; esac
+          case "$tool" in compile|link) ;; *) exec "$@";; esac
+          t="$TIMEIT_DIR/t.$$"; s=$(date +%s)
+          if [ "$(uname)" = Darwin ]; then /usr/bin/time -l -o "$t" "$@"; rc=$?
+          elif [ -x /usr/bin/time ]; then /usr/bin/time -v -o "$t" "$@"; rc=$?
+          else "$@"; rc=$?; : > "$t"; fi
+          e=$(date +%s)
+          echo "$tool $pkg wall=$((e-s)) $(tr -s ' \t' ' ' < "$t" | grep -Ei 'real|maximum resident|page faults|page reclaims|involuntary|Elapsed|User time|System time' | tr '\n' ';')" >> "$TIMEIT_DIR/tools.log"
+          rm -f "$t"; exit $rc
+          EOF
+          chmod +x "$RUNNER_TEMP/timeit.sh"
+          export TIMEIT_DIR="$L"
+          # Memory sampler every 10 s.
+          (
+            while true; do
+              if [ "$RUNNER_OS" = macOS ]; then
+                echo "$(date +%T) swap: $(sysctl -n vm.swapusage) | $(memory_pressure | tail -1) | $(vm_stat | grep -E 'Pageouts|Swapouts|Pages free|compressor' | tr -s ' ' | tr '\n' ';') | top: $(ps -Ao rss=,comm= -m | head -2 | tr -s ' ' | tr '\n' ';')"
+              else
+                echo "$(date +%T) $(free -m | sed -n 2,3p | tr -s ' ' | tr '\n' ';') | top: $(ps -Ao rss=,comm= --sort=-rss | head -2 | tr -s ' ' | tr '\n' ';')"
+              fi
+              sleep 10
+            done
+          ) > "$L/mem.log" 2>&1 &
+          s=$(date +%s)
+          GOFLAGS="-p=${{ matrix.p }} -trimpath -toolexec=$RUNNER_TEMP/timeit.sh" gala test || echo "gala test rc=$?"
+          echo "gala test seconds: $(( $(date +%s) - s ))"
+          echo "::group::tools.log"; sort -t= -k2 -n "$L/tools.log" | tail -40; echo "::endgroup::"
+          echo "::group::mem.log"; cat "$L/mem.log"; echo "::endgroup::"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.os }}
+          path: ${{ runner.temp }}/logs
+
+  # Can Linux fill a cache that macOS reuses? Cross-compile everything gala
+  # test builds for darwin/arm64, without running the tests.
+  cross:
+    name: cross-compile darwin/arm64 on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOGC: "25"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Install GALA CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/gala" \
+            "https://github.com/martianoff/gala/releases/download/${GALA_VERSION}/gala-linux-amd64"
+          chmod +x "$RUNNER_TEMP/bin/gala"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Cross gala test (build only)
+        run: |
+          s=$(date +%s)
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 GOFLAGS="-p=2 -trimpath -exec=true" gala test
+          echo "seconds: $(( $(date +%s) - s ))"
+          du -sh "$(go env GOCACHE)"
+          tar -C "$(go env GOCACHE)" -cf - . | zstd -T0 -3 -o "$RUNNER_TEMP/gocache.tar.zst"
+          ls -la "$RUNNER_TEMP/gocache.tar.zst"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin-gocache
+          path: ${{ runner.temp }}/gocache.tar.zst
+          compression-level: 0
+          retention-days: 2
+
+  primed:
+    name: macos-latest with the Linux-built cache
+    needs: cross
+    runs-on: macos-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOGC: "25"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Install GALA CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/gala" \
+            "https://github.com/martianoff/gala/releases/download/${GALA_VERSION}/gala-darwin-arm64"
+          chmod +x "$RUNNER_TEMP/bin/gala"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@v4
+        with:
+          name: darwin-gocache
+          path: ${{ runner.temp }}/dl
+      - name: Restore cache
+        run: |
+          d="$(go env GOCACHE)"; mkdir -p "$d"
+          zstd -dc "$RUNNER_TEMP/dl/gocache.tar.zst" | tar -C "$d" -xf -
+          du -sh "$d"
+      - name: gala test with the primed cache
+        timeout-minutes: 140
+        run: |
+          s=$(date +%s)
+          CGO_ENABLED=0 GOFLAGS="-p=1 -trimpath" gala test
+          echo "gala test seconds: $(( $(date +%s) - s ))"
+      - name: gala build with the primed cache
+        run: |
+          s=$(date +%s)
+          CGO_ENABLED=0 GOFLAGS="-p=1 -trimpath" gala build -o galop ./cmd/galop
+          echo "gala build seconds: $(( $(date +%s) - s ))"
+          ./galop -check -roundtrip testdata/grammars/*.g4
