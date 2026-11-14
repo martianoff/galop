@@ -12,9 +12,9 @@ import (
 // The `native` flavor's token runtime: the token types and the token, token
 // list and error types every native file of a grammar shares. The lexer file
 // carries it; the parser file of a grammar with no lexer rules carries it
-// instead; that file imports strconv, strings and unicode/utf8 for it. Every
-// exported name starts with the grammar's prefix (`Gala`), so generated
-// code from several grammars can share a package.
+// instead; that file imports strconv and unicode/utf8 for it. Every exported
+// name starts with the grammar's prefix (`Gala`), so generated code from
+// several grammars can share a package.
 
 // nativeNames are the names, after the prefix, that the native flavor's
 // generated code declares itself. A token named like one of them (`Tokens`)
@@ -93,8 +93,8 @@ type @X@Token struct {
 // Text is the token's text in src, or "<EOF>" for the EOF token, as ANTLR
 // shows it: where src is not valid UTF-8, each byte that is not part of a
 // valid encoding is U+FFFD, as ANTLR's input stream reads it. The input's own
-// bytes are src[t.Start:t.End]. Text checks the text on every call;
-// @X@Tokens.Text does not when the lexer found the input valid.
+// bytes are src[t.Start:t.End]. Text checks the text on every call; for the
+// tokens of an @X@Tokens, @X@Tokens.Text and @X@Tokens.HiddenText do not.
 func (t @X@Token) Text(src string) string {
 	if t.Type == @X@EOF {
 		return "<EOF>"
@@ -109,21 +109,7 @@ func galop@X@Text(s string) string {
 	if utf8.ValidString(s) {
 		return s
 	}
-	// Ranging over a string gives utf8.RuneError for each invalid byte, as
-	// the conversion to []rune does. Each grows to the three bytes of U+FFFD
-	// (a valid U+FFFD counted here keeps its size, so Grow overestimates).
-	bad := 0
-	for _, c := range s {
-		if c == utf8.RuneError {
-			bad++
-		}
-	}
-	var b strings.Builder
-	b.Grow(len(s) + 2*bad)
-	for _, c := range s {
-		b.WriteRune(c)
-	}
-	return b.String()
+	return string([]rune(s))
 }
 
 // @X@TokenName is how ANTLR names token type t in messages: its literal, its
@@ -178,27 +164,60 @@ type @X@Tokens struct {
 	// parse error's Read).
 	ErrorAt []int32
 
-	// valid reports that the lexer read Src and found it valid UTF-8, so its
-	// text needs no replacements. It is false for tokens from elsewhere. It
-	// describes the Src the lexer read: replacing Src leaves it stale.
-	valid bool
+	// Texts and HiddenTexts are, for input that is not valid UTF-8, the text
+	// of each of Tokens and of Hidden as ANTLR reads it (see @X@Token.Text);
+	// nil otherwise. The lexer and the converter from ANTLR's trees fill them,
+	// so that Text and HiddenText need no check.
+	Texts       []string
+	HiddenTexts []string
 }
 
-// Text is the text of token i, as @X@Token.Text gives it. Prefer it to
-// @X@Token.Text on hot paths: for input the lexer found valid UTF-8 it is
-// the slice of Src, with no check and no copy. For any other input,
-// including tokens the lexer did not make (a converted tree's), it converts
-// the slice as ANTLR's input stream does, on each call.
+// Text is the text of token i, as @X@Token.Text gives it, with no check: the
+// slice of Src, or for input that is not valid UTF-8 Texts[i]. Prefer it to
+// @X@Token.Text.
 func (ts *@X@Tokens) Text(i int) string {
-	// No call on any path, so that Text stays small enough to inline.
+	if ts.Texts != nil {
+		return ts.Texts[i]
+	}
 	t := &ts.Tokens[i]
 	if t.Type == @X@EOF {
 		return "<EOF>"
 	}
-	if ts.valid {
-		return ts.Src[t.Start:t.End]
+	return ts.Src[t.Start:t.End]
+}
+
+// HiddenText is the text of off-channel token i, as Text gives it: for a
+// comment, the slice of Src, or for input that is not valid UTF-8
+// HiddenTexts[i].
+func (ts *@X@Tokens) HiddenText(i int) string {
+	if ts.HiddenTexts != nil {
+		return ts.HiddenTexts[i]
 	}
-	return string([]rune(ts.Src[t.Start:t.End]))
+	t := &ts.Hidden[i]
+	return ts.Src[t.Start:t.End]
+}
+
+// ReadTexts sets Texts and HiddenTexts for Src: nil when it is valid UTF-8,
+// and otherwise each token's text as ANTLR reads it. The lexer sets them
+// itself; ReadTexts is for code that builds token lists, as the converter
+// from ANTLR's trees does.
+func (ts *@X@Tokens) ReadTexts() {
+	ts.Texts, ts.HiddenTexts = nil, nil
+	if !utf8.ValidString(ts.Src) {
+		ts.fillTexts()
+	}
+}
+
+// fillTexts sets Texts and HiddenTexts for Src, which is not valid UTF-8.
+func (ts *@X@Tokens) fillTexts() {
+	ts.Texts = make([]string, len(ts.Tokens))
+	for i, t := range ts.Tokens {
+		ts.Texts[i] = t.Text(ts.Src)
+	}
+	ts.HiddenTexts = make([]string, len(ts.Hidden))
+	for i, h := range ts.Hidden {
+		ts.HiddenTexts[i] = h.Text(ts.Src)
+	}
 }
 
 // HiddenBefore is the off-channel tokens between token i-1 and token i (all
@@ -262,10 +281,12 @@ func @X@LexAt(src string, line, column int) *@X@Tokens {
 				// A "more" token ran into the end of the input: ANTLR emits
 				// EOF from where that token started.
 				ts.Tokens = append(ts.Tokens, @X@Token{@X@EOF, int32(start.off), int32(at.off), int32(start.line), int32(start.column())})
-				ts.valid = !invalid
+				if invalid {
+					ts.fillTexts()
+				}
 				return ts
 			default:
-				ts.recognitionError(start, m.stop, invalid)
+				ts.recognitionError(start, m.stop)
 				at = m.stop
 				if at.off < len(src) {
 					at = at.advance(@P@At(src, at.off))
@@ -284,24 +305,21 @@ func @X@LexAt(src string, line, column int) *@X@Tokens {
 		}
 	}
 	ts.Tokens = append(ts.Tokens, @X@Token{@X@EOF, int32(at.off), int32(at.off), int32(at.line), int32(at.column())})
-	ts.valid = !invalid
+	if invalid {
+		ts.fillTexts()
+	}
 	return ts
 }
 
 // recognitionError records that no token starts at start, having scanned to
 // stop, with ANTLR's message: the text from start through the code point at stop.
-// invalid reports that some byte read so far is not valid UTF-8.
-func (ts *@X@Tokens) recognitionError(start, stop @P@Pos, invalid bool) {
+func (ts *@X@Tokens) recognitionError(start, stop @P@Pos) {
 	end := stop.off
 	if end < len(ts.Src) {
 		_, size := @P@At(ts.Src, end)
 		end += size
 	}
-	text := ts.Src[start.off:end]
-	if invalid {
-		text = galop@X@Text(text)
-	}
-	ts.Errors = append(ts.Errors, @X@SyntaxError{start.line, start.column(), "token recognition error at: '" + text + "'"})
+	ts.Errors = append(ts.Errors, @X@SyntaxError{start.line, start.column(), "token recognition error at: '" + galop@X@Text(ts.Src[start.off:end]) + "'"})
 	ts.ErrorAt = append(ts.ErrorAt, int32(len(ts.Tokens)))
 }
 

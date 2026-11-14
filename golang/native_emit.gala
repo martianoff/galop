@@ -625,7 +625,7 @@ func (n @X@NodeRef) SourceText() string {
 		return ""
 	}
 	s := n.t.Src[n.t.Tokens[nd.Start].Start:n.t.Tokens[nd.Stop].End]
-	if n.t.valid {
+	if n.t.Texts == nil {
 		return s
 	}
 	return galop@X@Text(s)

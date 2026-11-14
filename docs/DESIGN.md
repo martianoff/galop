@@ -722,15 +722,14 @@ so several grammars can share a package:
   `GalaToken` is 20 bytes: type, the byte span `[Start, End)` of its text, and the
   line and column ANTLR gives it (columns count code points). Its text is a slice
   of the source, so lexing allocates almost nothing. Where the source is not valid
-  UTF-8, `Text` gives ANTLR's text, whose input stream reads each byte that is not
-  part of a valid encoding as U+FFFD. Spans and `Src` stay on the source's bytes, so `Src[Start:End]`
-  is the raw text. The lexer notes whether the input had an invalid byte as it
-  decodes it, at no extra pass: for valid input `GalaTokens.Text(i)` and
-  `SourceText` return the slice of `Src` with no check, and `Tokens.Text` stays
-  small enough to inline. For other tokens (invalid input, or tokens the lexer did
-  not make, such as a converted tree's) `Tokens.Text` converts its slice on each
-  call. `GalaToken.Text(src)`, which sees only `src`, checks the slice and copies
-  only invalid text.
+  UTF-8, the text is ANTLR's, whose input stream reads each byte that is not part
+  of a valid encoding as U+FFFD. Spans and `Src` stay on the source's bytes, so
+  `Src[Start:End]` is the raw text. The lexer notes an invalid byte as it decodes
+  it, at no extra pass, and only then fills `Texts` and `HiddenTexts` with each
+  token's ANTLR text (the converter from ANTLR's trees fills them too, through
+  `ReadTexts`). `GalaTokens.Text(i)` and `HiddenText(i)` read the slice of `Src`,
+  or those texts, with no check, and inline. `GalaToken.Text(src)`, which sees
+  only `src`, checks the slice on each call and copies only invalid text.
 - Off-channel tokens (comments on `HIDDEN`, or a `channels {}` channel) go to
   `Hidden`, each with its channel and `Next`, the index of the default-channel
   token after it. `HiddenBefore(i)` is the comments in front of token `i` by

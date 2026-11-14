@@ -11,6 +11,12 @@ lists every merged pull request.
   multibyte sequence cut short included), as ANTLR's input stream reads it. Token
   spans and `Tokens.Src` are unchanged: they stay on the input's bytes. On such
   input `Text` now differs from `Src[Start:End]`, which still gives the raw bytes.
+- **Added:** `Tokens.Texts` and `Tokens.HiddenTexts`, each token's ANTLR text for
+  input that is not valid UTF-8 (nil otherwise), which the lexer and the converter
+  fill; `Tokens.HiddenText(i)`, a comment's text, the counterpart of `Tokens.Text`;
+  and `Tokens.ReadTexts()`, which fills the texts for token lists built elsewhere.
+  `Tokens.Text` and `HiddenText` read them with no check: prefer them to
+  `Token.Text`, which checks the text on each call.
 
 ## 0.3.2
 

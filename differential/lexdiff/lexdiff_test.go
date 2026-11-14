@@ -314,31 +314,38 @@ func TestNativeCases(t *testing.T) { allCases(t, sameNative) }
 
 // TestNativeText checks the native tokens' text on every case: Src is the
 // input itself, not a copy, and the spans index its bytes; a token's text,
-// through Token.Text and through Tokens.Text, is the conversion to []rune
-// of its bytes that ANTLR's input stream makes. Valid text is a slice of
-// the input, not a copy: always from Token.Text, and from Tokens.Text when
-// the whole input is valid (on other input it converts every token).
+// through Token.Text, Tokens.Text and Tokens.HiddenText, is the conversion
+// to []rune of its bytes that ANTLR's input stream makes, and valid text is
+// a slice of the input, not a copy. Texts and HiddenTexts are nil for valid
+// input and hold those texts otherwise.
 func TestNativeText(t *testing.T) {
 	for name, src := range cases() {
 		ts := nativegala.GalaLex(src)
 		if ts.Src != src || unsafe.StringData(ts.Src) != unsafe.StringData(src) {
 			t.Errorf("%s: Src is not the input", name)
 		}
-		check := func(tok nativegala.GalaToken, text string, slice bool) {
+		if valid := utf8.ValidString(src); valid != (ts.Texts == nil) || valid != (ts.HiddenTexts == nil) {
+			t.Errorf("%s: valid input %v, but Texts nil %v and HiddenTexts nil %v", name, valid, ts.Texts == nil, ts.HiddenTexts == nil)
+		}
+		check := func(tok nativegala.GalaToken, text string) {
 			raw := src[tok.Start:tok.End]
 			switch {
 			case text != string([]rune(raw)):
 				t.Errorf("%s: token %q has text %q, want %q", name, raw, text, string([]rune(raw)))
-			case slice && utf8.ValidString(raw) && raw != "" && unsafe.StringData(text) != unsafe.StringData(raw):
+			case utf8.ValidString(raw) && raw != "" && unsafe.StringData(text) != unsafe.StringData(raw):
 				t.Errorf("%s: the text of valid token %q is a copy", name, raw)
 			}
 		}
 		for i, tok := range ts.Tokens[:len(ts.Tokens)-1] { // all but EOF
-			check(tok, tok.Text(src), true)
-			check(tok, ts.Text(i), utf8.ValidString(src))
+			check(tok, tok.Text(src))
+			check(tok, ts.Text(i))
 		}
-		for _, h := range ts.Hidden {
-			check(h.GalaToken, h.Text(src), true)
+		if got := ts.Text(len(ts.Tokens) - 1); got != "<EOF>" {
+			t.Errorf("%s: the EOF token's text is %q", name, got)
+		}
+		for i, h := range ts.Hidden {
+			check(h.GalaToken, h.Text(src))
+			check(h.GalaToken, ts.HiddenText(i))
 		}
 	}
 }
@@ -357,7 +364,8 @@ func BenchmarkNative(b *testing.B) {
 
 // BenchmarkNativeText reads the text of every token of the lexed corpus: the
 // default-channel tokens through Tokens.Text, and the hidden ones (comments)
-// through Token.Text. It is what reading a token list costs on top of lexing.
+// through Tokens.HiddenText. It is what reading a token list costs on top of
+// lexing.
 func BenchmarkNativeText(b *testing.B) {
 	fs := files(b)
 	tss := make([]*nativegala.GalaTokens, len(fs))
@@ -381,7 +389,7 @@ func BenchmarkNativeText(b *testing.B) {
 		for b.Loop() {
 			for _, ts := range tss {
 				for i := range ts.Hidden {
-					_ = ts.Hidden[i].Text(ts.Src)
+					_ = ts.HiddenText(i)
 				}
 			}
 		}
