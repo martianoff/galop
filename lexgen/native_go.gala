@@ -109,25 +109,19 @@ func galop@X@Text(s string) string {
 	if utf8.ValidString(s) {
 		return s
 	}
-	// Each invalid byte becomes the three bytes of U+FFFD.
+	// Ranging over a string gives utf8.RuneError for each invalid byte, as
+	// the conversion to []rune does. Each grows to the three bytes of U+FFFD
+	// (a valid U+FFFD counted here keeps its size, so Grow overestimates).
 	bad := 0
-	for i := 0; i < len(s); {
-		c, size := utf8.DecodeRuneInString(s[i:])
-		if c == utf8.RuneError && size == 1 {
+	for _, c := range s {
+		if c == utf8.RuneError {
 			bad++
 		}
-		i += size
 	}
 	var b strings.Builder
 	b.Grow(len(s) + 2*bad)
-	for i := 0; i < len(s); {
-		c, size := utf8.DecodeRuneInString(s[i:])
-		if c == utf8.RuneError && size == 1 {
-			b.WriteRune(utf8.RuneError)
-		} else {
-			b.WriteString(s[i : i+size])
-		}
-		i += size
+	for _, c := range s {
+		b.WriteRune(c)
 	}
 	return b.String()
 }
@@ -185,25 +179,26 @@ type @X@Tokens struct {
 	ErrorAt []int32
 
 	// valid reports that the lexer read Src and found it valid UTF-8, so its
-	// text needs no replacements. It is false for tokens from elsewhere.
+	// text needs no replacements. It is false for tokens from elsewhere. It
+	// describes the Src the lexer read: replacing Src leaves it stale.
 	valid bool
 }
 
 // Text is the text of token i, as @X@Token.Text gives it. Prefer it to
 // @X@Token.Text on hot paths: for input the lexer found valid UTF-8 it is
-// the slice of Src, with no check and no copy. For any other input it
-// converts the slice as ANTLR's input stream does, on each call.
+// the slice of Src, with no check and no copy. For any other input,
+// including tokens the lexer did not make (a converted tree's), it converts
+// the slice as ANTLR's input stream does, on each call.
 func (ts *@X@Tokens) Text(i int) string {
-	t := ts.Tokens[i]
+	// No call on any path, so that Text stays small enough to inline.
+	t := &ts.Tokens[i]
 	if t.Type == @X@EOF {
 		return "<EOF>"
 	}
-	// No call on either path, so that Text stays small enough to inline.
-	if s := ts.Src[t.Start:t.End]; ts.valid {
-		return s
-	} else {
-		return string([]rune(s))
+	if ts.valid {
+		return ts.Src[t.Start:t.End]
 	}
+	return string([]rune(ts.Src[t.Start:t.End]))
 }
 
 // HiddenBefore is the off-channel tokens between token i-1 and token i (all

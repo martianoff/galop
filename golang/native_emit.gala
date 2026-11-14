@@ -545,12 +545,7 @@ func (t *@X@Tree) Token(i int) @X@Token {
 // Text is token i's text, a conjured token's included.
 func (t *@X@Tree) Text(i int) string {
 	if i < len(t.Tokens) {
-		if t.valid {
-			return t.@X@Tokens.Text(i)
-		}
-		// Tokens the lexer did not read, as a converted tree's: check the
-		// text, so that valid text is not copied.
-		return t.Tokens[i].Text(t.Src)
+		return t.@X@Tokens.Text(i)
 	}
 	return t.ConjuredText[i-len(t.Tokens)]
 }

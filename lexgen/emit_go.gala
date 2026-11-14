@@ -468,13 +468,15 @@ func @P@Match(data string, from @P@Pos, r *@P@Result) {
 			class = int(@P@ClassASCII[c])
 		} else {
 			c, size = utf8.DecodeRuneInString(data[off:])
-			invalid = invalid || c == utf8.RuneError && size == 1
+			// c is not ASCII, so a size of 1 is a byte that is not valid UTF-8.
+			invalid = invalid || size == 1
 			class = @P@Class(c)
 		}
 		next := int(@P@Edges[s*@P@NumClasses+class])
 		if next < 0 {
 			if next == @P@Dynamic {
 				*r = @P@MatchATN(data, from)
+				r.invalid = r.invalid || invalid
 				return
 			}
 			break

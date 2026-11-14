@@ -134,18 +134,15 @@ func variants(src string) map[string]string {
 		v[fmt.Sprintf("insert %q", ins)] = string(r[:mid]) + ins + string(r[mid:])
 	}
 	ts := nativegala.GalaLex(src)
-	insideFirst := func(name string, toks []nativegala.GalaToken, ttype int32, prefix int32) {
-		if i := slices.IndexFunc(toks, func(t nativegala.GalaToken) bool { return t.Type == ttype }); i >= 0 {
-			at := toks[i].Start + prefix
-			v["invalid byte inside the first "+name] = src[:at] + "a\x94b" + src[at:]
-		}
+	inside := func(name string, at int32) {
+		v["invalid byte inside the first "+name] = src[:at] + "a\x94b" + src[at:]
 	}
-	hidden := make([]nativegala.GalaToken, len(ts.Hidden))
-	for i, h := range ts.Hidden {
-		hidden[i] = h.GalaToken
+	if i := slices.IndexFunc(ts.Hidden, func(h nativegala.GalaHiddenToken) bool { return h.Type == nativegala.GalaCOMMENT }); i >= 0 {
+		inside("comment", ts.Hidden[i].Start+2) // after "//"
 	}
-	insideFirst("comment", hidden, nativegala.GalaCOMMENT, 2)
-	insideFirst("string", ts.Tokens, nativegala.GalaSTRING, 1)
+	if i := slices.IndexFunc(ts.Tokens, func(t nativegala.GalaToken) bool { return t.Type == nativegala.GalaSTRING }); i >= 0 {
+		inside("string", ts.Tokens[i].Start+1) // after the opening quote
+	}
 	v["truncated at the end"] = src + "\xe2\x82"
 	v["truncated in a comment at the end"] = src + "// €\xe2\x82"
 	return v
@@ -358,41 +355,35 @@ func BenchmarkNative(b *testing.B) {
 	}
 }
 
-// BenchmarkNativeText reads the text of every token of the lexed corpus:
-// the default-channel tokens through Tokens.Text, and the hidden ones
-// (comments) through Token.Text. It is what reading a token list costs on
-// top of lexing.
+// BenchmarkNativeText reads the text of every token of the lexed corpus: the
+// default-channel tokens through Tokens.Text, and the hidden ones (comments)
+// through Token.Text. It is what reading a token list costs on top of lexing.
 func BenchmarkNativeText(b *testing.B) {
 	fs := files(b)
 	tss := make([]*nativegala.GalaTokens, len(fs))
 	for i, f := range fs {
 		tss[i] = nativegala.GalaLex(f.Src)
 	}
-	read := map[string]func(ts *nativegala.GalaTokens) int{
-		"tokens": func(ts *nativegala.GalaTokens) (n int) {
-			for i := range ts.Tokens {
-				n += len(ts.Text(i))
-			}
-			return n
-		},
-		"hidden": func(ts *nativegala.GalaTokens) (n int) {
-			for i := range ts.Hidden {
-				n += len(ts.Hidden[i].Text(ts.Src))
-			}
-			return n
-		},
-	}
-	for _, name := range []string{"tokens", "hidden"} {
-		b.Run(name, func(b *testing.B) {
-			b.SetBytes(int64(corpus.Bytes(fs)))
-			b.ReportAllocs()
-			n := 0
-			for b.Loop() {
-				for _, ts := range tss {
-					n += read[name](ts)
+	b.Run("tokens", func(b *testing.B) {
+		b.SetBytes(int64(corpus.Bytes(fs)))
+		b.ReportAllocs()
+		for b.Loop() {
+			for _, ts := range tss {
+				for i := range ts.Tokens {
+					_ = ts.Text(i)
 				}
 			}
-			_ = n
-		})
-	}
+		}
+	})
+	b.Run("hidden", func(b *testing.B) {
+		b.SetBytes(int64(corpus.Bytes(fs)))
+		b.ReportAllocs()
+		for b.Loop() {
+			for _, ts := range tss {
+				for i := range ts.Hidden {
+					_ = ts.Hidden[i].Text(ts.Src)
+				}
+			}
+		}
+	})
 }
