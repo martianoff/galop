@@ -430,6 +430,29 @@ func TestMutualLeftRecursion(t T) T {
         Outcome("", "error(119): M.g4::: The following sets of rules are mutually left-recursive [a, b]\n", 1))
 }
 
+// directLeftRecursion has two left-recursive alternatives, which the analysis
+// cannot finish as written.
+val directLeftRecursion = "grammar L;\ns : e EOF ;\ne : e '*' e | e '+' e | X ;\nX : 'x' ;\n"
+
+func TestGenerateRejectsDirectLeftRecursion(t T) T {
+    val m = newMemory(("L.g4", directLeftRecursion))
+    val t1 = Eq(t, run(m, ArrayOf(fakeGo), "L.g4"),
+        Outcome("", "error(500): L.g4:3:0: galop does not support left-recursive rule e yet\n", 1))
+    Eq(t1, m.writes, EmptyArray[string]())
+}
+
+func TestReportRejectsDirectLeftRecursion(t T) T {
+    val m = newMemory(("L.g4", directLeftRecursion))
+    Eq(t, run(m, ArrayOf(fakeGo), "-report L.g4"),
+        Outcome("", "error(500): L.g4:3:0: galop does not support left-recursive rule e yet\n", 1))
+}
+
+func TestCheckAcceptsDirectLeftRecursion(t T) T {
+    // ANTLR accepts the grammar; only generation and -report need the rewrite.
+    val m = newMemory(("L.g4", directLeftRecursion))
+    Eq(t, run(m, ArrayOf(fakeGo), "-check L.g4").ExitCode, 0)
+}
+
 func TestNoBracketsFlag(t T) T {
     val t1 = IsTrue(t, ParseArgs(ArrayOf("-Xno-brackets", "T.g4")).Config.NoBrackets)
     IsFalse(t1, ParseArgs(ArrayOf("T.g4")).Config.NoBrackets)
