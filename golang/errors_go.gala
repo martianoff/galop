@@ -88,28 +88,60 @@ type PFXEmuError struct {
 }
 
 // PFXEmu replays ANTLR's parse of the parser's tokens; see errorsSource.
+// fallbacks are the alternatives its predictions fell back on.
 type PFXEmu struct {
-	p       *PARSER
-	pending *PFXEmuError
-	sll     PFXSLLFailure
+	p         *PARSER
+	pending   *PFXEmuError
+	sll       PFXSLLFailure
+	fallbacks []PFXFallback
+}
+
+// PFXFallback is a prediction of decision d at token pos that found no
+// viable alternative, where ANTLR predicts alt instead of failing (see
+// sllFailure).
+type PFXFallback struct {
+	d, pos, alt int32
+}
+
+// deadEnd is a prediction of decision d that found no viable alternative at
+// the current token: a syntax error, unless antlrError found that ANTLR falls
+// back on an alternative there.
+func (p *PARSER) deadEnd(d int) int {
+	for _, f := range p.fallbacks {
+		if int(f.d) == d && int(f.pos) == p.pos {
+			return int(f.alt)
+		}
+	}
+	p.noViableAlt(d)
+	return 0
 }
 
 // antlrError replaces err, the final parse's syntax error, with the first
 // error ANTLR reports parsing the same tokens from rule's start state. The
 // replay predicts over the tokens alone, never over bracketed groups. The
 // parser's position is left where the failed parse left it.
+//
+// ANTLR may report no error at all: where its prediction finds no viable
+// alternative after one had left the decision's rule, it takes that one and
+// parses on, and an entry rule that does not end with EOF can then stop
+// early, without error. antlrError then returns nil and leaves the
+// alternatives ANTLR fell back on in p.fallbacks, for deadEnd to take.
 func (p *PARSER) antlrError(start int32, err error) error {
 	pos, ll, group := p.pos, p.ll, p.group
 	defer func() { p.pos, p.ll, p.group = pos, ll, group }()
-	p.ll, p.group = true, false
+	p.ll, p.group, p.fallbacks = true, false, nil
 	// Conflicts the repair checked need no full-context prediction again.
 	if len(p.rp.recs) > 0 {
 		p.rp.indexRecs()
 		defer func() { p.rp.byPos = nil }()
 	}
 	e := PFXEmu{p: p}
-	if found := e.run(start); found != nil {
+	switch found := e.run(start); {
+	case found != nil:
 		return p.syntaxErrorAt(found.at, found.msg)
+	case len(e.fallbacks) > 0:
+		p.fallbacks = e.fallbacks
+		return nil
 	}
 	return err
 }
@@ -402,6 +434,7 @@ func (e *PFXEmu) predict(d int) (int, *PFXEmuError) {
 			return 0, e.noViable(pos, off)
 		}
 		alt = fallback
+		e.fallbacks = append(e.fallbacks, PFXFallback{int32(d), int32(pos), int32(alt)})
 	}
 	e.pending = nil
 	return alt, nil

@@ -5,6 +5,19 @@ lists every merged pull request.
 
 ## Unreleased
 
+## 0.3.2
+
+- **Fixed:** parsing a rule that does not end with EOF (an expression parsed on its
+  own) gives ANTLR's LL-mode tree. Such a parse now runs in LL mode from its first
+  pass: an SLL pass could succeed with the lowest alternative of a conflict that
+  ends the rule early, where ANTLR's full-context prediction prefers the one that
+  reads further (`a {} b` as an expression is the composite literal `a {}`, not
+  `a`). And where ANTLR's prediction finds no viable alternative but falls back on
+  one that had already left the decision's rule, the parse takes it too and can
+  stop early without an error (`a {}; b` is `a`), instead of reporting "no viable
+  alternative"; `Parse<Rule>WithRecovery` then returns that tree and no errors.
+  Parses of rules that end with EOF give the same results as before.
+
 ## 0.3.1
 
 - **Added:** `<Grammar>ParseError.Read` and `<Grammar>Tree.Read`, how far ANTLR's
