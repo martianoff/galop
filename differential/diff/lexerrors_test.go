@@ -21,9 +21,10 @@ var strayChars = []string{"#", "@", "$", "`", "\\", "\x01", "¤"}
 // nothing closes it: an unterminated string, character or raw string.
 var openers = []string{"\"", "'", "`"}
 
-// invalidUTF8 are bytes that are not valid UTF-8, which ANTLR reads as U+FFFD
-// each: an invalid byte, a lone continuation byte, a sequence cut short.
-var invalidUTF8 = []string{"\x94", "\xff", "\x80", "\xe2\x82"}
+// invalidUTF8 are bytes that never occur in valid UTF-8, which ANTLR reads as
+// U+FFFD each. Inserts of them never join into a valid encoding, wherever
+// they land.
+var invalidUTF8 = []string{"\xc0", "\xfe", "\xff"}
 
 // withStrayChars breaks src lexically one to three times, and half the time
 // also mutates it (see mutate.Mutate), so that lexical and syntax errors mix.

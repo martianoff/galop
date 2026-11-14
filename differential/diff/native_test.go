@@ -194,6 +194,9 @@ func compareAccessors(n nativegala.GalaNodeRef, ctx antlr.ParserRuleContext) str
 		if n.GetText() != a.GetText() {
 			return "GetText differs"
 		}
+		if !sameSourceText(n, a) {
+			return "SourceText differs"
+		}
 	case *antlrgala.CaseClauseContext:
 		cc := nativegala.CaseClauseNode{GalaNodeRef: n}
 		if cc.GetGuard().Ok() != (a.GetGuard() != nil) || cc.GetBodyStmt().Ok() != (a.GetBodyStmt() != nil) ||
@@ -202,6 +205,9 @@ func compareAccessors(n nativegala.GalaNodeRef, ctx antlr.ParserRuleContext) str
 		}
 		if cc.GetGuard().Ok() && cc.GetGuard().GetText() != a.GetGuard().GetText() {
 			return "GetGuard differs"
+		}
+		if !sameSourceText(n, a) {
+			return "SourceText differs"
 		}
 	case antlrgala.IPatternContext:
 		p := nativegala.PatternNode{GalaNodeRef: n}
@@ -316,6 +322,35 @@ func TestNativeTokensWithoutEOF(t *testing.T) {
 			if _, err := nativegala.ParseSourceFile(&short); err == nil || err.Error() != want {
 				t.Errorf("%q cut to %d tokens: error %v, want %q", src, cut, err, want)
 			}
+		}
+	}
+}
+
+// sameSourceText reports whether n's SourceText is the text of ANTLR's input
+// stream from ctx's first token through its last.
+func sameSourceText(n nativegala.GalaNodeRef, ctx antlr.ParserRuleContext) bool {
+	start, stop := ctx.GetStart(), ctx.GetStop()
+	if start == nil || stop == nil || stop.GetTokenIndex() < start.GetTokenIndex() {
+		return n.SourceText() == ""
+	}
+	return n.SourceText() == start.GetInputStream().GetTextFromInterval(antlr.NewInterval(start.GetStart(), stop.GetStop()))
+}
+
+// TestNativeInvalidUTF8 compares the native flavor with ANTLR on files that
+// are not valid UTF-8: every token with its text, the tree, and the
+// accessors' text, SourceText included, which ANTLR reads with each invalid
+// byte as U+FFFD.
+func TestNativeInvalidUTF8(t *testing.T) {
+	for _, src := range []string{
+		"package main\n\n// Two placeho\x94 sum\nval s = \"a\x94b\"\n",
+		"package main\n\nval y = x match {\n\tcase \"a\x94\" => \"\xff\xfe\"\n\tcase _ => `\xc0`\n}\n// end \xe2\x82",
+	} {
+		if _, err := nativegala.Parse(src); err != nil {
+			t.Errorf("%q: native parsing rejects it: %v", src, err)
+			continue
+		}
+		if d := compareNative(corpus.File{Name: fmt.Sprintf("%q", src), Src: src}); d != "" {
+			t.Error(d)
 		}
 	}
 }

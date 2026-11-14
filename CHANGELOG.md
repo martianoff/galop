@@ -9,7 +9,8 @@ lists every merged pull request.
   ANTLR's: `Token.Text`, `Tokens.Text`, `SourceText` and token recognition error
   messages give U+FFFD for each byte that is not part of a valid encoding (a
   multibyte sequence cut short included), as ANTLR's input stream reads it. Token
-  spans and `Tokens.Src` are unchanged: they stay on the input's bytes.
+  spans and `Tokens.Src` are unchanged: they stay on the input's bytes. On such
+  input `Text` now differs from `Src[Start:End]`, which still gives the raw bytes.
 
 ## 0.3.1
 

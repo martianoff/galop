@@ -708,9 +708,12 @@ so several grammars can share a package:
   line and column ANTLR gives it (columns count code points). Its text is a slice
   of the source, so lexing allocates almost nothing. Where the source is not valid
   UTF-8, `Text` gives ANTLR's text, whose input stream reads each byte that is not
-  part of a valid encoding as U+FFFD: it checks the token's slice, and only an
-  invalid one is copied with the replacements. Spans and `Src` stay on the
-  source's bytes.
+  part of a valid encoding as U+FFFD; only such text is copied, with the
+  replacements. Spans and `Src` stay on the source's bytes, so `Src[Start:End]`
+  is the raw text. The lexer notes whether the input had an invalid byte as it
+  decodes it, at no extra pass: for valid input `GalaTokens.Text(i)` and
+  `SourceText` return the slice of `Src` with no check, while
+  `GalaToken.Text(src)`, which sees only `src`, checks the slice on each call.
 - Off-channel tokens (comments on `HIDDEN`, or a `channels {}` channel) go to
   `Hidden`, each with its channel and `Next`, the index of the default-channel
   token after it. `HiddenBefore(i)` is the comments in front of token `i` by
@@ -779,7 +782,8 @@ its context types, so code written against ANTLR's trees ports by renaming:
 
 A missing child is a handle whose `Ok()` is false, not nil. Every handle embeds
 `GalaNodeRef`, which also has `Walk`, `SourceText` (the source between a node's
-first and last token) and `HiddenBefore` (the comments in front of a node).
+first and last token, as ANTLR's input stream reads it: U+FFFD for each invalid
+UTF-8 byte) and `HiddenBefore` (the comments in front of a node).
 Token positions are byte offsets where ANTLR's are code-point indexes; lines and
 columns are ANTLR's. `GalaRuleNames` and `GalaAltNames` name rules and labeled
 alternatives.

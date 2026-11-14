@@ -543,7 +543,12 @@ func (t *@X@Tree) Token(i int) @X@Token {
 // Text is token i's text, a conjured token's included.
 func (t *@X@Tree) Text(i int) string {
 	if i < len(t.Tokens) {
-		return t.@X@Tokens.Text(i)
+		if t.valid {
+			return t.@X@Tokens.Text(i)
+		}
+		// Tokens the lexer did not read, as a converted tree's: check the
+		// text, so that valid text is not copied.
+		return t.Tokens[i].Text(t.Src)
 	}
 	return t.ConjuredText[i-len(t.Tokens)]
 }
@@ -613,13 +618,20 @@ func (n @X@NodeRef) writeText(b *strings.Builder) {
 }
 
 // SourceText is the source from n's first token through its last, with
-// whatever lies between them, read as ANTLR reads it (see @X@Token.Text).
+// whatever lies between them, as ANTLR's input stream reads it: where the
+// input is not valid UTF-8, each byte that is not part of a valid encoding
+// is U+FFFD (see @X@Token.Text). The input's own bytes are Src from the
+// first token's Start to the last one's End.
 func (n @X@NodeRef) SourceText() string {
 	nd := n.t.Nodes[n.i]
 	if nd.Stop < nd.Start {
 		return ""
 	}
-	return galop@X@Text(n.t.Src[n.t.Tokens[nd.Start].Start:n.t.Tokens[nd.Stop].End])
+	s := n.t.Src[n.t.Tokens[nd.Start].Start:n.t.Tokens[nd.Stop].End]
+	if n.t.valid {
+		return s
+	}
+	return galop@X@Text(s)
 }
 
 // HiddenBefore is the off-channel tokens just before n's first token: the
