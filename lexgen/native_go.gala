@@ -79,9 +79,9 @@ func GoConstBlock(lines Array[ConstLine]) string {
 // goTokenRuntimeTemplate is the token, token list and error types. @X@ is the
 // exported prefix.
 val goTokenRuntimeTemplate = `// @X@Token is one token: its type, the byte span [Start, End) of its text in
-// the source, and the line (from 1) and column (in code points, from 0) where
-// it starts, as ANTLR counts them. The EOF token is empty and sits at the end
-// of the input.
+// the lexed text (@X@Tokens.Src), and the line (from 1) and column (in code
+// points, from 0) where it starts, as ANTLR counts them. The EOF token is
+// empty and sits at the end of the input.
 type @X@Token struct {
 	Type       int32
 	Start, End int32
@@ -89,8 +89,8 @@ type @X@Token struct {
 	Column     int32
 }
 
-// Text is the token's text in src, or "<EOF>" for the EOF token, as ANTLR
-// shows it.
+// Text is the token's text in src, the Src of the @X@Tokens it came from, or
+// "<EOF>" for the EOF token, as ANTLR shows it.
 func (t @X@Token) Text(src string) string {
 	if t.Type == @X@EOF {
 		return "<EOF>"
@@ -139,6 +139,9 @@ func (e *@X@SyntaxError) Error() string {
 // A program may change token types before parsing, as long as it keeps the
 // slices' order and the EOF token; the parser reads only Tokens.
 type @X@Tokens struct {
+	// Src is the text the tokens' spans index: the input, or, when the
+	// input is not valid UTF-8, the input with each invalid byte replaced
+	// by U+FFFD (see @X@LexAt).
 	Src    string
 	Tokens []@X@Token
 	Hidden []@X@HiddenToken
@@ -188,9 +191,18 @@ func @X@Lex(src string) *@X@Tokens { return @X@LexAt(src, 1, 0) }
 // token recognition error and skips what ANTLR's lexer skips, so it always
 // reaches the end of the input.
 //
+// Input that is not valid UTF-8 is read as ANTLR's input stream reads it:
+// each byte that is not part of a valid encoding, including a truncated
+// sequence at the end, is U+FFFD. The result's Src is then that decoded
+// text, and token spans and text refer to it, not to src. Valid input is
+// not copied.
+//
 // Matching runs a DFA computed when the code was generated (@STATS@).
 // Its tables are immutable, so lexing on many goroutines at once is safe.
 func @X@LexAt(src string, line, column int) *@X@Tokens {
+	if !utf8.ValidString(src) {
+		src = string([]rune(src))
+	}
 	ts := &@X@Tokens{Src: src, Tokens: make([]@X@Token, 0, len(src)/4+1)}
 	at := @P@Pos{line: line, colBase: -column}
 	var m @P@Result

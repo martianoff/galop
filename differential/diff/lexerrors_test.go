@@ -21,6 +21,10 @@ var strayChars = []string{"#", "@", "$", "`", "\\", "\x01", "¤"}
 // nothing closes it: an unterminated string, character or raw string.
 var openers = []string{"\"", "'", "`"}
 
+// invalidUTF8 are bytes that are not valid UTF-8, which ANTLR reads as U+FFFD
+// each: an invalid byte, a lone continuation byte, a sequence cut short.
+var invalidUTF8 = []string{"\x94", "\xff", "\x80", "\xe2\x82"}
+
 // withStrayChars breaks src lexically one to three times, and half the time
 // also mutates it (see mutate.Mutate), so that lexical and syntax errors mix.
 // Each break puts text where a token starts or ends, inside a token, at the
@@ -62,10 +66,18 @@ func withStrayChars(r *rand.Rand, src string) string {
 			at = len(src)
 		}
 		var text string
-		switch r.Intn(4) {
+		switch r.Intn(5) {
 		case 0:
 			text = openers[r.Intn(len(openers))]
 		case 1:
+			// Only the last break may make src invalid UTF-8: the token
+			// offsets index the decoded text then, not src.
+			if n == 1 {
+				text = invalidUTF8[r.Intn(len(invalidUTF8))]
+			} else {
+				text = openers[r.Intn(len(openers))]
+			}
+		case 2:
 			text = strings.Repeat(strayChars[r.Intn(len(strayChars))], 2+r.Intn(3))
 		default:
 			text = strayChars[r.Intn(len(strayChars))]
