@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      macos:
+        description: Also run gala test on macOS (adds about 2 hours)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,8 +32,11 @@ env:
 #
 # Pull requests run the two fast lanes: Bazel (every test, the ANTLR
 # differential, the grammar corpus check) and `gala test` on Linux. The full CLI
-# lanes on macOS and Windows run on pushes to main and on demand, until #872
-# makes cold compiles cheap enough for pull requests.
+# lanes run on pushes to main and on demand (workflow_dispatch), until #872
+# makes cold compiles cheap enough for pull requests. Windows runs in both.
+# macOS compiles one package at a time and takes about 2 hours, so it runs
+# after the merge, on pushes to main, and on demand only when the run's
+# `macos` input is ticked.
 #
 # Pull requests can only read caches saved on main, so pushes to main get
 # longer limits: they run cold when the cache is stale and fill it for the
@@ -223,12 +231,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":45,"tests":30},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":150,"tests":130},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":75,"tests":50}]') }}
+        # Pull requests: Linux. Pushes to main: Linux, macOS, Windows. On demand:
+        # Linux and Windows, plus macOS when the `macos` input is ticked.
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8}]' || (github.event_name == 'push' || inputs.macos) && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":45,"tests":30},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":150,"tests":130},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":75,"tests":50}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":45,"tests":30},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":75,"tests":50}]') }}
     defaults:
       run:
         shell: bash
+    # -trimpath lets `gala build` reuse what `gala test` compiled. The two
+    # commands generate the same Go into different workspace directories, and
+    # without -trimpath Go's build cache keys every package by its directory,
+    # so the build compiled everything again (38 minutes on macOS).
     env:
-      GOFLAGS: ${{ matrix.goflags }}
+      GOFLAGS: ${{ matrix.goflags }} -trimpath
       GOGC: "25"
     steps:
       - uses: actions/checkout@v5
