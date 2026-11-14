@@ -249,8 +249,13 @@ func TestNativeParserGrammarCarriesTokens(t T) T {
     // Without lexer rules there is no lexer file, so the parser declares the
     // token runtime itself.
     val files = nativeFiles("parser grammar ExprParser;\nr : ID ;\n")
+    val parser = files.Get("expr_parser.go").GetOrElse("")
     val t1 = Eq(t, files.Keys().Sorted(), ArrayOf("expr_parser.go"))
-    IsTrue(t1, strings.Contains(files.Get("expr_parser.go").GetOrElse(""), "type ExprTokens struct"))
+    val t2 = IsTrue(t1, strings.Contains(parser, "type ExprTokens struct"))
+    // The token runtime reads token text with unicode/utf8; a parser file
+    // without it must not import it, or Go rejects the unused import.
+    val t3 = IsTrue(t2, strings.Contains(parser, "\t\"unicode/utf8\"\n"))
+    IsFalse(t3, strings.Contains(nativeFiles(exprGrammar).Get("expr_parser.go").GetOrElse(""), "\"unicode/utf8\""))
 }
 
 func TestNativeAccessorNamesAvoidHandleMethods(t T) T {

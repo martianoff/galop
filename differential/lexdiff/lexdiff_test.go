@@ -281,7 +281,7 @@ func nativeList(src string, line, column int) lexed {
 		r.errors = append(r.errors, fmt.Sprintf("%d:%d %s", e.Line, e.Column, e.Msg))
 	}
 	render := func(t nativegala.GalaToken, channel int32) string {
-		return fmt.Sprintf("type=%d text=%q channel=%d at %d:%d", t.Type, t.Text(ts.Src), channel, t.Line, t.Column)
+		return fmt.Sprintf("type=%d text=%q channel=%d at %d:%d", t.Type, t.Text(src), channel, t.Line, t.Column)
 	}
 	h := 0
 	for i, t := range ts.Tokens {
@@ -307,16 +307,27 @@ func TestNativeCorpus(t *testing.T) { corpusAndVariants(t, sameNative) }
 // TestNativeCases is TestCases for the native lexer.
 func TestNativeCases(t *testing.T) { allCases(t, sameNative) }
 
-// TestNativeSrc checks the text the native tokens index: valid UTF-8 as
-// given, not copied; anything else decoded as ANTLR's input stream decodes it.
-func TestNativeSrc(t *testing.T) {
-	for _, src := range []string{"val é = 1 // ß\n", "a\x94b", "x \xe2\x82"} {
+// TestNativeText checks that native tokens index the input's own bytes, and
+// that a token's text is ANTLR's: a slice of the input, not a copy, where the
+// token is valid UTF-8, and U+FFFD for each invalid byte otherwise.
+func TestNativeText(t *testing.T) {
+	for _, src := range []string{"val é = 1 // ß\n", "val s = \"a\x94b\" // é\xe2\x82\n", "x \xe2\x82"} {
 		ts := nativegala.GalaLex(src)
-		switch {
-		case ts.Src != string([]rune(src)):
-			t.Errorf("%q: Src is %q, want %q", src, ts.Src, string([]rune(src)))
-		case utf8.ValidString(src) && unsafe.StringData(ts.Src) != unsafe.StringData(src):
-			t.Errorf("%q: valid input was copied", src)
+		if ts.Src != src || unsafe.StringData(ts.Src) != unsafe.StringData(src) {
+			t.Errorf("%q: Src is not the input", src)
+		}
+		toks := append([]nativegala.GalaToken(nil), ts.Tokens[:len(ts.Tokens)-1]...) // all but EOF
+		for _, h := range ts.Hidden {
+			toks = append(toks, h.GalaToken)
+		}
+		for _, tok := range toks {
+			raw, text := src[tok.Start:tok.End], tok.Text(src)
+			switch {
+			case text != string([]rune(raw)):
+				t.Errorf("%q: token %q has text %q, want %q", src, raw, text, string([]rune(raw)))
+			case utf8.ValidString(raw) && unsafe.StringData(text) != unsafe.StringData(raw):
+				t.Errorf("%q: the text of valid token %q is a copy", src, raw)
+			}
 		}
 	}
 }

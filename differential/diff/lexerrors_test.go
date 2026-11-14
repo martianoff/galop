@@ -29,7 +29,7 @@ var invalidUTF8 = []string{"\x94", "\xff", "\x80", "\xe2\x82"}
 // also mutates it (see mutate.Mutate), so that lexical and syntax errors mix.
 // Each break puts text where a token starts or ends, inside a token, at the
 // end of a line or at the end of the input: one of strayChars, a run of them,
-// or an opener left unclosed.
+// an opener left unclosed, or bytes that are not valid UTF-8.
 func withStrayChars(r *rand.Rand, src string) string {
 	if r.Intn(2) == 0 {
 		src = mutate.Mutate(r, src)
@@ -70,15 +70,9 @@ func withStrayChars(r *rand.Rand, src string) string {
 		case 0:
 			text = openers[r.Intn(len(openers))]
 		case 1:
-			// Only the last break may make src invalid UTF-8: the token
-			// offsets index the decoded text then, not src.
-			if n == 1 {
-				text = invalidUTF8[r.Intn(len(invalidUTF8))]
-			} else {
-				text = openers[r.Intn(len(openers))]
-			}
-		case 2:
 			text = strings.Repeat(strayChars[r.Intn(len(strayChars))], 2+r.Intn(3))
+		case 2:
+			text = invalidUTF8[r.Intn(len(invalidUTF8))]
 		default:
 			text = strayChars[r.Intn(len(strayChars))]
 		}

@@ -12,8 +12,9 @@ import (
 // The `native` flavor's token runtime: the token types and the token, token
 // list and error types every native file of a grammar shares. The lexer file
 // carries it; the parser file of a grammar with no lexer rules carries it
-// instead. Every exported name starts with the grammar's prefix (`Gala`), so
-// generated code from several grammars can share a package.
+// instead, and the file imports strconv and unicode/utf8 for it. Every
+// exported name starts with the grammar's prefix (`Gala`), so generated code
+// from several grammars can share a package.
 
 // nativeNames are the names, after the prefix, that the native flavor's
 // generated code declares itself. A token named like one of them (`Tokens`)
@@ -79,9 +80,9 @@ func GoConstBlock(lines Array[ConstLine]) string {
 // goTokenRuntimeTemplate is the token, token list and error types. @X@ is the
 // exported prefix.
 val goTokenRuntimeTemplate = `// @X@Token is one token: its type, the byte span [Start, End) of its text in
-// the lexed text (@X@Tokens.Src), and the line (from 1) and column (in code
-// points, from 0) where it starts, as ANTLR counts them. The EOF token is
-// empty and sits at the end of the input.
+// the source, and the line (from 1) and column (in code points, from 0) where
+// it starts, as ANTLR counts them. The EOF token is empty and sits at the end
+// of the input.
 type @X@Token struct {
 	Type       int32
 	Start, End int32
@@ -89,13 +90,34 @@ type @X@Token struct {
 	Column     int32
 }
 
-// Text is the token's text in src, the Src of the @X@Tokens it came from, or
-// "<EOF>" for the EOF token, as ANTLR shows it.
+// Text is the token's text in src, or "<EOF>" for the EOF token, as ANTLR
+// shows it. Where src is not valid UTF-8, the text is ANTLR's: each byte that
+// is not part of a valid encoding is U+FFFD. The span stays on src's bytes.
 func (t @X@Token) Text(src string) string {
 	if t.Type == @X@EOF {
 		return "<EOF>"
 	}
-	return src[t.Start:t.End]
+	return galop@X@Text(src[t.Start:t.End])
+}
+
+// galop@X@Text is s as ANTLR's input stream reads it: s itself when it is
+// valid UTF-8 (no copy), and otherwise s with each byte that is not part of
+// a valid encoding replaced by U+FFFD, as a conversion to []rune does.
+func galop@X@Text(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	b := make([]byte, 0, len(s)+8)
+	for i := 0; i < len(s); {
+		c, size := utf8.DecodeRuneInString(s[i:])
+		if c == utf8.RuneError && size == 1 {
+			b = append(b, "\uFFFD"...)
+		} else {
+			b = append(b, s[i:i+size]...)
+		}
+		i += size
+	}
+	return string(b)
 }
 
 // @X@TokenName is how ANTLR names token type t in messages: its literal, its
@@ -139,9 +161,6 @@ func (e *@X@SyntaxError) Error() string {
 // A program may change token types before parsing, as long as it keeps the
 // slices' order and the EOF token; the parser reads only Tokens.
 type @X@Tokens struct {
-	// Src is the text the tokens' spans index: the input, or, when the
-	// input is not valid UTF-8, the input with each invalid byte replaced
-	// by U+FFFD, as ANTLR's input stream reads it.
 	Src    string
 	Tokens []@X@Token
 	Hidden []@X@HiddenToken
@@ -191,18 +210,9 @@ func @X@Lex(src string) *@X@Tokens { return @X@LexAt(src, 1, 0) }
 // token recognition error and skips what ANTLR's lexer skips, so it always
 // reaches the end of the input.
 //
-// Input that is not valid UTF-8 is read as ANTLR's input stream reads it:
-// each byte that is not part of a valid encoding, including a truncated
-// sequence at the end, is U+FFFD. The result's Src is then that decoded
-// text, and token spans and text refer to it, not to src. Valid input is
-// not copied.
-//
 // Matching runs a DFA computed when the code was generated (@STATS@).
 // Its tables are immutable, so lexing on many goroutines at once is safe.
 func @X@LexAt(src string, line, column int) *@X@Tokens {
-	if !utf8.ValidString(src) {
-		src = string([]rune(src))
-	}
 	ts := &@X@Tokens{Src: src, Tokens: make([]@X@Token, 0, len(src)/4+1)}
 	at := @P@Pos{line: line, colBase: -column}
 	var m @P@Result
@@ -255,7 +265,7 @@ func (ts *@X@Tokens) recognitionError(start, stop @P@Pos) {
 		_, size := @P@At(ts.Src, end)
 		end += size
 	}
-	ts.Errors = append(ts.Errors, @X@SyntaxError{start.line, start.column(), "token recognition error at: '" + ts.Src[start.off:end] + "'"})
+	ts.Errors = append(ts.Errors, @X@SyntaxError{start.line, start.column(), "token recognition error at: '" + galop@X@Text(ts.Src[start.off:end]) + "'"})
 	ts.ErrorAt = append(ts.ErrorAt, int32(len(ts.Tokens)))
 }
 
