@@ -314,6 +314,9 @@ func TestNativeTokensWithoutEOF(t *testing.T) {
 		for cut := 0; cut < len(ts.Tokens); cut++ {
 			short := *ts
 			short.Tokens = ts.Tokens[:cut]
+			if ts.Texts != nil {
+				short.Texts = ts.Texts[:cut]
+			}
 			want := "line 1:0 the tokens do not end with EOF"
 			if cut > 0 {
 				last := ts.Tokens[cut-1]

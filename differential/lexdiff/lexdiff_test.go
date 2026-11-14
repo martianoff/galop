@@ -141,7 +141,8 @@ func variants(src string) map[string]string {
 		inside("comment", ts.Hidden[i].Start+2) // after "//"
 	}
 	if i := slices.IndexFunc(ts.Tokens, func(t nativegala.GalaToken) bool { return t.Type == nativegala.GalaSTRING }); i >= 0 {
-		inside("string", ts.Tokens[i].Start+1) // after the opening quote
+		t := ts.Tokens[i]
+		inside("string", t.Start+int32(strings.IndexByte(src[t.Start:t.End], '"'))+1) // after the opening quote
 	}
 	v["truncated at the end"] = src + "\xe2\x82"
 	v["truncated in a comment at the end"] = src + "// €\xe2\x82"

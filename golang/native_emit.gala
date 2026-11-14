@@ -465,7 +465,7 @@ func (p *PARSER) fail(msg string) {
 	tok := p.ts.Tokens[p.pos]
 	text := "<EOF>"
 	if tok.Type != @X@EOF {
-		text = "'" + tok.Text(p.ts.Src) + "'"
+		text = "'" + p.ts.Text(p.pos) + "'"
 	}
 	panic(&@X@SyntaxError{Line: int(tok.Line), Column: int(tok.Column), Msg: msg + text})
 }

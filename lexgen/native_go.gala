@@ -167,7 +167,9 @@ type @X@Tokens struct {
 	// Texts and HiddenTexts are, for input that is not valid UTF-8, the text
 	// of each of Tokens and of Hidden as ANTLR reads it (see @X@Token.Text);
 	// nil otherwise. The lexer and the converter from ANTLR's trees fill them,
-	// so that Text and HiddenText need no check.
+	// so that Text and HiddenText need no check. They are index-aligned with
+	// Tokens and Hidden: a program that reslices or edits those slices must
+	// do the same to these (or call ReadTexts again).
 	Texts       []string
 	HiddenTexts []string
 }
@@ -176,7 +178,7 @@ type @X@Tokens struct {
 // slice of Src, or for input that is not valid UTF-8 Texts[i]. Prefer it to
 // @X@Token.Text.
 func (ts *@X@Tokens) Text(i int) string {
-	if ts.Texts != nil {
+	if i < len(ts.Texts) {
 		return ts.Texts[i]
 	}
 	t := &ts.Tokens[i]
@@ -190,7 +192,7 @@ func (ts *@X@Tokens) Text(i int) string {
 // comment, the slice of Src, or for input that is not valid UTF-8
 // HiddenTexts[i].
 func (ts *@X@Tokens) HiddenText(i int) string {
-	if ts.HiddenTexts != nil {
+	if i < len(ts.HiddenTexts) {
 		return ts.HiddenTexts[i]
 	}
 	t := &ts.Hidden[i]
@@ -223,6 +225,12 @@ func (ts *@X@Tokens) fillTexts() {
 // HiddenBefore is the off-channel tokens between token i-1 and token i (all
 // those before token 0 for i == 0): the comments in front of token i.
 func (ts *@X@Tokens) HiddenBefore(i int) []@X@HiddenToken {
+	lo, end := ts.hiddenRange(i)
+	return ts.Hidden[lo:end]
+}
+
+// hiddenRange is where HiddenBefore(i) lies in Hidden: Hidden[lo:end].
+func (ts *@X@Tokens) hiddenRange(i int) (lo, end int) {
 	lo, hi := 0, len(ts.Hidden)
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
@@ -232,11 +240,11 @@ func (ts *@X@Tokens) HiddenBefore(i int) []@X@HiddenToken {
 			hi = mid
 		}
 	}
-	end := lo
+	end = lo
 	for end < len(ts.Hidden) && int(ts.Hidden[end].Next) == i {
 		end++
 	}
-	return ts.Hidden[lo:end]
+	return lo, end
 }
 `
 
