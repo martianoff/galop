@@ -9,6 +9,7 @@ import (
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/guess"
+    "github.com/martianoff/galop/repair"
 )
 
 // Transition kinds in the emitted tables. Actions and predicates are epsilon
@@ -227,6 +228,9 @@ func errorTables(e env) string {
         // its Parse function passes it; for callers that drive a parse
         // themselves (the differential harness counts a parse's work).
         goSlice(s"${x}RuleRepairs", "bool", ArrayTabulate(a.RuleStart.Size(), (r) => s"${e.repairPlan.Repairs(r)}")),
+        // Whether each rule ends by matching EOF; a parse of one that does not
+        // runs in LL mode from its first pass (see llFirst).
+        goSlice(s"${x}RuleEndsWithEOF", "bool", e.rules.Map((r) => s"${repair.EndsWithEOF(e.rules, r)}")),
         goSlice(s"${x}DecisionKind", "uint8", a.Decisions.Map((d) => s"${decisionKindCode(d.Kind)}")),
         goSlice(s"${x}DecisionSetAfter", "int32", a.Decisions.Map((d) => s"${if (isSetDecision(byDecision.Get(d.Id))) setAfter(a, d.State) else -1}")),
         goSlice(s"${x}DecisionLL1", "bool", ll1.Map((b) => s"$b")),

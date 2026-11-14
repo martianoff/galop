@@ -128,3 +128,46 @@ func TestParseAtMatchesANTLR(t *testing.T) {
 	}
 	t.Logf("%d expressions re-parsed at their positions", checked)
 }
+
+// TestExpressionEndMatchesANTLR parses expressions followed by input that
+// cannot continue them, where ANTLR's full-context prediction prefers the
+// alternative that reads further: once a longer alternative reaches the end
+// of the entry rule, a shorter one that ended it earlier is dropped.
+func TestExpressionEndMatchesANTLR(t *testing.T) {
+	for _, in := range []string{
+		"a {} b",
+		"strt {}\nfoo",
+		"strt {}\nfunc (m Multiply)",
+		"a {}; b",
+		"a {}",
+		"a {} )",
+		"a {x: 1} b",
+		"a.b[c] {} d",
+	} {
+		want := antlrAt(in, 1, 0)
+		for _, p := range []struct {
+			name string
+			got  atResult
+		}{{"antlr flavor", galopAt(in, 1, 0)}, {"native", nativeAt(in, 1, 0)}} {
+			g := p.got
+			switch {
+			case want.err != "" || g.err != "":
+				if (want.err == "") != (g.err == "") {
+					t.Errorf("%q: %s error %q, ANTLR %q (ANTLR tree %s)", in, p.name, g.err, want.err, want.tree)
+				}
+			case g.tree != want.tree:
+				t.Errorf("%q: %s tree %s, ANTLR %s", in, p.name, g.tree, want.tree)
+			case g.next != want.next:
+				t.Errorf("%q: %s stops before token type %d, ANTLR %d", in, p.name, g.next, want.next)
+			}
+		}
+		// Without an error, the recovering parse returns the Parse function's tree
+		// and no errors.
+		if want.err == "" {
+			root, errs := nativegala.ParseExpressionWithRecovery(nativegala.TokensAt(in, 1, 0))
+			if errs != nil || root.ToStringTree() != want.tree {
+				t.Errorf("%q: the recovering parse gives %s with errors %v, ANTLR %s", in, root.ToStringTree(), errs, want.tree)
+			}
+		}
+	}
+}

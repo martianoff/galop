@@ -77,10 +77,19 @@ func @X@ParseWithRecovery(ts *@X@Tokens, rule int) (@X@NodeRef, []@X@ParseError)
 	p := newPARSER(ts)
 	p.keepErr = true
 	t, root, err := p.run(PFXRuleFuncs[rule], PFXRuleStartState[rule], PFXRuleRepairs[rule])
+	if err != nil {
+		rt, rroot, errs := p.recoverParse(rule)
+		if len(errs) > 0 {
+			return @X@NodeRef{rt, rroot}, errs
+		}
+		// ANTLR reports no error: its prediction fell back on an alternative
+		// where the parse's prediction failed (see deadEnd). The Parse function's
+		// run takes those, and its tree is the one to return.
+		if t, root, err = newPARSER(ts).run(PFXRuleFuncs[rule], PFXRuleStartState[rule], PFXRuleRepairs[rule]); err != nil {
+			return @X@NodeRef{rt, rroot}, errs
+		}
+	}
 	switch {
-	case err != nil:
-		t, root, errs := p.recoverParse(rule)
-		return @X@NodeRef{t, root}, errs
 	case len(ts.ErrorAt) > 0 && int(ts.ErrorAt[len(ts.ErrorAt)-1]) <= t.Next:
 		// ANTLR reads at least to Next, so it reports every token
 		// recognition error.
