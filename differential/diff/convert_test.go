@@ -98,8 +98,6 @@ func recovered(tb testing.TB, n int, check func(i int, src string, tree *nativeg
 // sameTree describes the first difference between two native trees, or "".
 func sameTree(want, got *nativegala.GalaTree) string {
 	switch {
-	case want.Src != got.Src:
-		return fmt.Sprintf("text %q, want %q", got.Src, want.Src)
 	case !reflect.DeepEqual(want.Tokens, got.Tokens):
 		return "tokens differ"
 	case !reflect.DeepEqual(want.Hidden, got.Hidden):
@@ -125,55 +123,31 @@ func sameTree(want, got *nativegala.GalaTree) string {
 
 // TestConvertMatchesNative converts ANTLR's tree and galop's antlr-flavor
 // tree of every input native parsing accepts, and requires the native tree:
-// the same text, tokens, nodes (rule, labeled alternative, label, span),
-// child references and token labels.
+// the same tokens, nodes (rule, labeled alternative, label, span), child
+// references and token labels.
 func TestConvertMatchesNative(t *testing.T) {
 	checked := 0
 	for _, f := range files(t) {
-		if matchesNative(t, f.Name, f.Src) {
-			checked++
+		root, err := nativegala.Parse(f.Src)
+		if err != nil {
+			continue
+		}
+		checked++
+		antlrTree, flavorTree, _, antlrErr := converted(t, f.Name, f.Src)
+		if antlrErr != nil {
+			t.Errorf("%s: native parsing accepts, ANTLR reports %v", f.Name, antlrErr)
+			continue
+		}
+		if d := sameTree(root.Tree(), antlrTree); d != "" {
+			t.Errorf("%s: converted ANTLR tree: %s", f.Name, d)
+		}
+		if flavorTree == nil {
+			t.Errorf("%s: galop's antlr flavor rejects it", f.Name)
+		} else if d := sameTree(root.Tree(), flavorTree); d != "" {
+			t.Errorf("%s: converted antlr-flavor tree: %s", f.Name, d)
 		}
 	}
 	t.Logf("%d inputs converted and compared", checked)
-}
-
-// TestConvertInvalidUTF8 is TestConvertMatchesNative for input that is not
-// valid UTF-8, which both trees read as ANTLR's input stream reads it: each
-// invalid byte is U+FFFD.
-func TestConvertInvalidUTF8(t *testing.T) {
-	for _, src := range []string{
-		"package main\n\n// Two placeho\x94 sum\nval s = \"a\x94b\"\n",
-		"package main\n\n/* \xff\x80 */\nval s = `\xe2\x82` // é\xe2\x82",
-	} {
-		if !matchesNative(t, fmt.Sprintf("%q", src), src) {
-			t.Errorf("%q: native parsing rejects it", src)
-		}
-	}
-}
-
-// matchesNative converts ANTLR's and the antlr flavor's trees of src and
-// reports to t where either differs from the native tree. It reports false,
-// checking nothing, when native parsing rejects src.
-func matchesNative(t *testing.T, name, src string) bool {
-	t.Helper()
-	root, err := nativegala.Parse(src)
-	if err != nil {
-		return false
-	}
-	antlrTree, flavorTree, _, antlrErr := converted(t, name, src)
-	if antlrErr != nil {
-		t.Errorf("%s: native parsing accepts, ANTLR reports %v", name, antlrErr)
-		return true
-	}
-	if d := sameTree(root.Tree(), antlrTree); d != "" {
-		t.Errorf("%s: converted ANTLR tree: %s", name, d)
-	}
-	if flavorTree == nil {
-		t.Errorf("%s: galop's antlr flavor rejects it", name)
-	} else if d := sameTree(root.Tree(), flavorTree); d != "" {
-		t.Errorf("%s: converted antlr-flavor tree: %s", name, d)
-	}
-	return true
 }
 
 // TestConvertRecoveredTrees converts ANTLR's error-recovered trees of

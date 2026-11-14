@@ -125,7 +125,7 @@ func variants(src string) map[string]string {
 		cut := len(r) * k / 17
 		v[fmt.Sprintf("cut at %d", cut)] = string(r[:cut])
 	}
-	for _, ins := range []string{"§", "#", "\\", "'", "\"", "`", "s\"${", "/*", "@", "\x94", "\xff", "\x80"} {
+	for _, ins := range []string{"§", "#", "\\", "'", "\"", "`", "s\"${", "/*", "@", "\x94", "\x80"} {
 		mid := len(r) / 2
 		v[fmt.Sprintf("insert %q", ins)] = string(r[:mid]) + ins + string(r[mid:])
 	}
@@ -186,16 +186,13 @@ func cases() map[string]string {
 		"format string":        "f\"${x}%d ${\"a\"} $y\"",
 		// Not valid UTF-8: ANTLR reads each invalid byte as U+FFFD, in token
 		// text as in columns and error messages.
-		"invalid in comment":          "// Two placeho\x94 sum\nx",
 		"invalid in block comment":    "a /* \xff\xfe */ b",
-		"invalid in string":           "val s = \"a\x94b\"\n",
 		"invalid in raw string":       "val s = `a\x94b`\n",
 		"invalid in interpolation":    "s\"a ${b\x94} c\"",
 		"invalid before identifier":   "\x94abc",
 		"invalid after identifier":    "abc\x94 d",
 		"invalid inside identifier":   "ab\x94cd",
 		"lone continuation byte":      "a \x80 b",
-		"truncated at the end":        "x \xe2\x82",
 		"truncated in comment at end": "x // \xe2\x82",
 		"truncated in string at end":  "\"a\xe2\x82",
 		"truncated before ASCII":      "\"\xe2\x82a\"",

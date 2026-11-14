@@ -100,24 +100,14 @@ func (t @X@Token) Text(src string) string {
 	return galop@X@Text(src[t.Start:t.End])
 }
 
-// galop@X@Text is s as ANTLR's input stream reads it: s itself when it is
-// valid UTF-8 (no copy), and otherwise s with each byte that is not part of
-// a valid encoding replaced by U+FFFD, as a conversion to []rune does.
+// galop@X@Text is s as ANTLR's input stream reads it, which converts the
+// input to []rune: s itself when it is valid UTF-8 (no copy), and otherwise
+// s with each byte that is not part of a valid encoding replaced by U+FFFD.
 func galop@X@Text(s string) string {
 	if utf8.ValidString(s) {
 		return s
 	}
-	b := make([]byte, 0, len(s)+8)
-	for i := 0; i < len(s); {
-		c, size := utf8.DecodeRuneInString(s[i:])
-		if c == utf8.RuneError && size == 1 {
-			b = append(b, "\uFFFD"...)
-		} else {
-			b = append(b, s[i:i+size]...)
-		}
-		i += size
-	}
-	return string(b)
+	return string([]rune(s))
 }
 
 // @X@TokenName is how ANTLR names token type t in messages: its literal, its
