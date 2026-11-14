@@ -151,12 +151,22 @@ func TestExpressionEndMatchesANTLR(t *testing.T) {
 		}{{"antlr flavor", galopAt(in, 1, 0)}, {"native", nativeAt(in, 1, 0)}} {
 			g := p.got
 			switch {
-			case (want.err == "") != (g.err == ""):
-				t.Errorf("%q: %s error %q, ANTLR %q (ANTLR tree %s)", in, p.name, g.err, want.err, want.tree)
+			case want.err != "" || g.err != "":
+				if (want.err == "") != (g.err == "") {
+					t.Errorf("%q: %s error %q, ANTLR %q (ANTLR tree %s)", in, p.name, g.err, want.err, want.tree)
+				}
 			case g.tree != want.tree:
 				t.Errorf("%q: %s tree %s, ANTLR %s", in, p.name, g.tree, want.tree)
 			case g.next != want.next:
 				t.Errorf("%q: %s stops before token type %d, ANTLR %d", in, p.name, g.next, want.next)
+			}
+		}
+		// Without an error, the recovering parse returns the Parse function's tree
+		// and no errors.
+		if want.err == "" {
+			root, errs := nativegala.ParseExpressionWithRecovery(nativegala.TokensAt(in, 1, 0))
+			if errs != nil || root.ToStringTree() != want.tree {
+				t.Errorf("%q: the recovering parse gives %s with errors %v, ANTLR %s", in, root.ToStringTree(), errs, want.tree)
 			}
 		}
 	}

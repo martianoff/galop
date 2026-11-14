@@ -130,6 +130,10 @@ const (
 // finds nothing to change, LL fails too: at the earliest conflict where no
 // alternative is viable, or where this pass failed.
 func (p *PARSER) llParse(rule @RULE@, repair bool, sllErr error) (@ROOT@, error) {
+	if p.ll {
+		// The failed pass ran in LL mode already (see llFirst).
+		return @ZERO@, sllErr
+	}
 	if repair {
 		if p.rp.seen == 0 {
 			// No conflict before the error: every decision was LL's, so LL
@@ -166,10 +170,6 @@ func (p *PARSER) llParse(rule @RULE@, repair bool, sllErr error) (@ROOT@, error)
 			}
 		}
 		r.on = false
-	}
-	if p.ll {
-		// The failed pass ran in LL mode already (see llFirst).
-		return @ZERO@, sllErr
 	}
 	p.ll = true
 	defer func() { p.ll = false }()

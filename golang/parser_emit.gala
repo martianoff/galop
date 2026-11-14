@@ -145,8 +145,8 @@ func retryCode(e env, root string) string =
 // errorsHook replaces the final parse's syntax error, with its result in
 // variable root, by the one ANTLR reports (see errorsSource); start is the
 // entry rule's start state. Where ANTLR reports none, its prediction fell back
-// on an alternative where the parse's failed (see deadEnd), and the parse runs
-// again in LL mode, taking those.
+// on an alternative where the parse's prediction failed (see deadEnd), and
+// the parse runs again in LL mode, taking those.
 func errorsHook(root string) string =
     s"\n\tif err != nil && !p.keepErr {\n\t\tif err = p.antlrError(start, err); err == nil {\n\t\t\tp.ll = true\n\t\t\t$root, err = p.attempt(rule)\n\t\t}\n\t}"
 

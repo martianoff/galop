@@ -15,7 +15,8 @@ lists every merged pull request.
   `a`). And where ANTLR's prediction finds no viable alternative but falls back on
   one that had already left the decision's rule, the parse takes it too and can
   stop early without an error (`a {}; b` is `a`), instead of reporting "no viable
-  alternative". Parses of rules that end with EOF are unchanged.
+  alternative"; `Parse<Rule>WithRecovery` then returns that tree and no errors.
+  Parses of rules that end with EOF give the same results as before.
 
 ## 0.3.1
 
