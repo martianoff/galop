@@ -318,29 +318,30 @@ func TestNativeCases(t *testing.T) { allCases(t, sameNative) }
 // TestNativeText checks the native tokens' text on every case: Src is the
 // input itself, not a copy, and the spans index its bytes; a token's text,
 // through Token.Text and through Tokens.Text, is the conversion to []rune
-// of its bytes that ANTLR's input stream makes, and for valid UTF-8 it is a
-// slice of the input, not a copy.
+// of its bytes that ANTLR's input stream makes. Valid text is a slice of
+// the input, not a copy: always from Token.Text, and from Tokens.Text when
+// the whole input is valid (on other input it converts every token).
 func TestNativeText(t *testing.T) {
 	for name, src := range cases() {
 		ts := nativegala.GalaLex(src)
 		if ts.Src != src || unsafe.StringData(ts.Src) != unsafe.StringData(src) {
 			t.Errorf("%s: Src is not the input", name)
 		}
-		check := func(tok nativegala.GalaToken, text string) {
+		check := func(tok nativegala.GalaToken, text string, slice bool) {
 			raw := src[tok.Start:tok.End]
 			switch {
 			case text != string([]rune(raw)):
 				t.Errorf("%s: token %q has text %q, want %q", name, raw, text, string([]rune(raw)))
-			case utf8.ValidString(raw) && raw != "" && unsafe.StringData(text) != unsafe.StringData(raw):
+			case slice && utf8.ValidString(raw) && raw != "" && unsafe.StringData(text) != unsafe.StringData(raw):
 				t.Errorf("%s: the text of valid token %q is a copy", name, raw)
 			}
 		}
 		for i, tok := range ts.Tokens[:len(ts.Tokens)-1] { // all but EOF
-			check(tok, tok.Text(src))
-			check(tok, ts.Text(i))
+			check(tok, tok.Text(src), true)
+			check(tok, ts.Text(i), utf8.ValidString(src))
 		}
 		for _, h := range ts.Hidden {
-			check(h.GalaToken, h.Text(src))
+			check(h.GalaToken, h.Text(src), true)
 		}
 	}
 }
