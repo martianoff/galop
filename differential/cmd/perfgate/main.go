@@ -168,24 +168,28 @@ func measureTimes(r perf.Report, srcs []string, name, file string) {
 				warmMS[phase] = append(warmMS[phase], warm(srcs, phases[phase], workers, reps[phase]))
 			}
 		}
+		// The lexer's first pass is too short to time well, so each round of
+		// first passes also takes a warm lexer sample: the floor the round's
+		// first passes are compared with.
+		var floorMS []float64
 		for range *runs {
 			for _, phase := range timedPhases {
 				firstMS[phase] = append(firstMS[phase], first(phase, workers, file))
 			}
+			floorMS = append(floorMS, warm(srcs, phases["lexer"], workers, reps["lexer"]))
 		}
 		for _, phase := range timedPhases {
 			w, f := median(warmMS[phase]), median(firstMS[phase])
 			key := fmt.Sprintf("%s/w%d/%s/", name, workers, phase)
 			r.Info[key+"warm-ms"], r.Info[key+"first-ms"], r.Info[key+"gap-ms"] = w, f, f-w
 		}
-		// The lexer's warm time is the floor every parse pays; its first pass
-		// is too short to time well, so both of galop's times are compared
-		// with the warm one.
-		lexer := median(warmMS["lexer"])
+		// The lexer's warm time is the floor every parse pays; both of galop's
+		// times are compared with a warm lexer sample of the same round.
+		floors := map[string][]float64{"warm": warmMS["lexer"], "first": floorMS}
 		for when, ms := range map[string]map[string][]float64{"warm": warmMS, "first": firstMS} {
 			key := fmt.Sprintf("%s/w%d/%s/", name, workers, when)
 			r.Ratios[key+"galop-vs-antlr"] = medianRatio(ms["native"], ms["antlr"])
-			r.Ratios[key+"galop-vs-lexer"] = median(ms["native"]) / lexer
+			r.Ratios[key+"galop-vs-lexer"] = medianRatio(ms["native"], floors[when])
 		}
 	}
 }
