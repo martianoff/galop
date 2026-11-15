@@ -57,3 +57,16 @@ func TestExitIntoLeftRecursiveRuleHitsPrecedencePredicates(t T) T =
     // f's loop exit ends f, which e calls last in its primary alternative:
     // e's loop entry, and its predicates, come next.
     Eq(t, hitsPerAlt("grammar A;\ns : e EOF ;\ne : e '*' e | f ;\nf : X (Y X)* ;\nX : 'x' ; Y : 'y' ;\n", "f", "(Y X)*"), "false true")
+
+func TestUnexpectedTokensPastTheFirstGoToRuntime(t T) T {
+    // e is an entry rule without EOF, and '>' starts two of its operators,
+    // so the loop entry leaves some inputs to runtime prediction. A token no
+    // case expects past the first goes there too, not to a syntax error:
+    // ANTLR's prediction can settle before it (`x > y z` parses `x > y`).
+    val (a, an) = analyzed("grammar A;\ne : e '>' X '>' e | e '>' e | X | Y ;\nX : 'x' ; Y : 'y' ;\n")
+    Eq(
+        t,
+        show(a, planFor(a, an, "e", "('>' X '>' e | '>' e)*").Lookahead),
+        "[<=3:{EOF:2 T__0:{X Y:{EOF T__0:?1,2 :?} :?}} <=4:{EOF:2 T__0:{X:{EOF:2 T__0:?1,2 :?} Y:2 :?}} else:2]",
+    )
+}

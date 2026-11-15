@@ -536,3 +536,12 @@ func TestLeftRecursivePredictionTables(t T) T {
 
 func TestPredictAtOnlyWithLeftRecursion(t T) T =
     IsFalse(t, strings.Contains(parserOf(generate(exprGrammar, EmptyArray[g4.OptionEntry]())), "predictAt("))
+
+// A precedence decision decided statically still meets ANTLR's fallbacks at
+// a dead end, which are kept per precedence.
+func TestPrecedenceDecisionsRecordTheirPrecedence(t T) T {
+    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry](), leftRecursion = true))
+    val heads = ArrayFromSlice(strings.Split(code, "(_p int32) int {\n"))
+    val t1 = IsTrue(t, heads.Size() > 1)
+    IsTrue(t1, heads.Drop(1).ForAll((h) => strings.HasPrefix(h, "\tp.prec = _p\n")))
+}

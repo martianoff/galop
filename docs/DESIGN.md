@@ -231,9 +231,10 @@ states the same way.
 
 Checked against ANTLR 4.13.1: 20,000 random sentences of a grammar with every
 kind of alternative (prefix, suffix, binary, right-associative, ternary, labels)
-and 9,626 mutated, invalid ones give ANTLR's tree and ANTLR's first error; so do
-Milvus's 1,613 filter expressions, ten-expression conjunctions of them, and 3,399
-mutated, invalid ones.
+and 20,000 mutated ones give ANTLR's tree and ANTLR's first error, or no error
+where ANTLR reports none; so do Milvus's 1,613 filter expressions, ten-expression
+conjunctions of them, and 8,065 mutated ones (Milvus's entry rule has no EOF, so
+ANTLR accepts many of them by stopping early).
 
 The phases, each tested against ANTLR before the next:
 

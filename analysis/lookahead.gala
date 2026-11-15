@@ -220,10 +220,15 @@ struct decider(
     // entered, the rule not left) passes when its level is at least this,
     // and fails otherwise, as ANTLR evaluates it in prediction. Unset, such a
     // predicate makes the decision adaptive.
-    precedence Option[int] = None[int](),
+    precedence Option[int] = None(),
 )
 
-func newDecider(g grammarInfo, maxK int, trackExit bool = true, precedence Option[int] = None[int]()) decider =
+func newDecider(
+    g grammarInfo,
+    maxK int,
+    trackExit bool = true,
+    precedence Option[int] = None(),
+) decider =
     decider(
         g,
         maxK,
@@ -510,7 +515,11 @@ func (g grammarInfo) planPlain(dec atn.Decision, maxK int) DecisionPlan {
 // lookaheadTree is the static lookahead tree of dec, and whether static
 // lookahead applies at all (no predicate before the first token, no runaway
 // call stack); when it does not, the tree is Adaptive over every alternative.
-func (g grammarInfo) lookaheadTree(dec atn.Decision, maxK int, precedence Option[int] = None[int]()) Tuple[Lookahead, bool] {
+func (g grammarInfo) lookaheadTree(
+    dec atn.Decision,
+    maxK int,
+    precedence Option[int] = None(),
+) Tuple[Lookahead, bool] {
     val d = newDecider(g, maxK, true, precedence)
     val start = decisionSeed(g, dec, d)
     val r = d.closure(start.Starts, 0)

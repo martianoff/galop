@@ -16,7 +16,7 @@ import (
 // rule, ascending and distinct; empty unless the rule is a rewritten
 // left-recursive one.
 func (g grammarInfo) precedenceLevels(dec atn.Decision) Array[int] =
-    g.a.States.Filter(_.Rule == dec.Rule).FlatMap((s atn.State) => s.Out.Collect({
+    g.a.States.Filter(_.Rule == dec.Rule).FlatMap((s) => s.Out.Collect({
         case atn.PrecedencePredicate(_, _, level) => level
     })).Distinct().Sorted()
 
@@ -24,13 +24,16 @@ func (g grammarInfo) precedenceLevels(dec atn.Decision) Array[int] =
 // levels are levels: one lookahead per range of precedences, up to the lowest
 // level (every predicate passes), up to each next level, and above the
 // highest (none passes). At the rule's loop entry, the operators both ways
-// out accept are resolved as ANTLR resolves them (continueOnOperators). When
-// every range gets the same lookahead, the plan is that one lookahead.
+// out accept are resolved as ANTLR resolves them (continueOnOperators). A tree
+// that leaves some inputs to runtime prediction sends it any unexpected token
+// past the first too (deferUnexpected). When every range gets the same
+// lookahead, the plan is that one lookahead.
 func (g grammarInfo) planByPrecedence(dec atn.Decision, maxK int, levels Array[int]) DecisionPlan {
     val ranges = levels.Append(levels.Last() + 1)
     val trees = ranges.Map((p) => {
         val (tree, _) = g.lookaheadTree(dec, maxK, Some(p))
-        if (dec.Precedence) g.continueOnOperators(dec, tree) else tree
+        val resolved = if (dec.Precedence) g.continueOnOperators(dec, tree) else tree
+        if (NeedsRuntime(resolved)) deferUnexpected(resolved) else resolved
     })
     val first = render(trees.Head())
     val l = if (trees.ForAll((t) => render(t) == first)) trees.Head() else ByPrecedence(levels, trees)
@@ -110,36 +113,32 @@ struct lookStep(State int, Returns List[int], Called List[int])
 // is already inside, and at the end of a rule entered from elsewhere goes on
 // after every call of the rule. ANTLR's code generator makes no LL(1) switch
 // of a decision with such an alternative: it predicts adaptively.
-func HitsPrecedencePredicate(a atn.ATN, from int) bool {
-    val seen = m.EmptyHashSet[string]()
-    var work = ListOf(lookStep(from, EmptyList[int](), EmptyList[int]()))
-    var hit = false
-    for work.NonEmpty() && !hit {
-        val step = work.Head()
-        work = work.Tail()
+func HitsPrecedencePredicate(a atn.ATN, from int) bool =
+    hitsPrecedencePredicate(a, ListOf(lookStep(from, EmptyList[int](), EmptyList[int]())), m.EmptyHashSet[string]())
+
+// hitsPrecedencePredicate goes on with HitsPrecedencePredicate's work list;
+// seen holds the steps already visited.
+func hitsPrecedencePredicate(a atn.ATN, work List[lookStep], seen Ptr[m.HashSet[string]]) bool = work match {
+    case Cons(step, rest) => {
         val st = a.State(step.State)
-        if seen.Add(s"${step.State}/${step.Returns.MkString(",")}") {
-            if st.IsRuleStop() {
-                work = step.Returns match {
-                    case Cons(ret, rest) => work.Prepend(lookStep(ret, rest, step.Called.Filter(_ != st.Rule)))
-                    case _ => a.Callers(st.Rule).FoldLeft(work, (w, c) => w.Prepend(lookStep(c.Follow, step.Returns, step.Called)))
-                }
-            } else {
-                hit = st.Out.Exists((t) => t match {
-                    case atn.PrecedencePredicate(_, _, _) => true
-                    case _ => false
-                })
-                work = st.Out.FoldLeft(work, (w, t) => t match {
-                    case atn.RuleCall(target, rule, follow) =>
-                        if (step.Called.Contains(rule)) w else w.Prepend(lookStep(target, step.Returns.Prepend(follow), step.Called.Prepend(rule)))
-                    case atn.PrecedencePredicate(_, _, _) => w
-                    case _ if t.IsEpsilon() => w.Prepend(lookStep(t.Target(), step.Returns, step.Called))
-                    case _ => w
-                })
-            }
-        }
+        if (!seen.Add(s"${step.State}/${step.Returns.MkString(",")}")) hitsPrecedencePredicate(a, rest, seen)
+        else if (st.IsRuleStop()) hitsPrecedencePredicate(a, step.Returns match {
+            case Cons(ret, outer) => rest.Prepend(lookStep(ret, outer, step.Called.Filter(_ != st.Rule)))
+            case _ => a.Callers(st.Rule).FoldLeft(rest, (w, c) => w.Prepend(lookStep(c.Follow, step.Returns, step.Called)))
+        }, seen)
+        else if (st.Out.Exists((t) => t match {
+            case atn.PrecedencePredicate(_, _, _) => true
+            case _ => false
+        })) true
+        else hitsPrecedencePredicate(a, st.Out.FoldLeft(rest, (w, t) => t match {
+            case atn.RuleCall(target, rule, follow) =>
+                if (step.Called.Contains(rule)) w
+                else w.Prepend(lookStep(target, step.Returns.Prepend(follow), step.Called.Prepend(rule)))
+            case _ if t.IsEpsilon() => w.Prepend(lookStep(t.Target(), step.Returns, step.Called))
+            case _ => w
+        }), seen)
     }
-    hit
+    case _ => false
 }
 
 // tokensAfter is what a parse can read next from state s, within s's rule,

@@ -357,7 +357,12 @@ func ruleBody(e env, r atn.RuleIR, alt func(atn.AltIR, string) Array[string]) Ar
 // label numbering (a label's number is its position in Labels plus one).
 // A rewritten left-recursive rule's steps also need the rule's index (Rule)
 // and its alternative labels (AltLabels, numbered as Labels are).
-struct scope(CtxType string = "", Labels Array[string] = EmptyArray[string](), Rule int = -1, AltLabels Array[string] = EmptyArray[string]())
+struct scope(
+    CtxType string = "",
+    Labels Array[string] = EmptyArray[string](),
+    Rule int = -1,
+    AltLabels Array[string] = EmptyArray[string](),
+)
 
 // precedenceDecision says whether decision d picks by the precedence its rule
 // was called with (analysis.ByPrecedence): its function takes it.
@@ -492,7 +497,10 @@ func emitDecision(e env, plan analysis.DecisionPlan) string {
         )).Append("\t}"))
         case l => (if (e.precedenceDecision(d)) "_p int32" else "", emitLookahead(e, d, l, "\t"))
     }
-    s"// decide$d decides ${e.ruleName(plan.Decision.Rule)}: $text\nfunc (p *${e.parserType}) decide$d($params) int {\n" + body.MkString("\n") + "\n}\n"
+    // A dead end looks for ANTLR's fallback at the precedence the rule was
+    // called with (see deadEnd).
+    val withPrec = if (params == "") body else body.Prepend("\tp.prec = _p")
+    s"// decide$d decides ${e.ruleName(plan.Decision.Rule)}: $text\nfunc (p *${e.parserType}) decide$d($params) int {\n" + withPrec.MkString("\n") + "\n}\n"
 }
 
 // emitLookahead emits the code of a lookahead tree. Cases are made disjoint
@@ -502,9 +510,8 @@ func emitLookahead(e env, d int, la analysis.Lookahead, ind string) Array[string
     case analysis.Adaptive(alts) => ArrayOf(ind + runtimeChoice(e, d, alts))
     case analysis.Otherwise() => ArrayOf(ind + runtimeChoice(e, d, allAlts(e, d)))
     case analysis.Automaton(states) => emitAutomaton(e, d, states)
-    // Only a rewritten left-recursive rule has these, and the Go target rejects
-    // such rules until their code generation lands (DESIGN.md, "Left-recursive
-    // rules").
+    // emitDecision generates a precedence decision itself; the analysis never
+    // nests one inside another lookahead.
     case analysis.ByPrecedence(_, _) => ArrayOf(s"${ind}panic(\"galop: precedence decision $d is not generated yet\")")
     case analysis.Switch(depth, cases) => {
         val subject = if (depth == 1) "p.types[p.pos]" else s"p.la($depth)"

@@ -71,7 +71,7 @@ func tables(e env) string {
         ")",
         "",
         s"// ${x}MaxPrec is the largest precedence a rule call passes.",
-        s"const ${x}MaxPrec = ${e.parser.CallPrecedence.FoldLeft(0, (acc, p) => if (p > acc) p else acc)}",
+        s"const ${x}MaxPrec = ${e.parser.CallPrecedence.FoldLeft(0, atn.MaxInt)}",
         "",
         s"// ${x}MaxTokenType is the largest token type; DFA edges are indexed by type + 1.",
         s"const ${x}MaxTokenType = ${e.vocab.MaxType()}",
@@ -159,16 +159,14 @@ func visitClosure(a atn.ATN, loops HashSet[int], s int, acc Tuple[Array[closureI
 // operator, a prefix operator, a ternary's last operand); galop's network
 // puts plain epsilon states between elements, so it follows the path.
 // limit bounds the walk.
-func loopReturn(a atn.ATN, loops HashSet[int], s int, limit int) int {
-    val out = a.State(s).Out
-    if limit == 0 || out.Size() != 1 {
-        return -1
-    }
-    out.Head() match {
+func loopReturn(a atn.ATN, loops HashSet[int], s int, limit int) int = a.State(s).Out match {
+    case Array(t) if limit > 0 => t match {
         case atn.RuleCall(_, _, _) => -1
-        case t if t.IsEpsilon() => if (loops.Contains(t.Target())) t.Target() else loopReturn(a, loops, t.Target(), limit - 1)
+        case _ if t.IsEpsilon() =>
+            if (loops.Contains(t.Target())) t.Target() else loopReturn(a, loops, t.Target(), limit - 1)
         case _ => -1
     }
+    case _ => -1
 }
 
 // bracketTables emits the bracket families for prediction over bracketed
