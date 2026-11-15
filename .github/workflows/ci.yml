@@ -51,6 +51,10 @@ env:
 jobs:
   bazel:
     name: bazel test
+    # actions: write lets the job delete main's older caches after saving.
+    permissions:
+      contents: read
+      actions: write
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -73,14 +77,19 @@ jobs:
       # Bazel's disk cache. setup-bazel's own disk cache keeps the first copy of
       # a key forever, so it went stale; this one gets a fresh key per run,
       # restores the newest copy, and is saved even when the job fails or times
-      # out. Bazel trims it to 2 GB. Only runs on main save it: other branches
-      # and pull requests can read only main's caches, and their saves pushed
-      # main's out of the repository's 10 GB cache quota.
+      # out. Only runs on main save it: other branches and pull requests can
+      # read only main's caches, and their saves pushed main's out of the
+      # repository's 10 GB cache quota. The save keeps only what this run used
+      # (.github/scripts/cache.sh) and then deletes main's older copy, so one
+      # copy of each cache stays and the quota holds them all.
       - uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-disk
           key: bazel-disk-${{ github.run_id }}
           restore-keys: bazel-disk-
+
+      - name: Mark the restored cache unused
+        run: .github/scripts/cache.sh mark ~/.cache/bazel-disk
 
       - name: Build and test
         timeout-minutes: 38
@@ -100,11 +109,22 @@ jobs:
           bazel run //:gazelle
           git diff --exit-code -- '*.bazel'
 
+      - name: Drop cache entries this run did not use
+        if: always()
+        run: .github/scripts/cache.sh trim ~/.cache/bazel-disk
+
       - uses: actions/cache/save@v4
+        id: save
         if: always() && github.ref == 'refs/heads/main'
         with:
           path: ~/.cache/bazel-disk
           key: bazel-disk-${{ github.run_id }}
+
+      - name: Delete main's older Bazel caches
+        if: always() && steps.save.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/cache.sh prune bazel-disk- bazel-disk-${{ github.run_id }}
 
   # The performance gate (docs/FUZZ_AND_PERF.md): counters and wall-clock
   # ratios of galop's parsers for gala.g4, judged against
@@ -264,6 +284,10 @@ jobs:
   cli:
     name: gala test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # actions: write lets the job delete main's older caches after saving.
+    permissions:
+      contents: read
+      actions: write
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -317,6 +341,9 @@ jobs:
           key: gobuild-${{ matrix.os }}-${{ github.run_id }}
           restore-keys: gobuild-${{ matrix.os }}-
 
+      - name: Mark the restored cache unused
+        run: .github/scripts/cache.sh mark "${{ steps.gocache.outputs.dir }}"
+
       - name: Install GALA CLI
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
@@ -346,8 +373,19 @@ jobs:
           gala build -o "$bin" ./cmd/galop
           "./$bin" -check -roundtrip testdata/grammars/*.g4
 
+      - name: Drop cache entries this run did not use
+        if: always()
+        run: .github/scripts/cache.sh trim "${{ steps.gocache.outputs.dir }}"
+
       - uses: actions/cache/save@v4
+        id: save
         if: always() && github.ref == 'refs/heads/main'
         with:
           path: ${{ steps.gocache.outputs.dir }}
           key: gobuild-${{ matrix.os }}-${{ github.run_id }}
+
+      - name: Delete main's older Go caches
+        if: always() && steps.save.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/cache.sh prune gobuild-${{ matrix.os }}- gobuild-${{ matrix.os }}-${{ github.run_id }}
