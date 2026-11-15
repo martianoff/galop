@@ -1,7 +1,6 @@
 package analysis
 
 import (
-    . "martianoff/gala/collection_immutable"
     "martianoff/gala/concurrent"
 
     "github.com/martianoff/galop/atn"

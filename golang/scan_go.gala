@@ -5,7 +5,6 @@ import (
 
     . "martianoff/gala/collection_immutable"
 
-    "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/guess"
 )
 
