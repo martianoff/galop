@@ -5,12 +5,22 @@ gala_binary(
     srcs = ["main.gala"],
     visibility = ["//differential:__subpackages__"],
     deps = [
+        "//analysis",
         "//atn",
+        "//brackets",
+        "//codegen",
         "//diag",  # keep: the generated Go names diag.Diagnostic
         "//g4",
+        "//leftrec",
         "//lexgen",
+        "//repair",
         "//sample",
         "@gala//collection_immutable",
+        "@gala//collection_mutable",
+        "@gala//concurrent",
         "@gala//fs",
+        "@gala//go_interop",
+        "@gala//stream",
+        "@gala//strings",
     ],
 )

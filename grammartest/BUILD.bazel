@@ -10,7 +10,11 @@ gala_library(
     visibility = ["//visibility:public"],
     deps = [
         "//atn",
+        "//diag",
         "//g4",
+        "@gala//collection_immutable",
         "@gala//go_builtins",
+        "@gala//go_interop",
+        "@gala//stream",
     ],
 )
