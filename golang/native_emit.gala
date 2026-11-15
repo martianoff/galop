@@ -93,7 +93,7 @@ func nativeEntry(e env, r atn.RuleIR) string = fill(`// ParseMETHOD parses the t
 // The parse stops after the input RULE matches; Tree().Next is the index of
 // the token after it.
 func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
-	t, root, err := newPARSER(ts).run(RULEREF, START, REPAIR)
+	t, root, err := PFXRun(ts, RULEREF, START, REPAIR)
 	if err != nil {
 		return HANDLE{}, err
 	}
@@ -353,7 +353,7 @@ func PFXParse(ts *@X@Tokens, rule int) (*@X@Tree, int32, error) {
 	if rule < 0 || rule >= len(PFXRuleFuncs) {
 		return nil, -1, &@X@SyntaxError{Msg: "no rule with index " + strconv.Itoa(rule)}
 	}
-	return newPARSER(ts).run(PFXRuleFuncs[rule], PFXRuleStartState[rule], false)
+	return PFXRun(ts, PFXRuleFuncs[rule], PFXRuleStartState[rule], false)
 }
 
 // PFXRuleFuncs are the rule functions, by rule index.
@@ -362,15 +362,50 @@ var PFXRuleFuncs = []func(*PARSER) int32{RULEFUNCS
 
 // newPARSER prepares a parse of the tokens of ts.
 func newPARSER(ts *@X@Tokens) *PARSER {
+	p := &PARSER{}
+	p.init(ts, nil)
+	return p
+}
+
+// init sets p up for a parse of the tokens of ts, with types as the buffer
+// for their types.
+func (p *PARSER) init(ts *@X@Tokens, types []int32) {
 	n := len(ts.Tokens)
-	p := &PARSER{ts: ts, types: make([]int32, n)}
+	p.ts, p.types = ts, slices.Grow(types[:0], n)[:n]
 	for i := range ts.Tokens {
 		p.types[i] = ts.Tokens[i].Type
 	}
 	// Grammars like GALA's have about four nodes and five child references
 	// per token; sizing for that saves growing the arrays.
 	p.tree = &@X@Tree{@X@Tokens: ts, Nodes: make([]@X@NodeData, 0, 4*n+4), Kids: make([]int32, 0, 5*n+4), Read: -1}
-	return p
+}
+
+// PFXParsers keeps parsers between parses: a parser's prediction scratch
+// grows to what the grammar's predictions need, and a fresh parser would grow
+// it again.
+var PFXParsers sync.Pool
+
+// PFXRun parses the tokens of ts as run does, on a pooled parser. The tree
+// it returns shares nothing with the parser.
+func PFXRun(ts *@X@Tokens, rule func(*PARSER) int32, start int32, repair bool) (*@X@Tree, int32, error) {
+	p, _ := PFXParsers.Get().(*PARSER)
+	if p == nil {
+		p = newPARSER(ts)
+	} else {
+		p.reuse(ts)
+	}
+	t, root, err := p.run(rule, start, repair)
+	p.ts, p.tree = nil, nil
+	PFXParsers.Put(p)
+	return t, root, err
+}
+
+// reuse prepares p, which parsed before, for a parse of the tokens of ts as
+// newPARSER does, keeping the capacity of its scratch.
+func (p *PARSER) reuse(ts *@X@Tokens) {
+	types, kids, stack, pred := p.types, p.kids[:0], p.stack[:0], p.pred
+	*p = PARSER{kids: kids, stack: stack, pred: pred}
+	p.init(ts, types)
 }
 
 // run parses with rule, whose start state is start; repair says whether a
