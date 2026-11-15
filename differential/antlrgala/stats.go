@@ -7,7 +7,7 @@ import "github.com/antlr4-go/antlr/v4"
 type Stats = galaGalopStats
 
 // ParseGalopWithStats parses stream with galop's antlr flavor, as
-// NewgalaGalopParser(stream).SourceFile() does, and reports the parse's work.
+// NewgalaGalopParser(stream).ParseSourceFile() does, and reports the parse's work.
 func ParseGalopWithStats(stream antlr.TokenStream) (antlr.ParserRuleContext, Stats, error) {
 	p := NewgalaGalopParser(stream)
 	rule := galaParserRULE_sourceFile

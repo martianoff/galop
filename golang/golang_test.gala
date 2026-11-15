@@ -63,17 +63,26 @@ func TestANTLRFlavorFileNamesAndPackage(t T) T = generate(exprGrammar, antlrDefi
 func TestANTLRFlavorUsesANTLRNames(t T) T {
     val code = parserFile(t)
     val expected = ArrayOf(
+        // The galop parser embeds ANTLR's, which its contexts record as ANTLR's do.
+        "\t*ExprParser\n",
+        "p := &ExprGalopParser{ExprParser: NewExprParser(input), input: input}",
         // ANTLR's context constructors, labeled alternatives and token constants.
-        "NewProgContext(nil, parent, invokingState)",
-        "localctx = NewExprStatContext(nil, localctx)",
-        "localctx = NewAssignContext(nil, localctx)",
+        "NewProgContext(p.ExprParser, parent, invokingState)",
+        "localctx = NewExprStatContext(p.ExprParser, localctx)",
+        "localctx = NewAssignContext(p.ExprParser, localctx)",
         "p.match(localctx, ExprParserID)",
         // Token-number assertions against ANTLR's constants.
         "_ uint = ExprParserID - ",
         // The set label is stored in ANTLR's field.
         "localctx.(*ExprContext).op = tok",
-        // Public entry points return ANTLR's interfaces.
-        "func (p *ExprGalopParser) Prog() (IProgContext, error)",
+        // Public entry points return ANTLR's interfaces: ANTLR's method, which
+        // recovers and reports to the error listeners, and one that stops at
+        // the first error.
+        "func (p *ExprGalopParser) Prog() IProgContext",
+        "func (p *ExprGalopParser) ParseProg() (IProgContext, error)",
+        // Recovery makes ANTLR's contexts and stores ANTLR's label fields.
+        "return NewAssignContext(p.ExprParser, ctx)",
+        "c.op = tok",
     )
     expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
 }
@@ -139,7 +148,7 @@ func TestSingleLabeledAlternative(t T) T {
 r : a=ID # Only ;
 ID : [a-z]+ ;
 `, antlrDefines))
-    val t1 = IsTrue(t, strings.Contains(code, "localctx = NewOnlyContext(nil, localctx)"))
+    val t1 = IsTrue(t, strings.Contains(code, "localctx = NewOnlyContext(p.SParser, localctx)"))
     IsTrue(t1, strings.Contains(code, "localctx.(*OnlyContext).a = tok"))
 }
 

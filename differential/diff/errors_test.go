@@ -25,7 +25,7 @@ var flavors = []struct {
 		return compilerStyle(err)
 	}},
 	{"antlr flavor", func(src string) string {
-		_, err := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).SourceFile()
+		_, err := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).ParseSourceFile()
 		return compilerStyle(err)
 	}},
 }

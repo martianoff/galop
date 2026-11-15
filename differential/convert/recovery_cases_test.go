@@ -29,16 +29,19 @@ func TestRecoveryCases(t *testing.T) {
 			"1:2: missing 'c' at 'd'",
 		},
 	} {
-		wantErrs, wantTree, crashed := recoverANTLR(tc.src)
+		wantErrs, wantExp, wantTree, crashed := recoverANTLR(tc.src)
 		if crashed {
 			t.Fatalf("%s: ANTLR crashed", tc.name)
 		}
 		if got := strings.Join(wantErrs, "\n"); got != tc.want {
 			t.Errorf("%s: ANTLR reports\n%s\nwant\n%s", tc.name, got, tc.want)
 		}
-		gotErrs, gotTree := recoverGalop(tc.src)
+		gotErrs, gotExp, gotTree := recoverGalop(tc.src)
 		if !slices.Equal(gotErrs, wantErrs) {
 			t.Errorf("%s: galop reports %q, ANTLR %q", tc.name, gotErrs, wantErrs)
+		}
+		if !slices.Equal(gotExp, wantExp) {
+			t.Errorf("%s: galop expects %q, ANTLR %q", tc.name, gotExp, wantExp)
 		}
 		if d := sameRecoveredTree(wantTree, gotTree); d != "" {
 			t.Errorf("%s: tree: %s", tc.name, d)

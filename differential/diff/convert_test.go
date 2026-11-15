@@ -35,7 +35,7 @@ func converted(tb testing.TB, name, src string) (antlrTree, flavorTree *nativega
 		tb.Errorf("%s: GalaToNativeContexts of ANTLR's tree: %s", name, msg)
 	}
 	fstream := gala.GalopTokens(src)
-	if ctx, err := antlrgala.NewgalaGalopParser(fstream).SourceFile(); err == nil {
+	if ctx, err := antlrgala.NewgalaGalopParser(fstream).ParseSourceFile(); err == nil {
 		flavorTree, _, ctxs = antlrgala.GalaToNativeContexts(ctx, fstream, src)
 		if msg := checkContexts(flavorTree, ctxs, ctx); msg != "" {
 			tb.Errorf("%s: GalaToNativeContexts of the antlr flavor's tree: %s", name, msg)
@@ -375,7 +375,7 @@ func BenchmarkConvert(b *testing.B) {
 	for _, f := range files(b) {
 		src := gala.StripBOM(f.Src)
 		stream := gala.GalopTokens(src)
-		if root, err := antlrgala.NewgalaGalopParser(stream).SourceFile(); err == nil {
+		if root, err := antlrgala.NewgalaGalopParser(stream).ParseSourceFile(); err == nil {
 			trees = append(trees, parsed{root, stream, src})
 		}
 	}

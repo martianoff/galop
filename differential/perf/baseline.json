@@ -122,7 +122,7 @@
     },
     {
       "pattern": "*/*/*/*",
-      "tolerance": 0.3
+      "tolerance": 0.4
     }
   ]
 }

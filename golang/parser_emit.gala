@@ -84,7 +84,7 @@ func antlrParser(e env, pkg string, version string, grammarFile string) string {
         decisionCode.MkString("\n"),
         guessCode(e),
     )
-    val runtime = ArrayOf(tables(e), errorTables(e), predictor(e))
+    val runtime = ArrayOf(tables(e), errorTables(e), predictor(e), antlrRecoveryCode(e))
     parts.AppendAll(runtime).Filter(_ != "").MkString("\n")
 }
 
@@ -156,19 +156,32 @@ func parserCore(e env) string {
     val x = e.pfx
     val predictor = predictorFields(e)
     val retry = retryCode(e, "ctx")
-    fill(`// PARSER parses GRAMMAR input with decisions galop made at generation time.
-// It builds the same context objects as ANTLRPARSER. Each instance is
-// single-use and not safe for concurrent use; separate instances are independent.
+    fill(`// PARSER parses GRAMMAR input with decisions galop made at generation time,
+// as a drop-in for ANTLR's ANTLRPARSER: it builds the same contexts, and on a
+// syntax error it reports each error ANTLR reports to its error listeners and
+// returns the contexts ANTLR's default error strategy builds. It embeds an
+// ANTLRPARSER for its error listeners, its token factory and most of what a
+// listener asks of its recognizer, but never parses with it: an error
+// strategy, parse listeners or a prediction mode set on it are not used, and
+// ATN state numbers (GetState, a context's invoking state) are galop's, not
+// ANTLR's. Each instance is single-use and not safe for concurrent use;
+// separate instances are independent.
 type PARSER struct {
+	*ANTLRPARSER
 	input antlr.TokenStream
 	toks  []antlr.Token
 	types []int32
 	pos   intPREDICTOR
+
+	// expected is what GetExpectedTokens answers, and syntaxErrors the
+	// number of errors reported (see recoverParse).
+	expected     *antlr.IntervalSet
+	syntaxErrors int
 }
 
 // NewPARSER reads the on-channel tokens of input for parsing.
 func NewPARSER(input antlr.TokenStream) *PARSER {
-	p := &PARSER{input: input}
+	p := &PARSER{ANTLRPARSER: NewANTLRPARSER(input), input: input}
 	if cts, ok := input.(*antlr.CommonTokenStream); ok {
 		// Buffer the whole input first: its size bounds the on-channel tokens,
 		// so the slices below are allocated once instead of grown.
@@ -281,21 +294,34 @@ func (p *PARSER) noViableAlt(decision int) {
 `, "PARSER", p, "PFX", x, "GRAMMAR", e.names.Grammar, "ANTLRPARSER", e.names.ParserType(), "PREDICTOR", predictor, "GROUPON", groupsOn(e), "RETRY", retry, "ERRORS", errorsHook("ctx"), "RESETSTACK", resetPass)
 }
 
-// entryMethod is the public method that parses input as one rule.
+// entryMethod is the public methods that parse input as one rule: ANTLR's
+// method, which recovers from syntax errors and reports them to the error
+// listeners, and ParseMETHOD, which stops at the first.
 func entryMethod(e env, r atn.RuleIR) string {
     val iface = e.names.ContextInterface(r.Name)
     val method = e.names.RuleMethod(r.Name)
-    fill(`// METHOD parses the input as RULE. On a syntax error it returns the error
-// and no tree.
-func (p *PARSER) METHOD() (IFACE, error) {
+    fill(`// METHOD parses the input as RULE, as ANTLRPARSER's METHOD does: on a
+// syntax error it reports each error ANTLR reports to the parser's error
+// listeners, and returns the context ANTLR's default error strategy builds.
+func (p *PARSER) METHOD() IFACE {
+	ctx, err := p.parse(p.RULEFUNC, START, REPAIR)
+	if err != nil {
+		ctx, _ = p.recoverParse(INDEX)
+	}
+	return ctx.(IFACE)
+}
+
+// ParseMETHOD parses the input as RULE. On a syntax error it returns the first
+// error ANTLR reports and no tree, and reports nothing to the error listeners.
+func (p *PARSER) ParseMETHOD() (IFACE, error) {
 	ctx, err := p.parse(p.RULEFUNC, START, REPAIR)
 	if err != nil {
 		return nil, err
 	}
 	return ctx.(IFACE), nil
 }
-`, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
-        "REPAIR", s"${e.repairPlan.Repairs(r.Index)}", "START", s"${e.parser.RuleStart.Get(r.Index)}")
+`, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "ANTLRPARSER", e.names.ParserType(), "RULEFUNC", e.ruleFunc(r.Index),
+        "RULE", r.Name, "INDEX", s"${r.Index}", "REPAIR", s"${e.repairPlan.Repairs(r.Index)}", "START", s"${e.parser.RuleStart.Get(r.Index)}")
 }
 
 // emitRule emits the antlr flavor's function that parses one rule.
@@ -303,14 +329,14 @@ func emitRule(e env, r atn.RuleIR) string {
     val ctxType = e.names.Context(r.Name)
     val header = ArrayOf(
         s"func (p *${e.parserType}) ${e.ruleFunc(r.Index)}(parent antlr.ParserRuleContext, invokingState int) antlr.ParserRuleContext {",
-        s"\tvar localctx antlr.ParserRuleContext = New$ctxType(nil, parent, invokingState)",
+        s"\tvar localctx antlr.ParserRuleContext = New$ctxType(p.${e.names.ParserType()}, parent, invokingState)",
         "\tp.enter(localctx)",
     )
     // A labeled alternative first turns localctx into the label's context
     // (`# Only` makes an OnlyContext), as ANTLR does, whether or not the rule
     // has other alternatives.
     val body = ruleBody(e, r, (alt, ind) => alt.Label match {
-        case Some(l) => ArrayOf(s"${ind}localctx = New${e.names.Context(l)}(nil, localctx)")
+        case Some(l) => ArrayOf(s"${ind}localctx = New${e.names.Context(l)}(p.${e.names.ParserType()}, localctx)")
             .AppendAll(emitSteps(e, alt.Steps, ind, scope(CtxType = e.names.Context(l))))
         case None() => emitSteps(e, alt.Steps, ind, scope(CtxType = ctxType))
     })

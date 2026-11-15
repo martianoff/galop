@@ -208,7 +208,8 @@ ratios measured in the same job:
 
 The ratios on 32 goroutines are only reported. The CI runner has four cores, and two
 runs of the same code differed by up to a third there. Ratios on one goroutine moved
-by up to 25%, so they are judged within 30%.
+by up to 25%, and first-pass ratios by up to a third, so they are judged within
+40%.
 
 To keep the ratios stable on a shared runner:
 
@@ -287,11 +288,11 @@ How each number is judged is policy, kept in the baseline file rather than in co
   {"pattern": "*/*/accepted", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/allocs-per-pass", "tolerance": 0.01},
   {"pattern": "*/w32/*/*", "tolerance": 0, "report_only": true},
-  {"pattern": "*/*/*/*", "tolerance": 0.3}
+  {"pattern": "*/*/*/*", "tolerance": 0.4}
 ]
 ```
 
-- A number may exceed its baseline by `tolerance` (0.3 allows 30%) before it is
+- A number may exceed its baseline by `tolerance` (0.4 allows 40%) before it is
   `worse`.
 - A `report_only` number is shown and never fails the gate. `files` and `accepted`
   are report-only because the parity tests already fail on any difference from ANTLR
