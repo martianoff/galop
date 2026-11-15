@@ -1,7 +1,6 @@
 package repair
 
 import (
-    . "martianoff/gala/collection_immutable"
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/grammartest"

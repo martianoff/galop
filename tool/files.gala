@@ -4,7 +4,6 @@ import (
     "path/filepath"
     "strings"
 
-    . "martianoff/gala/collection_immutable"
     "martianoff/gala/fs"
 )
 
