@@ -10,6 +10,8 @@ gala_library(
         "//diag",
         "//g4",
         "@gala//collection_immutable",
+        "@gala//go_interop",
+        "@gala//stream",
     ],
 )
 
@@ -25,5 +27,7 @@ gala_test(
         "//g4",
         "@gala//collection_immutable",
         "@gala//go_builtins",
+        "@gala//go_interop",
+        "@gala//stream",
     ],
 )

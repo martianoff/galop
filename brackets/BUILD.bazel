@@ -7,7 +7,11 @@ gala_library(
     visibility = ["//visibility:public"],
     deps = [
         "//atn",
+        "//diag",
+        "//g4",
         "@gala//collection_immutable",
+        "@gala//go_interop",
+        "@gala//stream",
     ],
 )
 
@@ -19,7 +23,12 @@ gala_test(
     pkg = "brackets",
     deps = [
         "//atn",
+        "//diag",
+        "//g4",
         "//grammartest",
         "@gala//collection_immutable",
+        "@gala//go_builtins",
+        "@gala//go_interop",
+        "@gala//stream",
     ],
 )
