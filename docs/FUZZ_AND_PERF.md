@@ -265,8 +265,13 @@ bazel run //differential/cmd/perfgate -- -update=differential/perf/baseline.json
 
 - **Counters** come out the same on any machine.
 - **Ratios** come from the CI runner (`ubuntu-latest`), never from a local machine:
-  they depend on it. Download the `perf` artifact of a green run on the PR and copy its
-  `ratios` into the baseline.
+  they depend on it. `ubuntu-latest` is not one machine either. It runs on several
+  CPU models, and the same code moves a ratio by up to a third between them. So take
+  each ratio's median over the `perf` artifacts of many runs (at least ten). That means
+  pushes to main for a re-baseline, or the PR's own runs for a change that moves the
+  numbers. The fleet also changes under the baseline. Ratios taken from one run on
+  October 27 failed 16 of the 57 runs that followed, although the same code measured
+  the same on one runner.
 - `-update` keeps the baseline's rules. With `-times=false` it measures counters only
   and keeps the baseline's ratios.
 
