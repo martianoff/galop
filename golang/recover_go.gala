@@ -952,6 +952,8 @@ func recoveryTables(e env, align bool) string {
         })),
         goSlice(s"${x}OuterAlt", "uint8", outer.FlatMap((o) => o.GetOrElse(EmptyArray[int]())).Map((n) => s"$n")),
         goSlice(s"${x}RuleAlt", "uint8", ruleAlt.Map((n) => s"$n")),
+        s"// ${x}RuleRecursive marks the rewritten left-recursive rules, by rule index.",
+        goSlice(s"${x}RuleRecursive", "bool", e.rules.Map((r) => s"${r.Rewrite.IsDefined()}")),
         s"// ${x}StateContext is, by entry state, what an alternative of a left-recursive",
         s"// rule does to the rule's context: ${x}ContextPush (an op alternative's new",
         s"// recursion context) or not (a labeled primary one's), the alternative's label",

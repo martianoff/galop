@@ -146,9 +146,9 @@ runtime prediction and the speed ratios from regressing (see
 ### Left-recursive rules (in progress)
 
 Status: being built in phases (below). `-report` analyzes a directly
-left-recursive rule; the native flavor generates one behind the experimental
-`-Xleft-recursion` option (phases 1 to 3, and phase 5's error recovery); without
-it, and in the antlr flavor, code generation rejects such a rule (error 500).
+left-recursive rule; both flavors generate one, with error recovery and the
+converter, behind the experimental `-Xleft-recursion` option (phases 1 to 5);
+without it, code generation rejects such a rule (error 500).
 
 ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
 (`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse
@@ -248,7 +248,11 @@ ANTLR accepts many of them by stopping early). The native flavor's error recover
 gives every syntax error ANTLR reports in LL mode, and ANTLR's recovered tree, on
 the 4,193 mutated sentences of that grammar ANTLR reports an error in (alternative
 contexts, spans, error tokens and labels compared) and on 3,356 mutated Milvus
-expressions.
+expressions. The antlr flavor builds ANTLR's contexts (types, spans, error nodes,
+exceptions, labels, parent links) and reports ANTLR's errors on 20,000 sentences of
+that grammar, half of them mutated, and on Milvus's 1,613 expressions and three
+mutated copies of each; the converter turns ANTLR's tree into the native flavor's,
+errors recovered, on the same inputs.
 
 The phases, each tested against ANTLR before the next:
 
@@ -260,9 +264,7 @@ The phases, each tested against ANTLR before the next:
 3. The native flavor: rule functions with `_p`, ANTLR's tree, the first-error
    replay (failed predicates included).
 4. The antlr flavor: ANTLR's recursion contexts.
-5. Error recovery in left-recursive rules, both flavors, and the converter. The
-   native flavor's is done (see "Left-recursive rules" under recovery); the antlr
-   flavor's and the converter come with phase 4.
+5. Error recovery in left-recursive rules, both flavors, and the converter.
 6. The corpus: test grammars for each shape of alternative, then Milvus `Plan.g4`,
    SigNoz `HavingExpression.g4`, CEL and Grule; benchmarks.
 
@@ -825,6 +827,7 @@ parser builds them, while it parses:
 | `GetMissingSymbol`: a token from the parser's token factory, added as an error node by `Match` | the same; a set match stores it in its label without adding it |
 | label assignments after each match and rule call | the same, through `setLabel`, generated per context type |
 | `SetError` makes the exception when the error arises; `errorExit` sets it on the rule's context and reports it | the same: `pend` makes the exception, so it records the token, context and state of that moment |
+| A left-recursive rule: `EnterRecursionRule` starts its context without adding it to the parent; a labeled primary alternative's context copies it (`recRuleReplaceContext`); each op alternative makes a context from the rule's parent and invoking state, sets its left operand label, and `PushNewRecursionContext` ends the context so far (stop at the last token read, invoking state the rule's start state) and makes it the new one's first child; `UnrollRecursionContexts` adds the last one to the parent | the same, in the rule methods as in the walk (`recursionStart`) |
 | `NotifyErrorListeners` | the error listeners are called with the galop parser as the recognizer, its context and current token set to ANTLR's |
 
 The galop parser embeds an instance of ANTLR's generated parser, which never
