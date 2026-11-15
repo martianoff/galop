@@ -216,6 +216,27 @@ The phases, each tested against ANTLR before the next:
 6. The corpus: test grammars for each shape of alternative, then Milvus `Plan.g4`,
    SigNoz `HavingExpression.g4`, CEL and Grule; benchmarks.
 
+**Performance target.** On Milvus's filter expressions, the native flavor's
+throughput on 32 goroutines is at least 10 times ANTLR's, against two baselines:
+ANTLR's default LL parse, which galop reproduces, and Milvus's own driver (pooled
+lexer and parser, SLL first, LL again after an SLL error). Measured on ANTLR 4.13.1
+with 1,613 expressions from Milvus's plan parser tests (about 33 bytes each), one
+machine with 32 hardware threads:
+
+| | ANTLR, default LL | ANTLR, Milvus's driver | target for galop |
+|---|---:|---:|---:|
+| 32 goroutines | 68k expressions/s | 104k expressions/s | ≥ 1.04M expressions/s |
+| one goroutine, warm | 20.5 µs | 12.6 µs | reported |
+
+On these inputs 8% of the expressions send ANTLR's prediction to full context,
+each time over a real ambiguity (19% of ten times longer ones, about 4 times
+each). So the precedence decisions are settled at generation time wherever the
+analysis can prove ANTLR's answer: the next token and a comparison with the
+current precedence, no runtime prediction. The runtime port above is the exact
+fallback for the rest, which should be rare. The benchmark joins the performance
+gate with the 10× ratio as its bar once the native flavor generates these
+parsers (phase 3).
+
 ## Analysis (`analysis`)
 
 `analysis.Analyze(parserATN, maxK) Analysis` (types in `analysis/plan.gala`):
