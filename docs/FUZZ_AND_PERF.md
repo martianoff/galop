@@ -236,7 +236,7 @@ ANTLR's recovered one where it does not). It is only reported.
 | pushes to main and `workflow_dispatch`: job `performance sweep` | `perfgate -every=1 -mutants=300 -runs=7 -passes=7` | not judged: a wider report |
 
 A cold cache never turns a pull request red. The gate's build and measurement run
-under a time budget (8 minutes on a pull request), and when they run past it the job
+under a time budget (25 minutes), and when they run past it the job
 skips the gate with a notice and passes.
 
 The gate writes its tables to the job summary and its numbers to the `perf` artifact
