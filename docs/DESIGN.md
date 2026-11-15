@@ -641,7 +641,15 @@ depends on more than the token where the input stops making sense:
 
 So when the final parse fails (after the repair or the LL rerun), the parser
 replays ANTLR's generated parser from the first token over galop's ATN, up to
-the first error ANTLR reports (`golang/errors_go.gala`). It walks the ATN with
+the first error ANTLR reports (`golang/errors_go.gala`). Where that replay finds
+no error, only alternatives ANTLR's prediction fell back on, the parse runs
+again taking them. The replay reads token types alone, so that answer holds
+for every input with the same types; the parser caches it by entry rule and
+token types (`FallbackCache`, at most 4,096 inputs of at most 1,024 tokens),
+as ANTLR's DFA caches prediction by token types. An entry rule that does not
+end with EOF meets this on ordinary input: prediction that reads to the end of
+the input finds nothing after the rule and falls back (37 of Milvus's 1,613
+filter expressions). It walks the ATN with
 the call stack. It makes each decision with a one-token switch where ANTLR's
 code generator would, and with the runtime predictor elsewhere. For rule-level
 token alternatives it does the one set match ANTLR's tool turns them into.

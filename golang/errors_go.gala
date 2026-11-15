@@ -133,6 +133,13 @@ func (p *PARSER) deadEnd(d int) int {
 // early, without error. antlrError then returns nil and leaves the
 // alternatives ANTLR fell back on in p.fallbacks, for deadEnd to take.
 func (p *PARSER) antlrError(start int32, err error) error {
+	key := PFXFallbackKey(start, p.types)
+	if key != "" {
+		if f, ok := PFXFallbackCache.Load(key); ok {
+			p.fallbacks = f.([]PFXFallback)
+			return nil
+		}
+	}
 	pos, ll, group := p.pos, p.ll, p.group
 	defer func() { p.pos, p.ll, p.group = pos, ll, group }()
 	p.ll, p.group, p.fallbacks = true, false, nil
@@ -147,9 +154,39 @@ func (p *PARSER) antlrError(start int32, err error) error {
 		return p.syntaxErrorAt(found.at, found.msg)
 	case len(e.fallbacks) > 0:
 		p.fallbacks = e.fallbacks
+		if key != "" && PFXFallbackCount.Add(1) <= PFXFallbackMax {
+			PFXFallbackCache.Store(key, e.fallbacks)
+		}
 		return nil
 	}
 	return err
+}
+
+// PFXFallbackCache holds, by entry rule and token types, the alternatives
+// antlrError found ANTLR's prediction falling back on where the parse reports
+// no error. The replay reads token types alone, so its answer is the same for
+// any input with the same types, as an SLL DFA state is; the cache spares
+// inputs of one shape replaying it again. It keeps at most PFXFallbackMax
+// answers, for inputs of at most PFXFallbackMaxTokens tokens, and never
+// forgets one.
+var (
+	PFXFallbackCache     sync.Map
+	PFXFallbackCount     atomic.Int64
+	PFXFallbackMax       = int64(1 << 12)
+	PFXFallbackMaxTokens = 1 << 10
+)
+
+// PFXFallbackKey is the cache key of a replay from start over types, or ""
+// for an input too long to cache.
+func PFXFallbackKey(start int32, types []int32) string {
+	if len(types) > PFXFallbackMaxTokens {
+		return ""
+	}
+	k := binary.LittleEndian.AppendUint32(make([]byte, 0, 4*len(types)+4), uint32(start))
+	for _, t := range types {
+		k = binary.LittleEndian.AppendUint32(k, uint32(t))
+	}
+	return string(k)
 }
 
 // expected is ANTLR's getExpectedTokens at state s with the parser's stack:
