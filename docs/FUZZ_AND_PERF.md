@@ -233,7 +233,7 @@ ANTLR's recovered one where it does not). It is only reported.
 | Where | What | Judged |
 |---|---|---|
 | every PR and push: job `performance gate` | `perfgate` with the defaults above (about 2 minutes once built) | against `baseline.json`; enforcing (`PERF_ENFORCE: "true"` in `ci.yml`): a regression or a missing number fails the job |
-| pushes to main and `workflow_dispatch`: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, corpus recovery, held-out recovery, generated sets 1–4 | parity with ANTLR |
+| pushes to main, `workflow_dispatch`, and PRs that change more than Markdown: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, corpus recovery, held-out recovery, generated sets 1–4 | parity with ANTLR |
 | pushes to main and `workflow_dispatch`: job `performance sweep` | `perfgate -every=1 -mutants=300 -runs=7 -passes=7` | not judged: a wider report |
 
 A cold cache never turns a pull request red. The gate's build and measurement run
@@ -266,8 +266,13 @@ bazel run //differential/cmd/perfgate -- -update=differential/perf/baseline.json
 
 - **Counters** come out the same on any machine.
 - **Ratios** come from the CI runner (`ubuntu-latest`), never from a local machine:
-  they depend on it. Download the `perf` artifact of a green run on the PR and copy its
-  `ratios` into the baseline.
+  they depend on it. `ubuntu-latest` is not one machine either. It runs on several
+  CPU models, and the same code moves a ratio by up to a third between them. So take
+  each ratio's median over the `perf` artifacts of many runs (at least ten). That means
+  pushes to main for a re-baseline, or the PR's own runs for a change that moves the
+  numbers. The fleet also changes under the baseline. Ratios taken from one run on
+  October 27 failed 16 of the 57 runs that followed, although the same code measured
+  the same on one runner.
 - `-update` keeps the baseline's rules. With `-times=false` it measures counters only
   and keeps the baseline's ratios.
 
