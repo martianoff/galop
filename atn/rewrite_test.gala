@@ -1,0 +1,104 @@
+package atn
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+    "martianoff/gala/go_builtins"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/g4"
+)
+
+// lrGrammar has one alternative of each kind ANTLR's rewrite reads: prefix,
+// right-associative binary, suffix, labeled binary with a labeled left
+// operand, a binary one whose middle call keeps precedence 0, and two others.
+val lrGrammar = `grammar P;
+s : e EOF ;
+e : '-' e                          # Neg
+  | <assoc=right> e '^' e          # Pow
+  | e '!'                          # Fact
+  | l=e op=('*' | '/') e           # Mul
+  | e '?' e ':' e                  # Cond
+  | INT                            # Int
+  | '(' e ')'                      # Paren
+  ;
+INT : [0-9]+ ;
+`
+
+// rewriteOf is the rewrite of rule name in src.
+func rewriteOf(src string, name string) Rewrite = g4.Parse(src) match {
+    case Right(g) => RewriteOf(g.Rules.Find(_.Name == name).Get()) match {
+        case Right(Some(rw)) => rw
+        case _ => go_builtins.Panic(s"no rewrite of $name")
+    }
+    case Left(d) => go_builtins.Panic(s"parse: ${d.String()}")
+}
+
+// altSummary is an alternative's index, kind, precedence, next precedence
+// and removed left label.
+func altSummary(a RecAlt) string {
+    val kind = a.Kind match {
+        case Binary() => "binary"
+        case Prefix() => "prefix"
+        case Suffix() => "suffix"
+        case Other() => "other"
+    }
+    s"${a.Index}:$kind:${a.Precedence}:${a.Next.GetOrElse(0)}:${a.Left.Map(_.Name).GetOrElse("")}"
+}
+
+func TestRewriteClassifiesAsANTLR(t T) T {
+    val rw = rewriteOf(lrGrammar, "e")
+    // Seven alternatives: alternative i has precedence 7 - i. Prefix and
+    // other alternatives keep their order; the loop takes the binary ones,
+    // then the suffix ones.
+    val t1 = Eq(t, rw.Primary.Map(altSummary), ArrayOf("0:prefix:7:7:", "5:other:2:0:", "6:other:1:0:"))
+    Eq(t1, rw.Ops.Map(altSummary), ArrayOf("1:binary:6:6:", "3:binary:4:5:l", "4:binary:3:4:", "2:suffix:5:0:"))
+}
+
+func TestRewriteNeedsAPrimaryAlternative(t T) T = g4.Parse("grammar P;\ne : e '+' e | e '*' e ;\n") match {
+    case Right(g) => RewriteOf(g.Rules.Head()) match {
+        case Left(d) => Eq(t, d.String(), "2:1: left recursive rule e must contain an alternative which is not left recursive")
+        case Right(_) => Fail(t, "expected error 147")
+    }
+    case Left(d) => Fail(t, d.String())
+}
+
+func TestPrefixOnlyRuleIsNotRewritten(t T) T = g4.Parse("grammar P;\ne : '-' e | INT ;\nINT : [0-9]+ ;\n") match {
+    case Right(g) => Eq(t, RewriteOf(g.Rules.Head()).Fold((_) => true, (rw) => rw.IsDefined()), false)
+    case Left(d) => Fail(t, d.String())
+}
+
+func TestRewrittenRuleNetwork(t T) T {
+    val c = compiled(t, lrGrammar)
+    val net = c.Parser.Get()
+    val e = c.Rules.Get(1)
+    // One alternative: the primary block, then the loop.
+    val t1 = Eq(t, e.Alts.Size(), 1)
+    val t2 = IsTrue(t1, e.Rewrite.IsDefined())
+    val steps = e.Alts.Head().Steps
+    val loop = steps.Get(1)
+    val t3 = IsTrue(t2, strings.HasPrefix(stepShape(loop), "loop(*,"))
+    // The loop entry is a precedence decision; the primary block is not.
+    val decisions = net.Decisions.Filter(_.Rule == 1)
+    val t4 = Eq(t3, decisions.Filter(_.Precedence).Size(), 1)
+    // Calls of e: the prefix one passes 7, Pow's right operand 6 (right
+    // associative), Mul's 5, Cond's last 4 and its middle 0, Paren's 0.
+    val precedences = net.States.Collect({ case s if s.Rule == 1 && s.Out.Exists((o) => o match {
+        case RuleCall(_, r, _) => r == 1
+        case _ => false
+    }) => net.CallPrecedence.Get(s.Id) }).Sorted()
+    val t5 = Eq(t4, precedences, ArrayOf(0, 0, 4, 5, 6, 7))
+    // Each op alternative starts with its precedence predicate, then its
+    // recursion context: Pow's own label, Mul's left operand label.
+    val opSteps = loop match {
+        case Loop(_, _, _, Array(Choose(_, alts, _))) => alts.Map((a) => a.Take(2).Map(stepShape).MkString(" "))
+        case _ => EmptyArray[string]()
+    }
+    Eq(t5, opSteps, ArrayOf("precpred(6) recursion(Pow,)", "precpred(4) recursion(Mul,l)", "precpred(3) recursion(Cond,)", "precpred(5) recursion(Fact,)"))
+}
+
+func TestRightAssociativeOption(t T) T {
+    val rw = rewriteOf("grammar P;\ne : <assoc=right> e '^' e | <assoc=left> e '+' e | INT ;\nINT : [0-9]+ ;\n", "e")
+    Eq(t, rw.Ops.Map(altSummary), ArrayOf("0:binary:3:3:", "1:binary:2:3:"))
+}

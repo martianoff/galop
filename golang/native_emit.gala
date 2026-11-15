@@ -151,7 +151,7 @@ struct labelUse(Name string, Append bool, Rule Option[int])
 func labelUses(steps Array[atn.Step]) Array[labelUse] = steps.FlatMap((s) => s match {
     case atn.MatchToken(_, Some(l)) => ArrayOf(labelUse(l.Name, l.Append, None()))
     case atn.MatchSet(_, Some(l), _) => ArrayOf(labelUse(l.Name, l.Append, None()))
-    case atn.CallRule(rule, _, Some(l)) => ArrayOf(labelUse(l.Name, l.Append, Some(rule)))
+    case atn.CallRule(rule, _, Some(l), _) => ArrayOf(labelUse(l.Name, l.Append, Some(rule)))
     case atn.Choose(_, alts, _) => alts.FlatMap(labelUses)
     case atn.Loop(_, _, _, body) => labelUses(body)
     case _ => EmptyArray[labelUse]()
@@ -178,7 +178,7 @@ func stepOccurrences(e env, s atn.Step) Array[elemRef] = s match {
     case atn.MatchToken(t, _) => namedToken(e, t)
     // ANTLR has getters for the tokens a set lists, `(A | B)`, but none for `~A` or `.`.
     case atn.MatchSet(set, _, listed) => if (listed) set.Values().FlatMap((t) => namedToken(e, t)) else EmptyArray[elemRef]()
-    case atn.CallRule(rule, _, _) => ArrayOf(elemRef(true, rule))
+    case atn.CallRule(rule, _, _, _) => ArrayOf(elemRef(true, rule))
     case atn.Choose(_, alts, _) => {
         val each = alts.Map((a) => occurrences(e, a))
         each.FlatMap((o) => o).Distinct().FlatMap((el) => {

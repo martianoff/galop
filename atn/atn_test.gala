@@ -94,11 +94,14 @@ func stepShape(s Step) string = s match {
     case MatchToken(tok, _) if tok == TokenEOF => "eof"
     case MatchToken(_, _) => "token"
     case MatchSet(_, _, _) => "set"
-    case CallRule(_, _, _) => "call"
+    case CallRule(_, _, _, _) => "call"
     case Choose(d, _, exitAlt) => s"choose($d,exit=${exitAlt.GetOrElse(0)})"
     case Loop(plus, d, cont, _) => s"loop(${if (plus) "+" else "*"},$d,continue=$cont)"
     case RunAction(_) => "action"
     case CheckPredicate(_) => "predicate"
+    case CheckPrecedence(level) => s"precpred($level)"
+    case RecursionStart(label, left) => s"recursion(${label.GetOrElse("")},${left.Map(_.Name).GetOrElse("")})"
+    case ReplaceContext(label) => s"replace($label)"
 }
 
 func TestLexerNetwork(t T) T {

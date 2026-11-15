@@ -21,7 +21,9 @@ sealed type Step {
     case MatchSet(Set IntervalSet, Label Option[LabelRef], Listed bool)
     // CallRule invokes rule Rule; Follow is the ATN state matching resumes at,
     // which a parser pushes as its return state for context-aware prediction.
-    case CallRule(Rule int, Follow int, Label Option[LabelRef])
+    // Precedence is the precedence argument of a call of a rewritten
+    // left-recursive rule (0 for every other call).
+    case CallRule(Rule int, Follow int, Label Option[LabelRef], Precedence int)
     // Choose picks one of Alts by Decision. ExitAlt is the decision's
     // alternative that matches nothing (an optional block): alternative 1 when
     // non-greedy, len(Alts)+1 when greedy. Use AltNumber for the others.
@@ -34,6 +36,17 @@ sealed type Step {
     case RunAction(Body string)
     // CheckPredicate is a semantic predicate, in the target language.
     case CheckPredicate(Body string)
+    // CheckPrecedence is a rewritten left-recursive rule's precpred(_ctx,
+    // Level), at the start of each of its loop's alternatives.
+    case CheckPrecedence(Level int)
+    // RecursionStart starts an iteration of a rewritten rule's loop (ANTLR's
+    // recRuleAltStartAction): a new context, of alternative label Label or of
+    // the rule, takes the previous one as its first child and, in Left, the
+    // label of the call the rewrite removed.
+    case RecursionStart(Label Option[string], Left Option[LabelRef])
+    // ReplaceContext starts a labeled primary alternative of a rewritten rule
+    // (ANTLR's recRuleReplaceContext): the rule's context becomes Label's.
+    case ReplaceContext(Label string)
 }
 
 // AltNumber is the decision alternative number of Alts[index] in a Choose.
@@ -46,8 +59,11 @@ func AltNumber(exitAlt Option[int], index int) int = exitAlt match {
 struct AltIR(Label Option[string], Steps Array[Step])
 
 // RuleIR is a parser rule. Decision is set when the rule has more than one
-// alternative; alternative i (from 0) is decision alternative i+1.
-struct RuleIR(Index int, Name string, Decision Option[int], Alts Array[AltIR])
+// alternative; alternative i (from 0) is decision alternative i+1. Rewrite is
+// set for a directly left-recursive rule, which ANTLR rewrites: its Alts are
+// then one alternative, the rewritten rule's (primary block, then the loop),
+// and Rewrite keeps how the original alternatives were read.
+struct RuleIR(Index int, Name string, Decision Option[int], Alts Array[AltIR], Rewrite Option[Rewrite] = None[Rewrite]())
 
 // HasStep says whether some step in steps, nested ones included, satisfies p.
 func HasStep(steps Array[Step], p func(Step) bool) bool = steps.Exists((s) => p(s) || (s match {

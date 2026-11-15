@@ -441,10 +441,13 @@ func TestGenerateRejectsDirectLeftRecursion(t T) T {
     Eq(t1, m.writes, EmptyArray[string]())
 }
 
-func TestReportRejectsDirectLeftRecursion(t T) T {
+func TestReportOnDirectLeftRecursion(t T) T {
+    // The rule is rewritten into a precedence loop, as ANTLR does, which the
+    // report shows.
     val m = newMemory(("L.g4", directLeftRecursion))
-    Eq(t, run(m, ArrayOf(fakeGo), "-report L.g4"),
-        Outcome("", "error(500): L.g4:3:0: galop does not support left-recursive rule e yet\n", 1))
+    val out = run(m, ArrayOf(fakeGo), "-report L.g4")
+    val t1 = Eq(t, out.ExitCode, 0)
+    Contains(t1, out.Stdout, "decision 1 in rule e (star): ('*' e | '+' e)*")
 }
 
 func TestCheckAcceptsDirectLeftRecursion(t T) T {

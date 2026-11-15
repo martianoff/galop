@@ -30,9 +30,17 @@ func Check(g Grammar) Array[diag.Diagnostic] {
     val refErrors = g.Rules.FlatMap((r) =>
         r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => at(d, l.Pos)))
     )
-    val all = noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors)
+    val all = noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors).AppendAll(assocProblems(g))
     diag.InSourceOrder(all.AppendAll(implicitTokens(g)))
 }
+
+// assocProblems are ANTLR's warning 84 for an `assoc` option whose value is
+// neither left nor right (ANTLR then takes left), on a rule's alternatives.
+func assocProblems(g Grammar) Array[diag.Diagnostic] = g.Rules.FlatMap((r) => r.Alts.FlatMap((a) =>
+    a.Options.Collect({
+        case o if o.Name == "assoc" && o.Value != "left" && o.Value != "right" => at(diag.IllegalOptionValue.New(o.Name, o.Value), o.Pos)
+    })
+))
 
 // at places d at p.
 func at(d diag.Diagnostic, p Pos) diag.Diagnostic = d.At(p.Line, p.Col)

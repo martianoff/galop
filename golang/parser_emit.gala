@@ -365,7 +365,7 @@ func emitSteps(e env, steps Array[atn.Step], ind string, sc scope) Array[string]
 func emitStep(e env, s atn.Step, ind string, sc scope) Array[string] = s match {
     case atn.MatchToken(t, label) => tokenStep(e, ind, "match", e.tokenRef(t), label, sc)
     case atn.MatchSet(set, label, _) => tokenStep(e, ind, "matchIf", setTest(e, set, "p.types[p.pos]"), label, sc)
-    case atn.CallRule(rule, follow, label) => {
+    case atn.CallRule(rule, follow, label, _) => {
         // Only runtime prediction reads the stack during a parse; the error
         // replay keeps its own.
         val push = if (e.adaptive) ArrayOf(s"$ind\tp.stack = append(p.stack, $follow)") else EmptyArray[string]()
@@ -399,6 +399,11 @@ func emitStep(e env, s atn.Step, ind string, sc scope) Array[string] = s match {
         .Append(s"$ind}")
     case atn.RunAction(body) => ArrayOf(ind + strings.TrimSpace(body))
     case atn.CheckPredicate(body) => ArrayOf(s"${ind}if !(${strings.TrimSpace(body)}) {", s"$ind\tp.noViableAlt(-1)", s"$ind}")
+    // The Go target rejects rewritten left-recursive rules until code
+    // generation for them lands (DESIGN.md, "Left-recursive rules").
+    case atn.CheckPrecedence(_) => EmptyArray[string]()
+    case atn.RecursionStart(_, _) => EmptyArray[string]()
+    case atn.ReplaceContext(_) => EmptyArray[string]()
 }
 
 // ruleLabelStore stores the rule's result child under label l: in the antlr

@@ -300,18 +300,37 @@ func (p Ptr[parser]) alternatives() Array[Alt] {
     sepBy1(p, "|", p.alternative)
 }
 
-// alternative reads `element* ('#' Label)? ('->' commands)?`.
+// alternative reads `elementOptions? element* ('#' Label)? ('->' commands)?`.
 func (p Ptr[parser]) alternative() Alt {
-    if p.isPunct("<") {
-        p.unsupported("element options")
-    }
+    val options = if (p.isPunct("<")) p.altOptions() else EmptyArray[OptionEntry]()
     var elements = EmptyArray[Element]()
     for p.ok() && p.startsElement() {
         elements = elements.Append(p.element())
     }
     val label = if (p.acceptPunct("#")) Some(p.expectId("an alternative label")) else None[string]()
     val commands = if (p.acceptPunct("->")) p.commands() else EmptyArray[LexerCommand]()
-    Alt(elements, label, commands)
+    Alt(elements, label, commands, options)
+}
+
+// altOptions reads the element options at the start of an alternative,
+// `'<' name ('=' value)? (',' name ('=' value)?)* '>'`. galop supports
+// `assoc` (a left-recursive rule's associativity) and reports any other as
+// unsupported; Check reports an `assoc` value it does not know.
+func (p Ptr[parser]) altOptions() Array[OptionEntry] {
+    p.expectPunct("<")
+    val options = sepBy1(p, ",", p.altOption)
+    p.expectPunct(">")
+    options
+}
+
+func (p Ptr[parser]) altOption() OptionEntry {
+    val nameTok = p.peek()
+    val name = p.expectId("an option name")
+    val value = if (p.acceptPunct("=")) p.optionValue() else ""
+    if name != "assoc" {
+        p.reportAt(nameTok, diag.Unsupported.New(s"the element option $name"))
+    }
+    OptionEntry(name, value, posOf(nameTok))
 }
 
 func (p Ptr[parser]) startsElement() bool {

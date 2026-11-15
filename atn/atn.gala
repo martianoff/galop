@@ -53,6 +53,10 @@ sealed type Transition {
     case Predicate(Target int, Rule int, Body string)
     // Action consumes nothing; generated code runs Body when the path is taken.
     case Action(Target int, Rule int, Body string)
+    // PrecedencePredicate consumes nothing; it allows the path when Level is
+    // at least the precedence Rule, a rewritten left-recursive rule, was
+    // called with: ANTLR's precpred(_ctx, Level).
+    case PrecedencePredicate(Target int, Rule int, Level int)
 }
 
 // Target is the state the transition leads to.
@@ -64,6 +68,7 @@ func (t Transition) Target() int = t match {
     case LexerActions(target, _) => target
     case Predicate(target, _, _) => target
     case Action(target, _, _) => target
+    case PrecedencePredicate(target, _, _) => target
 }
 
 // WithinRule is where a walk that stays in the transition's rule continues:
@@ -133,6 +138,10 @@ struct Decision(
     AltCount int,
     // Text is the decision's source, formatted: `x?`, `(a | b)*`, or `rule : alts` for a rule body.
     Text string,
+    // Precedence marks the loop entry of a rewritten left-recursive rule
+    // (ANTLR's isPrecedenceDecision): its alternatives start with
+    // precedence predicates, which prediction evaluates.
+    Precedence bool = false,
 )
 
 // ATN is a whole grammar network.
@@ -154,6 +163,11 @@ struct ATN(
     // Wildcards marks, by state, a parser wildcard match (`.`), which ANTLR's
     // generated code matches with MatchWildcard rather than as a set.
     Wildcards Array[bool],
+    // CallPrecedence is, by state, the precedence the state's rule call
+    // passes (ANTLR's RuleTransition.precedence): the precedence argument a
+    // left-recursive rule's rewrite gives a call of the rule, 0 for every
+    // other call and state.
+    CallPrecedence Array[int],
 )
 
 // State returns state id.

@@ -53,7 +53,11 @@ func FormatRule(r Rule) string {
 }
 
 func printAlt(a Alt) string {
-    val parts = a.Elements.Map(FormatElement)
+    val options = a.Options match {
+        case Array() => EmptyArray[string]()
+        case opts => ArrayOf("<" + opts.Map((o) => if (o.Value == "") o.Name else s"${o.Name}=${o.Value}").MkString(", ") + ">")
+    }
+    val parts = options.AppendAll(a.Elements.Map(FormatElement))
     val withLabel = a.Label match {
         case Some(l) => parts.Append("# " + l)
         case None() => parts
