@@ -1,0 +1,218 @@
+package atn
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/diag"
+    "github.com/martianoff/galop/g4"
+)
+
+// ANTLR 4.13.1 rewrites a directly left-recursive rule into a precedence loop
+// before it builds the rule's network (LeftRecursiveRuleAnalyzer,
+// LeftRecursiveRules.stg):
+//
+//     e[_p] : ( {} primary alternatives ) ( {precpred(_ctx, prec)}? op alternative )* ;
+//
+// This file reads a rule the way that rewrite does; build.gala compiles the
+// result. See DESIGN.md, "Left-recursive rules".
+
+// NoNonLeftRecursiveAlts is ANTLR's error 147: a left-recursive rule whose
+// every alternative is binary or suffix has nothing to start from.
+val NoNonLeftRecursiveAlts = diag.Kind(147, diag.Error(), "left recursive rule <arg> must contain an alternative which is not left recursive")
+
+// OpKind is how the rewrite reads an outer alternative of a left-recursive
+// rule: Binary `e op… e`, Prefix `op… e`, Suffix `e op…`, or Other.
+sealed type OpKind {
+    case Binary()
+    case Prefix()
+    case Suffix()
+    case Other()
+}
+
+// RecAlt is one outer alternative of a rewritten rule. Index is its position
+// in the rule (from 0) and Precedence n − Index for a rule of n alternatives,
+// so earlier alternatives bind tighter. Next is the precedence the rewrite
+// gives the alternative's last element, a call of the rule: Precedence + 1
+// for a binary alternative (Precedence with `<assoc=right>`), Precedence for
+// a prefix one. Left is the label of the leading call of the rule that a
+// binary or suffix alternative drops, Elements the alternative without it.
+struct RecAlt(
+    Index int,
+    Kind OpKind,
+    Precedence int,
+    Next Option[int],
+    Left Option[LabelRef],
+    Label Option[string],
+    Elements Array[g4.Element],
+)
+
+// Rewrite is the rewrite of one rule: Primary are its prefix and other
+// alternatives in the rule's order, Ops its binary alternatives and then its
+// suffix ones, each in the rule's order, as the rewrite collects them.
+struct Rewrite(Primary Array[RecAlt], Ops Array[RecAlt])
+
+// StartsWithItself is ANTLR's test for a rule to rewrite: some alternative's
+// first element is a call of the rule, labeled or not.
+func StartsWithItself(r g4.Rule) bool = r.Alts.Exists((a) => isRecurse(a.Elements.HeadOption(), r.Name))
+
+// RewriteOf is the rewrite of r, None when ANTLR leaves r as it is: when no
+// alternative is binary or suffix. Error 147 when every alternative is.
+func RewriteOf(r g4.Rule) Either[diag.Diagnostic, Option[Rewrite]] {
+    val n = r.Alts.Size()
+    val alts = r.Alts.ZipWithIndex().Map((ai) => recAlt(r.Name, ai.V1, ai.V2, n))
+    val ops = alts.Filter((a) => isKind(a, Binary())).AppendAll(alts.Filter((a) => isKind(a, Suffix())))
+    val primary = alts.Filter((a) => isKind(a, Prefix()) || isKind(a, Other()))
+    if ops.IsEmpty() {
+        return Right(None[Rewrite]())
+    }
+    if primary.IsEmpty() {
+        return Left(NoNonLeftRecursiveAlts.New(r.Name).At(r.Pos.Line, r.Pos.Col))
+    }
+    Right(Some(Rewrite(primary, ops)))
+}
+
+func isKind(a RecAlt, k OpKind) bool = (a.Kind, k) match {
+    case (Binary(), Binary()) => true
+    case (Prefix(), Prefix()) => true
+    case (Suffix(), Suffix()) => true
+    case (Other(), Other()) => true
+    case _ => false
+}
+
+// recAlt reads alternative a, index i of a rule called name with n
+// alternatives, as the rewrite's LeftRecursiveRuleWalker does: binary when
+// it starts and ends with a call of the rule (actions and predicates may
+// follow the last), prefix when only its end is one, suffix when only its
+// start is and something follows, other otherwise.
+func recAlt(name string, a g4.Alt, i int, n int) RecAlt {
+    val precedence = n - i
+    val body = a.Elements.Reverse().DropWhile(isEpsilonElement).Reverse()
+    val starts = isRecurse(a.Elements.HeadOption(), name)
+    val ends = body.Size() >= (if (starts) 2 else 1) && isRecurse(body.LastOption(), name)
+    val kind = (starts, ends) match {
+        case (true, true) => Binary()
+        case (false, true) if body.Size() >= 2 => Prefix()
+        case (true, false) if a.Elements.Size() >= 2 => Suffix()
+        case _ => Other()
+    }
+    val next = kind match {
+        case Binary() => Some(if (a.RightAssoc()) precedence else precedence + 1)
+        case Prefix() => Some(precedence)
+        case _ => None[int]()
+    }
+    val (left, elements) = kind match {
+        case Binary() | Suffix() => (leftLabel(a.Elements.Head()), a.Elements.Drop(1))
+        case _ => (None[LabelRef](), a.Elements)
+    }
+    RecAlt(i, kind, precedence, next, left, a.Label, elements)
+}
+
+// isRecurse says whether e is a call of rule name, labeled or not.
+func isRecurse(e Option[g4.Element], name string) bool = e match {
+    case Some(g4.RuleRef(r)) => r == name
+    case Some(g4.Labeled(_, _, g4.RuleRef(r))) => r == name
+    case _ => false
+}
+
+// isEpsilonElement says whether e matches nothing: an action or a predicate.
+func isEpsilonElement(e g4.Element) bool = e match {
+    case g4.Action(_) => true
+    case g4.Predicate(_) => true
+    case _ => false
+}
+
+// leftLabel is the label of a leading call of the rule, `l=e` or `ls+=e`.
+func leftLabel(e g4.Element) Option[LabelRef] = e match {
+    case g4.Labeled(l, append, _) => Some(LabelRef(l, append))
+    case _ => None[LabelRef]()
+}
+
+// recRule compiles rewritten rule index: the primary block, then a star loop
+// over the op alternatives whose entry is a precedence decision. ANTLR's
+// rewrite starts the primary block with an empty action, which only keeps
+// ANTLR from reducing the block to a set; galop never reduces this block,
+// and leaves the action out.
+func (b Ptr[builder]) recRule(index int, r g4.Rule, rw Rewrite) RuleIR {
+    val start = b.ruleStart.Get(index)
+    val stop = b.ruleStop.Get(index)
+    val primary = b.recBlock(index, rw.Primary.Map((a) => b.recAlt(index, a, false)), s"${r.Name} : ${recText(rw.Primary)}")
+    val loop = b.recLoop(index, rw.Ops, s"(${recText(rw.Ops)})")
+    b.eps(start, primary.Frag.Entry)
+    b.eps(primary.Frag.Exit, loop.Frag.Entry)
+    b.eps(loop.Frag.Exit, stop)
+    RuleIR(index, r.Name, None[int](), ArrayOf(AltIR(None[string](), primary.Steps.AppendAll(loop.Steps))), Some(rw))
+}
+
+// recText renders rewritten alternatives on one line, labels included.
+func recText(alts Array[RecAlt]) string =
+    alts.Map((a) => g4.FormatElement(g4.Block(ArrayOf(g4.Alt(a.Elements, a.Label, EmptyArray[g4.LexerCommand]()))))).Map((t) =>
+        strings.TrimSuffix(strings.TrimPrefix(t, "("), ")")
+    ).MkString(" | ")
+
+// recAlt compiles one alternative of a rewritten rule. An op alternative
+// starts with its precedence predicate and a new recursion context; a
+// labeled primary one replaces the rule's context with its label's. The
+// call the rewrite gives a precedence (Next) is the alternative's last
+// element before any trailing actions and predicates.
+func (b Ptr[builder]) recAlt(rule int, a RecAlt, op bool) Piece {
+    val entry = b.state(rule, BasicState())
+    val lead = if (op) {
+        val after = b.state(rule, BasicState())
+        b.edge(entry, PrecedencePredicate(after, rule, a.Precedence))
+        (after, ArrayOf[Step](CheckPrecedence(a.Precedence), RecursionStart(a.Label, a.Left)))
+    } else (entry, a.Label.Map((l) => ArrayOf[Step](ReplaceContext(l))).GetOrElse(EmptyArray[Step]()))
+    val trailing = a.Elements.Reverse().TakeWhile(isEpsilonElement).Size()
+    val withPrecedence = a.Next.Map((_) => a.Elements.Size() - 1 - trailing)
+    val (exit, steps) = a.Elements.ZipWithIndex().FoldLeft(lead, (acc, ei) => {
+        val p = (withPrecedence, a.Next) match {
+            case (Some(i), Some(next)) if i == ei.V2 => b.recCall(rule, ei.V1, next)
+            case _ => b.element(rule, ei.V1, None[LabelRef]())
+        }
+        b.eps(acc.V1, p.Frag.Entry)
+        (p.Frag.Exit, acc.V2.AppendAll(p.Steps))
+    })
+    Piece(Frag(entry, exit), steps)
+}
+
+// recCall compiles e, a call of the rule, passing precedence.
+func (b Ptr[builder]) recCall(rule int, e g4.Element, precedence int) Piece {
+    b.current = Some(e)
+    e match {
+        case g4.Labeled(name, appendTo, g4.RuleRef(callee)) => b.ruleCall(rule, callee, Some(LabelRef(name, appendTo)), precedence)
+        case g4.RuleRef(callee) => b.ruleCall(rule, callee, None[LabelRef](), precedence)
+        case _ => b.element(rule, e, None[LabelRef]())
+    }
+}
+
+// recBlock joins compiled alternatives into a block: one is inlined, more
+// get a decision.
+func (b Ptr[builder]) recBlock(rule int, pieces Array[Piece], text string) Piece = pieces match {
+    case Array(only) => only
+    case _ => {
+        val start = b.state(rule, BlockStartState())
+        val end = b.state(rule, BlockEndState())
+        pieces.ForEach((p) => {
+            b.eps(start, p.Frag.Entry)
+            b.eps(p.Frag.Exit, end)
+        })
+        val d = b.decide(start, rule, AltBlock(), true, text)
+        Piece(Frag(start, end), ArrayOf(Choose(d, pieces.Map(_.Steps), None[int]())))
+    }
+}
+
+// recLoop compiles the rewritten rule's greedy star loop over its op
+// alternatives, text being their block's.
+func (b Ptr[builder]) recLoop(rule int, ops Array[RecAlt], text string) Piece {
+    val entry = b.state(rule, StarLoopEntryState())
+    val body = b.recBlock(rule, ops.Map((a) => b.recAlt(rule, a, true)), text)
+    val loopBack = b.state(rule, StarLoopBackState())
+    val end = b.state(rule, LoopEndState())
+    b.eps(entry, body.Frag.Entry)
+    b.eps(entry, end)
+    b.eps(body.Frag.Exit, loopBack)
+    b.eps(loopBack, entry)
+    val d = b.decide(entry, rule, StarEntry(), true, text + "*", true)
+    Piece(Frag(entry, end), ArrayOf(Loop(false, d, 1, body.Steps)))
+}

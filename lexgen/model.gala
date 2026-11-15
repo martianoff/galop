@@ -137,6 +137,8 @@ func toEdge(t atn.Transition, classes Array[atn.IntervalSet], actionIds func(Arr
     case atn.LexerActions(target, cmds) => Act(target, actionIds(cmds))
     case atn.Predicate(target, _, _) => Eps(target)
     case atn.Action(target, _, _) => Eps(target)
+    // Only a parser rule is rewritten for left recursion.
+    case atn.PrecedencePredicate(target, _, _) => Eps(target)
 }
 
 func consumeEdge(target int, set atn.IntervalSet, classes Array[atn.IntervalSet]) Edge =

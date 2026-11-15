@@ -27,12 +27,15 @@ func Compile(g g4.Grammar) Either[Array[diag.Diagnostic], Compiled] {
     val vocab = BuildVocabulary(g)
     val parserRules = g.Rules.Filter((r) => !r.IsLexer())
     val lexerRules = implicitLexerRules(vocab).AppendAll(g.Rules.Filter(_.IsLexer()))
-    val parser = newBuilder(false, vocab, parserRules)
+    // ANTLR rewrites a directly left-recursive rule before building it.
+    val rewritten = parserRules.Map((r) => if (StartsWithItself(r)) RewriteOf(r) else Right[diag.Diagnostic, Option[Rewrite]](None[Rewrite]()))
+    val rewriteErrors = rewritten.Collect({ case Left(d) => d })
+    val parser = newBuilder(false, vocab, parserRules, rewritten.Map((e) => e.Fold((_) => None[Rewrite](), (rw) => rw)))
     val ruleIRs = parserRules.ZipWithIndex().Map((ri) => parser.rule(ri.V2, ri.V1))
     val lexer = newBuilder(true, vocab, lexerRules)
     val tokensStart = lexer.tokensStart()
     lexerRules.ZipWithIndex().ForEach((ri) => lexer.rule(ri.V2, ri.V1))
-    val errors = parser.located(g).AppendAll(lexer.located(g))
+    val errors = rewriteErrors.AppendAll(parser.located(g)).AppendAll(lexer.located(g))
     if errors.NonEmpty() {
         return Left(errors)
     }
@@ -82,6 +85,10 @@ type builder struct {
     var labels Array[Option[LabelRef]]
     // wildcards marks the states that match a parser wildcard.
     var wildcards Array[bool]
+    // precedences is the precedence each state's rule call passes.
+    var precedences Array[int]
+    // rewrites is, by rule, ANTLR's rewrite of a directly left-recursive rule.
+    rewrites Array[Option[Rewrite]]
     lexer bool
     vocab Vocabulary
     rules Array[g4.Rule]
@@ -90,7 +97,7 @@ type builder struct {
 
 // newBuilder allocates the start and stop state of every rule up front, so a
 // rule can be called before it is compiled.
-func newBuilder(lexer bool, vocab Vocabulary, rules Array[g4.Rule]) Ptr[builder] {
+func newBuilder(lexer bool, vocab Vocabulary, rules Array[g4.Rule], rewrites Array[Option[Rewrite]] = EmptyArray[Option[Rewrite]]()) Ptr[builder] {
     val b = &builder{
         kinds: EmptyArray[StateKind](),
         owner: EmptyArray[int](),
@@ -103,6 +110,8 @@ func newBuilder(lexer bool, vocab Vocabulary, rules Array[g4.Rule]) Ptr[builder]
         ruleStop: EmptyArray[int](),
         labels: EmptyArray[Option[LabelRef]](),
         wildcards: EmptyArray[bool](),
+        precedences: EmptyArray[int](),
+        rewrites: rewrites,
         lexer: lexer,
         vocab: vocab,
         rules: rules,
@@ -123,6 +132,7 @@ func (b Ptr[builder]) state(rule int, kind StateKind) int {
     b.decisionOf = b.decisionOf.Append(None[int]())
     b.labels = b.labels.Append(None[LabelRef]())
     b.wildcards = b.wildcards.Append(false)
+    b.precedences = b.precedences.Append(0)
     id
 }
 
@@ -137,9 +147,9 @@ func (b Ptr[builder]) eps(from int, to int) {
 // decide registers state as a decision. It is called once the state's
 // transitions are in place, after any decisions nested inside it, which is
 // the order ANTLR numbers decisions in.
-func (b Ptr[builder]) decide(state int, rule int, kind DecisionKind, greedy bool, text string) int {
+func (b Ptr[builder]) decide(state int, rule int, kind DecisionKind, greedy bool, text string, precedence bool = false) int {
     val id = b.decisions.Size()
-    b.decisions = b.decisions.Append(Decision(id, state, rule, kind, greedy, b.outs.Get(state).Size(), text))
+    b.decisions = b.decisions.Append(Decision(id, state, rule, kind, greedy, b.outs.Get(state).Size(), text, precedence))
     b.decisionOf = b.decisionOf.Updated(state, Some(id))
     id
 }
@@ -166,7 +176,7 @@ func (b Ptr[builder]) ruleName(rule int) string = b.names.Get(rule)
 
 func (b Ptr[builder]) finish(kind ATNKind, name string, tokensStart Option[int], tokenTypes Array[Option[int]]) ATN {
     val states = ArrayTabulate(b.kinds.Size(), (i) => State(i, b.owner.Get(i), b.kinds.Get(i), b.outs.Get(i), b.decisionOf.Get(i)))
-    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes, b.labels, b.wildcards)
+    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes, b.labels, b.wildcards, b.precedences)
 }
 
 // tokensStart creates a lexer's start state: one alternative per token rule,
@@ -179,7 +189,13 @@ func (b Ptr[builder]) tokensStart() int {
 }
 
 // rule compiles rule index's body between its start and stop states.
-func (b Ptr[builder]) rule(index int, r g4.Rule) RuleIR {
+func (b Ptr[builder]) rule(index int, r g4.Rule) RuleIR = b.rewrites.GetOption(index).FlatMap((rw) => rw) match {
+    case Some(rw) => b.recRule(index, r, rw)
+    case None() => b.plainRule(index, r)
+}
+
+// plainRule compiles a rule ANTLR does not rewrite.
+func (b Ptr[builder]) plainRule(index int, r g4.Rule) RuleIR {
     val start = b.ruleStart.Get(index)
     val stop = b.ruleStop.Get(index)
     r.Alts match {
@@ -393,7 +409,7 @@ func (b Ptr[builder]) plus(rule int, alts Array[g4.Alt], greedy bool, text strin
     Piece(Frag(body.Frag.Entry, end), ArrayOf(Loop(true, d, if (greedy) 1 else 2, body.Steps)))
 }
 
-func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Piece {
+func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef], precedence int = 0) Piece {
     val target = b.names.IndexOf(name)
     if target < 0 {
         return b.empty(rule, diag.UndefinedRuleRef.New(name))
@@ -402,7 +418,8 @@ func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef]) Pi
     val follow = b.state(rule, BasicState())
     b.edge(from, RuleCall(b.ruleStart.Get(target), target, follow))
     b.labels = b.labels.Updated(from, label)
-    Piece(Frag(from, follow), ArrayOf(CallRule(target, follow, label)))
+    b.precedences = b.precedences.Updated(from, precedence)
+    Piece(Frag(from, follow), ArrayOf(CallRule(target, follow, label, precedence)))
 }
 
 // matchSet compiles a one-symbol match. listed says whether the set lists its

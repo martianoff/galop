@@ -133,6 +133,57 @@ runtime prediction and the speed ratios from regressing (see
   `TokensStart` with one alternative per token rule, `RuleTokenType` per rule.
   Lexer commands sit on `LexerActions` transitions at the end of an alternative.
 
+### Left-recursive rules (in progress)
+
+Status: being built in phases (below); until the last one lands, code generation
+and `-report` reject a directly left-recursive rule (error 500).
+
+ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
+(`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse
+what that rewrite means:
+
+- **Classification.** Each outer alternative is *binary* (`e op… e`: starts and
+  ends with a call of the rule, optionally labeled), *suffix* (`e op…`), *prefix*
+  (`op… e`: ends with a call of the rule) or *other*. Alternative *i* of *n*
+  (from 1) has precedence *n − i + 1*: earlier alternatives bind tighter.
+- **Rewrite.**
+  `e[_p] : ( {} prefix-and-other alts ) ( {precpred(_ctx, prec)}?<p=prec> op-alt )* ;`
+  The loop's alternatives are the binary and suffix ones in their original order,
+  with the leading call of the rule removed. In a binary or prefix alternative the
+  rightmost call of the rule gets a precedence argument: a binary one *prec + 1*
+  (*prec* with `<assoc=right>` on the alternative), a prefix one *prec*. Every
+  other call of the rule, and the entry call, has precedence 0.
+- **Trees.** The rule's context starts as for any rule. A labeled prefix or other
+  alternative replaces it with the label's context (`recRuleReplaceContext`). Each
+  iteration of the loop makes a new context (the alternative label's, or the
+  rule's) whose parent is the rule's caller, adds the previous context as its first
+  child, stores it in the label of the removed left operand if it had one, and
+  makes it the current context (`recRuleAltStartAction`,
+  `PushNewRecursionContext`); at the end the outermost of them takes the original
+  context's place (`UnrollRecursionContexts`). So `1+2*3` is
+  `(e (e 1) + (e (e 2) * (e 3)))`.
+- **Prediction.** `precpred(_ctx, prec)` is true when *prec* ≥ the precedence the
+  rule was called with. Prediction only evaluates predicates met in the decision's
+  own rule before any call: in full-context prediction at once against the current
+  precedence, in SLL through ANTLR's precedence DFA (a start state per precedence,
+  built by the precedence filter). A predicate that fails after prediction picked
+  its alternative is ANTLR's `FailedPredicateException`, "rule e failed predicate:
+  {precpred(_ctx, 2)}?".
+
+The phases, each tested against ANTLR before the next:
+
+1. The rewrite: classification, `<assoc=right|left>` on alternatives, the rewritten
+   rule as IR and ATN (`CheckPrecedence`, rule calls with a precedence, the context
+   steps above, precedence decisions), and `-report` on it.
+2. Prediction: precedence-aware static decisions, and the runtime predictor's
+   precedence DFA, filter and full-context evaluation.
+3. The native flavor: rule functions with `_p`, ANTLR's tree, the first-error
+   replay (failed predicates included).
+4. The antlr flavor: ANTLR's recursion contexts.
+5. Error recovery in left-recursive rules, both flavors, and the converter.
+6. The corpus: test grammars for each shape of alternative, then Milvus `Plan.g4`,
+   SigNoz `HavingExpression.g4`, CEL and Grule; benchmarks.
+
 ## Analysis (`analysis`)
 
 `analysis.Analyze(parserATN, maxK) Analysis` (types in `analysis/plan.gala`):

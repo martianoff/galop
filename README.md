@@ -345,14 +345,16 @@ sources for a `go_library`.
 - lexer commands: `-> skip`, `-> channel(HIDDEN)`, `-> pushMode(X)`, ...
 
 Not supported yet, and reported as errors rather than ignored: rule arguments,
-`returns`/`locals`, rule-level options and actions, element options
-(`<assoc=right>`), lexer modes, grammar imports, the `tokenVocab` and
-`caseInsensitive` options, and in the Go target, semantic predicates.
-Directly left-recursive rules (`e : e '+' e | INT`, which ANTLR rewrites into a
-loop) pass `-check`, as in ANTLR, but code generation and `-report` reject them.
-Mutually left-recursive rules are an error, as in ANTLR (error 119); `-check`
-does not report ANTLR's errors for left recursion its rewrite cannot handle
-(148, 169).
+`returns`/`locals`, rule-level options and actions, element options other than
+`<assoc=left|right>` on an alternative, lexer modes, grammar imports, the
+`tokenVocab` and `caseInsensitive` options, and in the Go target, semantic
+predicates. Directly left-recursive rules (`e : e '+' e | INT`) are rewritten into
+a precedence loop as ANTLR rewrites them, which `-report` shows; code generation
+for them is being built (see [design](docs/DESIGN.md#left-recursive-rules-in-progress))
+and rejects them until then. Mutually left-recursive rules are an error, as in
+ANTLR (error 119), and so is a left-recursive rule with no other alternative
+(147); `-check` does not report ANTLR's errors for left recursion its rewrite
+cannot handle (148, 169).
 
 ## Development
 

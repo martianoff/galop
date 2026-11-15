@@ -94,7 +94,7 @@ func aligns(k nodeKind) bool {
 func labelCount(name string, steps Array[atn.Step]) int = steps.FoldLeft(0, (n, s) => n + (s match {
     case atn.MatchToken(_, Some(l)) if l.Name == name => 1
     case atn.MatchSet(_, Some(l), _) if l.Name == name => 1
-    case atn.CallRule(_, _, Some(l)) if l.Name == name => 1
+    case atn.CallRule(_, _, Some(l), _) if l.Name == name => 1
     case atn.Choose(_, alts, _) => alts.Map((a) => labelCount(name, a)).FoldLeft(0, (m, c) => if (c > m) c else m)
     case atn.Loop(_, _, _, body) => if (labelCount(name, body) > 0) 2 else 0
     case _ => 0
@@ -112,7 +112,7 @@ func stepLiteral(pfx string, s atn.Step, labels Array[string]) Option[string] {
         case atn.MatchToken(tok, l) => Some(s"{op: ${pfx}OpToken, sym: $tok, label: ${num(l)}}")
         case atn.MatchSet(set, l, _) =>
             Some(s"{op: ${pfx}OpSet, set: []int32{${set.Ranges.FlatMap((r) => ArrayOf(r.Lo, r.Hi)).MkString(", ")}}, label: ${num(l)}}")
-        case atn.CallRule(rule, _, l) => Some(s"{op: ${pfx}OpRule, sym: $rule, label: ${num(l)}}")
+        case atn.CallRule(rule, _, l, _) => Some(s"{op: ${pfx}OpRule, sym: $rule, label: ${num(l)}}")
         case atn.Choose(_, alts, exit) => {
             // The exit alternative, if any, is tried where its number puts it.
             val order = exit match {

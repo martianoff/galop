@@ -136,11 +136,11 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
                     case Validate(roundTrip) => done(validated(path, g, roundTrip))
                     // -depend only needs the file names, which come from the compiled grammar.
                     case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
-                    // The rest analyzes the grammar, which needs ANTLR's
-                    // rewrite of direct left recursion first.
+                    case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
+                    // Code generation for rewritten left-recursive rules lands in
+                    // phases (DESIGN.md, "Left-recursive rules").
                     case _ if !plan.LeftRecursion.Direct.IsEmpty() =>
                         done(problemsOnly(ArrayOf(directLeftRecursionProblem(plan.LeftRecursion, g, c))))
-                    case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
                     case _ => {
                         val plans = c.Parser.Map((p) => analysis.Analyze(p, plan, stage.NoBrackets))
                         FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
@@ -167,9 +167,8 @@ func leftRecursionProblem(lr leftrec.LeftRecursion, c atn.Compiled, path string)
     }
 
 // directLeftRecursionProblem reports the rules that call themselves first
-// (`e : e '+' e | INT`), at the first of them. ANTLR rewrites them into
-// precedence loops; galop does not yet, and analyzing them as written may not
-// finish.
+// (`e : e '+' e | INT`), at the first of them: galop rewrites them into
+// precedence loops as ANTLR does, but does not generate code for them yet.
 func directLeftRecursionProblem(lr leftrec.LeftRecursion, g g4.Grammar, c atn.Compiled) diag.Diagnostic {
     val names = lr.Direct.Map((i) => c.Rules.Get(i).Name)
     val noun = if (names.Size() == 1) "rule" else "rules"

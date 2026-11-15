@@ -308,6 +308,12 @@ func (d decider) expand(c0 config, consumed int) expansion {
                         predicated = true
                         visit(config(target, c.Stack, c.Exit, c.Alt))
                     }
+                    // Precedence predicates are settled by phase 2 of the left-recursion
+                    // work (DESIGN.md); until then they make a decision adaptive.
+                    case atn.PrecedencePredicate(target, _, _) => {
+                        predicated = true
+                        visit(config(target, c.Stack, c.Exit, c.Alt))
+                    }
                     case atn.Action(target, _, _) => visit(config(target, c.Stack, c.Exit, c.Alt))
                 })
             }

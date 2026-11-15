@@ -95,16 +95,27 @@ func StripPositions(g Grammar) Grammar = g.Copy(
     Rules = g.Rules.Map(StripRulePositions),
 )
 
-// StripRulePositions returns r with its positions cleared.
-func StripRulePositions(r Rule) Rule = r.Copy(Pos = NoPos, NodePos = EmptyArray[Pos]())
+// StripRulePositions returns r with its positions cleared, those of its
+// alternatives' options included.
+func StripRulePositions(r Rule) Rule = r.Copy(
+    Pos = NoPos,
+    NodePos = EmptyArray[Pos](),
+    Alts = r.Alts.Map((a) => a.Copy(Options = a.Options.Map(_.Copy(Pos = NoPos)))),
+)
 
 // Alt is one alternative of a rule or a block: a sequence of elements, an
-// optional `# Label`, and the lexer commands after `->`.
+// optional `# Label`, and the lexer commands after `->`. Options are the
+// element options at its start, `<assoc=right>`, which ANTLR reads on the
+// alternatives of a left-recursive rule.
 struct Alt(
     Elements Array[Element],
     Label Option[string],
     Commands Array[LexerCommand],
+    Options Array[OptionEntry] = EmptyArray[OptionEntry](),
 )
+
+// RightAssoc says whether a has `<assoc=right>`.
+func (a Alt) RightAssoc() bool = a.Options.Exists((o) => o.Name == "assoc" && o.Value == "right")
 
 // LexerCommand is one command after `->`: `skip`, `channel(HIDDEN)`, `pushMode(X)`.
 struct LexerCommand(Name string, Arg Option[string])

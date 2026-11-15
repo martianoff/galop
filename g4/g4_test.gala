@@ -95,6 +95,11 @@ func TestParsePrintsElements(t T) T = RunCases[string, string](t,
     Case[string, string](Name = "actions and predicates", Input = "a: {p()}? b {act();};", Expected = "a: {p()}? b {act();};\n"),
     Case[string, string](Name = "fragment", Input = "fragment F: 'f';", Expected = "fragment F: 'f';\n"),
     Case[string, string](Name = "rule named mode", Input = "mode: b;", Expected = "mode: b;\n"),
+    Case[string, string](
+        Name = "associativity",
+        Input = "e: <assoc=right> e '^' e | <assoc=left> e '+' e | INT;",
+        Expected = "e\n    : <assoc=right> e '^' e\n    | <assoc=left> e '+' e\n    | INT\n    ;\n",
+    ),
     Case[string, string](Name = "nested blocks", Input = "a: (b (c | d)+)?;", Expected = "a: (b (c | d)+)?;\n"),
 )
 
@@ -106,7 +111,7 @@ func TestParseErrors(t T) T = RunCases[string, string](t,
     Case[string, string](Name = "lowercase fragment", Input = "grammar g;\nfragment a: 'x';", Expected = "2:10: syntax error: fragment rule 'a' must be a lexer rule (uppercase name)"),
     Case[string, string](Name = "rule arguments", Input = "grammar g;\na[int x]: b;", Expected = "2:2: galop does not support rule arguments yet"),
     Case[string, string](Name = "returns", Input = "grammar g;\na returns [int x]: b;", Expected = "2:3: galop does not support 'returns' yet"),
-    Case[string, string](Name = "element options", Input = "grammar g;\na: <assoc=right> b;", Expected = "2:4: galop does not support element options yet"),
+    Case[string, string](Name = "element options other than assoc", Input = "grammar g;\na: <fail=x> b;", Expected = "2:5: galop does not support the element option fail yet"),
     Case[string, string](Name = "imports", Input = "grammar g;\nimport Other;", Expected = "2:1: galop does not support grammar imports yet"),
     Case[string, string](Name = "lexer modes", Input = "lexer grammar g;\nA: 'a';\nmode M;\nB: 'b';", Expected = "3:1: galop does not support lexer modes yet"),
     Case[string, string](Name = "bad range", Input = "grammar g;\nA: 'a'..B;", Expected = "2:9: syntax error: expected a literal after '..', found 'B'"),
@@ -148,6 +153,7 @@ func TestCheck(t T) T = RunCases[string, string](t,
     Case[string, string](Name = "parser grammar without a vocabulary", Input = "parser grammar g;\na: B;", Expected = "125 2:4: implicit definition of token B in parser"),
     Case[string, string](Name = "tokenVocab supplies the tokens", Input = "parser grammar g;\noptions { tokenVocab = L; }\na: B;", Expected = ""),
     Case[string, string](Name = "no rules", Input = "lexer grammar Empty;", Expected = "99 1:15: grammar Empty has no rules"),
+    Case[string, string](Name = "unknown associativity", Input = "grammar g;\ne: <assoc=up> e '^' e | B;\nB: 'b';", Expected = "84 2:5: unsupported option value assoc=up"),
     Case[string, string](Name = "results in source order", Input = "grammar g;\nb: y;\na: x;\nb: 'z';", Expected = "56 2:4: reference to undefined rule: y; 56 3:4: reference to undefined rule: x; 51 4:1: rule b redefinition; previous at line 2"),
 )
 

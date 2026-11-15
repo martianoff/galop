@@ -5,6 +5,16 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Added:** directly left-recursive rules (`e : e '*' e | e '+' e | INT`) are
+  rewritten into a precedence loop as ANTLR 4.13.1 rewrites them: the same
+  classification of alternatives (binary, prefix, suffix, other), precedences,
+  loop order, precedence arguments and labels. `-report` shows the rewritten
+  rule; code generation for such rules is being built and still rejects them
+  (error 500). A left-recursive rule with no other alternative is ANTLR's error
+  147.
+- **Added:** `<assoc=left>` and `<assoc=right>` at the start of an alternative;
+  another `assoc` value is ANTLR's warning 84.
+
 - **Changed (breaking):** the antlr flavor is a drop-in for ANTLR's parser. Its
   rule methods have ANTLR's signatures (`p.Prog()` returns `IProgContext`): on
   input with syntax errors they report every error ANTLR reports to the

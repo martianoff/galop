@@ -76,7 +76,7 @@ func runsCode(rules Array[atn.RuleIR]) bool =
 
 // callees are the rules steps call anywhere.
 func callees(steps Array[atn.Step]) HashSet[int] = steps.FoldLeft(EmptyHashSet[int](), (acc, s) => s match {
-    case atn.CallRule(rule, _, _) => acc.Add(rule)
+    case atn.CallRule(rule, _, _, _) => acc.Add(rule)
     case atn.Choose(_, alts, _) => alts.FoldLeft(acc, (inner, a) => inner.Union(callees(a)))
     case atn.Loop(_, _, _, body) => acc.Union(callees(body))
     case _ => acc
@@ -116,7 +116,7 @@ func stepsEndWithEOF(rules Array[atn.RuleIR], steps Array[atn.Step], seen HashSe
     tail.LastOption() match {
         case Some(atn.MatchToken(t, _)) => t == atn.TokenEOF
         case Some(atn.Choose(_, alts, None())) => alts.ForAll((a) => stepsEndWithEOF(rules, a, seen))
-        case Some(atn.CallRule(rule, _, _)) =>
+        case Some(atn.CallRule(rule, _, _, _)) =>
             !seen.Contains(rule) && ruleEndsWithEOF(rules, rules.Get(rule), seen.Add(rule))
         case _ => false
     }

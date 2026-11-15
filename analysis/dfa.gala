@@ -268,10 +268,12 @@ func decisionSeed(g grammarInfo, dec atn.Decision, d decider) seed {
         case (atn.RuleCall(target, _, follow), alt) => config(target, d.stacks.push(follow, emptyStack), inside, alt)
         case (atn.LexerActions(target, _), alt) => config(target, emptyStack, inside, alt)
         case (atn.Predicate(target, _, _), alt) => config(target, emptyStack, inside, alt)
+        case (atn.PrecedencePredicate(target, _, _), alt) => config(target, emptyStack, inside, alt)
         case (atn.Action(target, _, _), alt) => config(target, emptyStack, inside, alt)
     })
     val predicated = seeds.Exists((p) => p.V1 match {
         case atn.Predicate(_, _, _) => true
+        case atn.PrecedencePredicate(_, _, _) => true
         case _ => false
     })
     seed(moves, starts, predicated)
