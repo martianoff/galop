@@ -5,6 +5,11 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Added:** each error of the native flavor's `Parse<Rule>WithRecovery` carries
+  `Expected`, the token types ANTLR's `GetExpectedTokens()` gives an error
+  listener at that error, so code that builds "expecting one of ..." messages
+  from ANTLR's listener can move to the native flavor.
+
 ## 0.3.2
 
 - **Fixed:** parsing a rule that does not end with EOF (an expression parsed on its

@@ -367,21 +367,35 @@ func BenchmarkConvert(b *testing.B) {
 	}
 }
 
-// allErrors keeps every syntax error ANTLR's parser reports.
+// allErrors keeps every syntax error ANTLR's parser reports, and the tokens
+// its parser expects then (GetExpectedTokens), as an error listener sees them.
 type allErrors struct {
 	*antlr.DefaultErrorListener
-	errs []string
+	errs, expected []string
 }
 
-func (l *allErrors) SyntaxError(_ antlr.Recognizer, _ interface{}, line, column int, msg string, _ antlr.RecognitionException) {
+func (l *allErrors) SyntaxError(rec antlr.Recognizer, _ interface{}, line, column int, msg string, _ antlr.RecognitionException) {
 	l.errs = append(l.errs, fmt.Sprintf("%d:%d: %s", line, column, msg))
+	l.expected = append(l.expected, expectedText(rec.(antlr.Parser).GetExpectedTokens()))
+}
+
+// expectedText renders an ANTLR token set as the types in it, ascending
+// (its intervals end before Stop).
+func expectedText(set *antlr.IntervalSet) string {
+	var types []int32
+	for _, iv := range set.GetIntervals() {
+		for t := iv.Start; t < iv.Stop; t++ {
+			types = append(types, int32(t))
+		}
+	}
+	return fmt.Sprint(types)
 }
 
 // recoverANTLR parses src with ANTLR's parser as a fresh process does (its
 // DFA starts empty) and returns every syntax error and the error-recovered
 // tree, converted. crashed says ANTLR's runtime panicked: its MatchWildcard
 // dereferences the nil token RecoverInline returns for a wildcard at EOF.
-func recoverANTLR(src string) ([]string, *gn.@G@Tree, bool) {
+func recoverANTLR(src string) ([]string, []string, *gn.@G@Tree, bool) {
 	lexer := ga.New@G@Lexer(antlr.NewInputStream(src))
 	lexer.RemoveErrorListeners()
 	stream := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
@@ -397,21 +411,23 @@ func recoverANTLR(src string) ([]string, *gn.@G@Tree, bool) {
 	p.AddErrorListener(listener)
 	var ctx antlr.ParserRuleContext
 	if crashes(func() { ctx = p.@START@() }) {
-		return nil, nil, true
+		return nil, nil, nil, true
 	}
 	tree, _ := ga.@G@ToNative(ctx, stream, src)
-	return listener.errs, tree, false
+	return listener.errs, listener.expected, tree, false
 }
 
-// recoverGalop is Parse@START@WithRecovery's errors, rendered as
-// recoverANTLR renders ANTLR's, and its tree.
-func recoverGalop(src string) ([]string, *gn.@G@Tree) {
+// recoverGalop is Parse@START@WithRecovery's errors and the tokens expected
+// at each, rendered as recoverANTLR renders ANTLR's, and its tree.
+func recoverGalop(src string) ([]string, []string, *gn.@G@Tree) {
 	root, errs := gn.Parse@START@WithRecovery(gn.@G@Lex(src))
 	out := make([]string, len(errs))
+	expected := make([]string, len(errs))
 	for i, e := range errs {
 		out[i] = fmt.Sprintf("%d:%d: %s", e.Line, e.Column, e.Msg)
+		expected[i] = fmt.Sprint(e.Expected)
 	}
-	return out, root.Tree()
+	return out, expected, root.Tree()
 }
 
 // sameRecoveredTree describes the first difference between two trees,
@@ -450,7 +466,7 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 		if len(gn.@G@Lex(src).Errors) > 0 {
 			continue
 		}
-		wantErrs, wantTree, crashed := recoverANTLR(src)
+		wantErrs, wantExp, wantTree, crashed := recoverANTLR(src)
 		if crashed {
 			crashes++
 			continue
@@ -462,8 +478,11 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 		if len(wantErrs) > 1 {
 			multi++
 		}
-		gotErrs, gotTree := recoverGalop(src)
+		gotErrs, gotExp, gotTree := recoverGalop(src)
 		d := sameRecoveredTree(wantTree, gotTree)
+		if !slices.Equal(wantExp, gotExp) {
+			d += fmt.Sprintf("\n expected tokens %v, want %v", gotExp, wantExp)
+		}
 		if slices.Equal(wantErrs, gotErrs) && d == "" {
 			same++
 			continue

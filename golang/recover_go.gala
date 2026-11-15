@@ -57,6 +57,12 @@ type @X@ParseError struct {
 	// lexes as it is read, so it reports the token recognition errors of
 	// tokens up to Read (Tokens.ErrorAt) before this error.
 	Read int
+	// Expected are the token types ANTLR's GetExpectedTokens() gives when
+	// the error is reported, as an error listener sees them: what can
+	// follow the parser's state through the rules being parsed, in
+	// ascending order, @X@EOF first. It is empty for the error of tokens
+	// that do not end with EOF.
+	Expected []int32
 }
 
 // @X@ParseWithRecovery parses the tokens of ts as the rule with index rule
@@ -134,6 +140,7 @@ func (p *PARSER) recoverParse(rule int) (*@X@Tree, int32, []@X@ParseError) {
 			Node:           r.nodeOf[x.frame],
 			Kids:           x.kids,
 			Read:           x.read,
+			Expected:       x.expected,
 		}
 	}
 	return r.tree, root, errs
@@ -199,13 +206,14 @@ type PFXRecLabel struct {
 	node, tok int32
 }
 
-// PFXRecError is a reported error with the frame it was reported in and
-// that frame's number of children then.
+// PFXRecError is a reported error with the frame it was reported in, that
+// frame's number of children then, and the tokens expected then.
 type PFXRecError struct {
-	err   PFXEmuError
-	frame int32
-	kids  int
-	read  int
+	err      PFXEmuError
+	frame    int32
+	kids     int
+	read     int
+	expected []int32
 }
 
 // The bits of PFXStateLabel: the label's number (as the native parser
@@ -506,7 +514,9 @@ func (r *PFXRecovery) report(err *PFXEmuError) {
 	}
 	r.recovering = true
 	f := r.frames[len(r.frames)-1]
-	r.errs = append(r.errs, PFXRecError{*err, f.serial, len(r.kids) - f.kids, r.read()})
+	// An error listener asks the parser at its state, in the rules being parsed.
+	exp := r.e.expected(r.state).types()
+	r.errs = append(r.errs, PFXRecError{*err, f.serial, len(r.kids) - f.kids, r.read(), exp})
 }
 
 // read is the furthest token ANTLR's parse has read so far: the current one
@@ -585,6 +595,17 @@ func (r *PFXRecovery) matchSet(s, i, next int32) {
 		tok = r.recoverInline(s, next, false)
 	}
 	r.label(s, tok)
+}
+
+// types are the types in x, ascending, EOF first.
+func (x *PFXExpected) types() []int32 {
+	var out []int32
+	for i, ok := range x.in {
+		if ok {
+			out = append(out, int32(i-1))
+		}
+	}
+	return out
 }
 
 // first is ANTLR's IntervalSet.first(): the smallest type in x, EOF first,
