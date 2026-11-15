@@ -4,7 +4,7 @@
 #
 #   cache.sh mark DIR         after restoring DIR: mark every restored file unused
 #   cache.sh trim DIR         before saving DIR: delete the files this run never used
-#   cache.sh prune PREFIX KEY after saving KEY: delete main's other caches named PREFIX*
+#   cache.sh prune PREFIX KEY after saving KEY: delete main's older caches named PREFIX*
 #
 # Go and Bazel both set a cache entry's mtime when they use it (Go only when the
 # mtime is over an hour old), so `mark` sets every restored file two hours back
@@ -40,11 +40,16 @@ trim)
   ;;
 prune)
   prefix=$2 key=$3
+  # Keys end in the run id, and runs on main overlap, so delete only the
+  # caches of earlier runs: a run that finishes late keeps a newer run's cache.
+  run=${key##*-}
   gh cache list --ref refs/heads/main --key "$prefix" --limit 100 --json id,key \
-    --jq ".[] | select(.key != \"$key\") | \"\(.id) \(.key)\"" |
+    --jq '.[] | "\(.id) \(.key)"' |
     while read -r id old; do
-      echo "deleting $old, superseded by $key"
-      gh cache delete "$id"
+      if [ "${old##*-}" -lt "$run" ]; then
+        echo "deleting $old, superseded by $key"
+        gh cache delete "$id"
+      fi
     done
   ;;
 *)
