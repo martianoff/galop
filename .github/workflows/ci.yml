@@ -15,9 +15,14 @@ on:
 permissions:
   contents: read
 
+# A new push to a branch or pull request cancels its older run. Each push to
+# main gets a run of its own that nothing cancels: runs on main fill the caches
+# every other run reads. They used to share one group, so every push waited for
+# the previous run's macOS lane (up to 2.5 hours), and GitHub cancelled every
+# waiting run but the newest. Only the macOS job still takes turns on main
+# (its concurrency below).
 concurrency:
-  group: ci-${{ github.ref }}
-  # Runs on main fill the caches every other run reads, so let each one finish.
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # galop is built with a pinned GALA release. Bump GALA_VERSION together with
@@ -289,6 +294,11 @@ jobs:
       contents: read
       actions: write
     timeout-minutes: ${{ matrix.timeout }}
+    # macOS on main takes turns: a push arriving while it runs waits, and a
+    # newer push replaces a waiting one (that job shows as cancelled).
+    concurrency:
+      group: ${{ matrix.os == 'macos-latest' && github.ref == 'refs/heads/main' && 'ci-main-macos' || format('ci-{0}-{1}', matrix.os, github.run_id) }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
