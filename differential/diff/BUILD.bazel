@@ -50,7 +50,7 @@ go_test(
 
 # The same comparisons on the held-out corpus, code galop was not tuned on
 # (heldout_test), and many more mutants on both corpora. The large runs are
-# too slow for pull requests; CI runs them on pushes to main:
+# too slow for the bazel test job; CI runs each on a runner of its own (fuzz):
 #   bazel test //differential/diff:mutations_large_test //differential/diff:heldout_mutations_large_test
 [go_test(
     name = name,
@@ -100,7 +100,7 @@ go_test(
 # galop and ANTLR on generated sentences of gala.g4 (//differential:samples*)
 # and on mutated copies of them: the same verdict, ANTLR's tree on accepted
 # input and ANTLR's first error on rejected input, for both flavors. The large
-# run is too slow for pull requests; CI runs it on pushes to main.
+# run is too slow for the bazel test job; CI runs it in the fuzz lanes.
 [go_test(
     name = name,
     size = size,

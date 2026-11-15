@@ -35,8 +35,9 @@ env:
 # compiles ran both the 16 GB Linux runner and the 7 GB macOS runner out of
 # memory. GOGC=25 keeps one compile near 4 GB; -p caps how many run at once.
 #
-# Pull requests run the two fast lanes: Bazel (every test, the ANTLR
-# differential, the grammar corpus check) and `gala test` on Linux. The full CLI
+# Pull requests run Bazel (every test, the ANTLR differential, the grammar
+# corpus check), the performance gate, `gala test` on Linux, and, unless they
+# only change Markdown, the large fuzz runs. The full CLI
 # lanes run on pushes to main and on demand (workflow_dispatch), until #872
 # makes cold compiles cheap enough for pull requests. Windows runs in both.
 # macOS compiles one package at a time and takes about 2 hours, so it runs
@@ -191,14 +192,35 @@ jobs:
           path: ${{ runner.temp }}/perf.json
           if-no-files-found: ignore
 
+  # Whether a pull request changes anything besides documentation. Pull
+  # requests that only touch Markdown skip the fuzz runs.
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+    steps:
+      - id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$PR" ]; then echo code=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename' > files.txt
+          cat files.txt
+          if grep -qvE '\.md$' files.txt; then code=true; else code=false; fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   # The large fuzz runs compare galop with ANTLR on tens of thousands of
-  # mutated and generated files, too slow for pull requests. Each set runs on
+  # mutated and generated files. They run on every push to main, on demand,
+  # and on pull requests that change more than documentation. Each set runs on
   # its own runner, so the wall-clock time is the slowest set's and a runner
   # holds one test process (the generated sets peak near 7 GB, mostly
   # ANTLR's caches). They start from the Bazel disk cache an earlier run saved.
   fuzz:
     name: fuzz (${{ matrix.name }})
-    if: github.event_name != 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
