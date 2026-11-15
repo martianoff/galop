@@ -170,6 +170,38 @@ what that rewrite means:
   its alternative is ANTLR's `FailedPredicateException`, "rule e failed predicate:
   {precpred(_ctx, 2)}?".
 
+What ANTLR 4.13.1's Go runtime does with precedence predicates in prediction
+(`parser_atn_simulator.go`), which phase 2 reproduces:
+
+- **Which predicates count.** Only those met at closure depth 0, the decision's own
+  rule before any call or return (`inContext`), and only while computing a start
+  state (`collectPredicates`); a closure after a token treats them as epsilon.
+- **Full context** evaluates such a predicate at once against the parser's current
+  precedence (`precedenceTransition`): a failing path is dropped.
+- **SLL** attaches it to the configuration (`SemanticContextandContext`).
+  - A precedence decision (the loop entry) has a start state per precedence
+    (`getPrecedenceStartState`), made by `applyPrecedenceFilter`: alternative 1's
+    predicates are evaluated and failing configurations dropped, and a
+    configuration of another alternative is dropped where an alternative-1
+    configuration has the same state and context, unless it is
+    `precedenceFilterSuppressed`. Closure sets that flag on a configuration that
+    leaves a rule through a rule-stop follow link whose call was the decision
+    rule's outermost one (`outermostPrecedenceReturn`: a call of the rule with
+    precedence 0).
+  - Any other decision with predicated configurations evaluates them when a state
+    accepts or conflicts (`predicateDFAState`, `evalSemanticContext`): an
+    alternative passes if one of its configurations has no predicate or a passing
+    one; none passing is no viable alternative, one is the answer, several give
+    the lowest. With LL fallback, a conflict first evaluates its predicates and
+    goes to full context only if more than one alternative passes.
+- **`canDropLoopEntryEdgeInLeftRecursiveRule`**, on by default
+  (`lRLoopEntryBranchOpt`): closure skips a precedence loop entry's first
+  transition (into the loop) for a configuration whose every return state is in
+  the same rule and returns to the end of the loop's block. ANTLR tests this on its
+  own ATN's shapes (the return state is the block's end, or leads to it or to a
+  block end that leads to the entry); galop's network has more states, so it
+  marks the equivalent return states when it builds the rewritten rule.
+
 The phases, each tested against ANTLR before the next:
 
 1. The rewrite: classification, `<assoc=right|left>` on alternatives, the rewritten
