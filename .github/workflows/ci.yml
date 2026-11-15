@@ -38,20 +38,21 @@ env:
 # after the merge, on pushes to main, and on demand only when the run's
 # `macos` input is ticked.
 #
-# Pull requests can only read caches saved on main, so pushes to main get
-# longer limits: they run cold when the cache is stale and fill it for the
+# Pull requests can only read caches saved on main. Pushes to main
+# run cold when the cache is stale and fill it for the
 # pull requests after them. A fully cold run (for example right after a GALA
 # version bump, which invalidates the Go build cache) takes about 2 hours on
 # macOS (-p=1) and about 45 minutes on Windows (gala#872); with main's cache a
 # cold macOS build (-p=1) takes about an hour,
 # a cold Linux run about 30 minutes, and Windows needs about 8 minutes after
 # its tests to save the Go cache. Pull
-# requests stay within 10 minutes.
+# requests get the same limits as main: a change to the generator recompiles
+# everything, which a short limit would turn into a red timeout.
 jobs:
   bazel:
     name: bazel test
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 45 }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -73,7 +74,7 @@ jobs:
           restore-keys: bazel-disk-
 
       - name: Build and test
-        timeout-minutes: ${{ github.event_name == 'pull_request' && 8 || 38 }}
+        timeout-minutes: 38
         run: |
           echo "common --disk_cache=$HOME/.cache/bazel-disk --experimental_disk_cache_gc_max_size=2G" >> ~/.bazelrc
           # Go compiles of the largest packages (analysis, golang, guess) peak at 7-9 GB
@@ -106,11 +107,11 @@ jobs:
   perf:
     name: performance gate
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 30 }}
+    timeout-minutes: 30
     env:
       PERF_ENFORCE: "true"
       # Seconds for the build and the measurement, inside the job limit.
-      PERF_BUDGET: ${{ github.event_name == 'pull_request' && 480 || 1500 }}
+      PERF_BUDGET: 1500
     steps:
       - uses: actions/checkout@v5
 
@@ -233,7 +234,7 @@ jobs:
       matrix:
         # Pull requests: Linux. Pushes to main: Linux, macOS, Windows. On demand:
         # Linux and Windows, plus macOS when the `macos` input is ticked.
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":10,"tests":8}]' || (github.event_name == 'push' || inputs.macos) && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":45,"tests":30},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":150,"tests":130},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":75,"tests":50}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":45,"tests":30},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":75,"tests":50}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":45,"tests":30}]' || (github.event_name == 'push' || inputs.macos) && '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":45,"tests":30},{"os":"macos-latest","asset":"gala-darwin-arm64","goflags":"-p=1","timeout":150,"tests":130},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":75,"tests":50}]' || '[{"os":"ubuntu-latest","asset":"gala-linux-amd64","goflags":"-p=2","timeout":45,"tests":30},{"os":"windows-latest","asset":"gala-windows-amd64.exe","goflags":"-p=2","timeout":75,"tests":50}]') }}
     defaults:
       run:
         shell: bash
