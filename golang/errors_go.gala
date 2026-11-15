@@ -98,7 +98,8 @@ type PFXEmu struct {
 	pending   *PFXEmuError
 	sll       PFXSLLFailure
 	fallbacks []PFXFallback
-	// precs are the precedences of the rule calls on the parser's stack.
+	// precs are the precedences of the rule calls on the parser's stack;
+	// a grammar without left recursion keeps none (all are 0).
 	precs []int32
 }
 
@@ -133,11 +134,14 @@ func (p *PARSER) deadEnd(d int) int {
 // early, without error. antlrError then returns nil and leaves the
 // alternatives ANTLR fell back on in p.fallbacks, for deadEnd to take.
 func (p *PARSER) antlrError(start int32, err error) error {
-	key := PFXFallbackKey(start, p.types)
-	if key != "" {
-		if f, ok := PFXFallbackCache.Load(key); ok {
-			p.fallbacks = f.([]PFXFallback)
-			return nil
+	// Most inputs that reach here have a syntax error and store nothing, so
+	// the key is built only once the cache holds something.
+	if PFXFallbackCount.Load() > 0 {
+		if key := PFXFallbackKey(start, p.types); key != "" {
+			if f, ok := PFXFallbackCache.Load(key); ok {
+				p.fallbacks = f.([]PFXFallback)
+				return nil
+			}
 		}
 	}
 	pos, ll, group := p.pos, p.ll, p.group
@@ -154,7 +158,7 @@ func (p *PARSER) antlrError(start int32, err error) error {
 		return p.syntaxErrorAt(found.at, found.msg)
 	case len(e.fallbacks) > 0:
 		p.fallbacks = e.fallbacks
-		if key != "" && PFXFallbackCount.Add(1) <= PFXFallbackMax {
+		if key := PFXFallbackKey(start, p.types); key != "" && PFXFallbackCount.Add(1) <= PFXFallbackMax {
 			PFXFallbackCache.Store(key, e.fallbacks)
 		}
 		return nil
@@ -349,7 +353,9 @@ func (e *PFXEmu) run(s int32) *PFXEmuError {
 			}
 			s = p.stack[len(p.stack)-1]
 			p.stack = p.stack[:len(p.stack)-1]
-			e.precs = e.precs[:len(e.precs)-1]
+			if PFXMaxPrec > 0 {
+				e.precs = e.precs[:len(e.precs)-1]
+			}
 			continue
 		}
 		if d := int(PFXStateDecision[s]); d >= 0 {
@@ -390,7 +396,9 @@ func (e *PFXEmu) run(s int32) *PFXEmuError {
 		case PFXKindEpsilon:
 		case PFXKindRule:
 			p.stack = append(p.stack, PFXTransArg[i])
-			e.precs = append(e.precs, PFXStateCallPrec[s])
+			if PFXMaxPrec > 0 {
+				e.precs = append(e.precs, PFXStateCallPrec[s])
+			}
 		case PFXKindPrec:
 			// The generated code checks precpred and fails the rule.
 			if level := PFXTransArg[i]; level < e.prec() {
@@ -570,9 +578,12 @@ type PFXSLLFailure struct {
 	busy PFXMap
 	set  PFXFlagSet // the set being built
 	mid  PFXFlagSet // the configurations a token reaches, before closure
-	// history lists, per decision, the tokens the replay predicted it at;
-	// walked counts those whose states are built already.
-	history [][][2]int32
+	// history lists, per decision, the tokens the replay predicted it at,
+	// and precs, for a decision of a left-recursive rule, the precedence of
+	// each of those predictions; walked counts those whose states are built
+	// already.
+	history [][]int32
+	precs   [][]int32
 	walked  []int
 	// states are the DFA states ANTLR has built, as share finds them by
 	// key; starts holds each decision's start state, or -1. They and pool
@@ -615,7 +626,8 @@ const (
 // note records that the replay predicted decision d at token pos.
 func (m *PFXSLLFailure) note(d, pos int, prec int32) {
 	if m.history == nil {
-		m.history = make([][][2]int32, len(PFXDecisionState))
+		m.history = make([][]int32, len(PFXDecisionState))
+		m.precs = make([][]int32, len(PFXDecisionState))
 		m.walked = make([]int, len(PFXDecisionState))
 		m.starts = make([]int32, len(PFXDecisionState))
 		for i := range m.starts {
@@ -624,7 +636,10 @@ func (m *PFXSLLFailure) note(d, pos int, prec int32) {
 		m.ids = map[string]int32{}
 		m.pool.reset(true)
 	}
-	m.history[d] = append(m.history[d], [2]int32{int32(pos), prec})
+	m.history[d] = append(m.history[d], int32(pos))
+	if PFXDecisionPrecedence[d] {
+		m.precs[d] = append(m.precs[d], prec)
+	}
 }
 
 // closure is the predictor's closure with ANTLR's flags; depth is as there.
@@ -746,8 +761,12 @@ func (m *PFXSLLFailure) follow(c PFXFlagConfig, out *PFXFlagSet, depth int32) {
 func (e *PFXEmu) sllFailure(d int) (offending int, alt int) {
 	m := &e.sll
 	h := m.history[d]
-	for _, at := range h[m.walked[d] : len(h)-1] {
-		m.walk(e.p.types, d, int(at[0]), at[1])
+	for i := m.walked[d]; i < len(h)-1; i++ {
+		prec := int32(0)
+		if PFXDecisionPrecedence[d] {
+			prec = m.precs[d][i]
+		}
+		m.walk(e.p.types, d, int(h[i]), prec)
 	}
 	m.walked[d] = len(h)
 	offending, alt, _ = m.walk(e.p.types, d, e.p.pos, e.prec())
