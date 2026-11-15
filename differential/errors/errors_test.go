@@ -52,7 +52,7 @@ func TestSyntaxErrorsMatchANTLR(t *testing.T) {
 		want := antlrFirstError(src)
 		_, nerr := en.ParseProg(en.ErrorsLex(src))
 		stream := antlr.NewCommonTokenStream(ea.NewErrorsGalopLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel)
-		_, aerr := ea.NewErrorsGalopParser(stream).Prog()
+		_, aerr := ea.NewErrorsGalopParser(stream).ParseProg()
 		for _, got := range []struct {
 			flavor string
 			err    error
@@ -148,7 +148,7 @@ func TestEntryRuleWithoutEOF(t *testing.T) {
 		want := antlrFirstErrorAs(src, func(p *ea.ErrorsParser) { p.Snippet() })
 		_, nerr := en.ParseSnippet(en.ErrorsLex(src))
 		stream := antlr.NewCommonTokenStream(ea.NewErrorsGalopLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel)
-		_, aerr := ea.NewErrorsGalopParser(stream).Snippet()
+		_, aerr := ea.NewErrorsGalopParser(stream).ParseSnippet()
 		for _, got := range []struct {
 			flavor string
 			err    error

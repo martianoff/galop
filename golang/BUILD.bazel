@@ -10,6 +10,7 @@ gala_library(
         "native_emit.gala",
         "native_walk.gala",
         "parser_emit.gala",
+        "recover_antlr.gala",
         "recover_go.gala",
         "repair_go.gala",
         "runtime_go.gala",
@@ -56,6 +57,7 @@ gala_test(
         "guess_go.gala",
         "scan_go.gala",
         "recover_go.gala",
+        "recover_antlr.gala",
     ],
     pkg = "golang",
     deps = [

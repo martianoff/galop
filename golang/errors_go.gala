@@ -81,10 +81,14 @@ func (x *PFXExpected) String() string {
 	return "{" + strings.Join(names, ", ") + "}"
 }
 
-// PFXEmuError is the first error ANTLR reports: its message, at token at.
+// PFXEmuError is an error ANTLR reports: its message, at token at. A
+// prediction that found no viable alternative (noViable) started at token
+// start, which ANTLR's NoViableAltException records.
 type PFXEmuError struct {
-	at  int
-	msg string
+	at       int
+	msg      string
+	noViable bool
+	start    int
 }
 
 // PFXEmu replays ANTLR's parse of the parser's tokens; see errorsSource.
@@ -175,7 +179,7 @@ func PFXQuote(s string) string {
 // report is ANTLR's "<what> input <token> expecting <set>" at the current token.
 func (e *PFXEmu) report(what string, exp *PFXExpected) *PFXEmuError {
 	pos := e.p.pos
-	return &PFXEmuError{pos, what + " input " + PFXQuote(e.p.tokenDisplay(pos)) + " expecting " + exp.String()}
+	return &PFXEmuError{at: pos, msg: what + " input " + PFXQuote(e.p.tokenDisplay(pos)) + " expecting " + exp.String()}
 }
 
 func (e *PFXEmu) noViable(start, off int) *PFXEmuError {
@@ -183,7 +187,7 @@ func (e *PFXEmu) noViable(start, off int) *PFXEmuError {
 	if e.p.types[start] != @EOF@ {
 		input = e.p.inputText(start, off)
 	}
-	return &PFXEmuError{off, "no viable alternative at input " + PFXQuote(input)}
+	return &PFXEmuError{at: off, msg: "no viable alternative at input " + PFXQuote(input), noViable: true, start: start}
 }
 
 // How ANTLR's RecoverInline and Sync recover (see inlineFix and syncFix):
@@ -209,7 +213,7 @@ func (e *PFXEmu) inlineFix(s, next int32) (fix int, exp *PFXExpected, err *PFXEm
 		return PFXFixDelete, exp, e.report("extraneous", exp)
 	case e.expected(next).has(e.p.la(1)):
 		pos := e.p.pos
-		return PFXFixInsert, exp, &PFXEmuError{pos, "missing " + exp.String() + " at " + PFXQuote(e.p.tokenDisplay(pos))}
+		return PFXFixInsert, exp, &PFXEmuError{at: pos, msg: "missing " + exp.String() + " at " + PFXQuote(e.p.tokenDisplay(pos))}
 	}
 	return PFXFixMismatch, exp, e.report("mismatched", exp)
 }

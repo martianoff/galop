@@ -9,18 +9,18 @@ import "github.com/antlr4-go/antlr/v4"
 var GalopEntries = map[string]struct {
 	Parse, Rerun func(*RepairGalopParser) (antlr.Tree, error)
 }{
-	"s1": {galop((*RepairGalopParser).S1), rerun((*RepairGalopParser).ruleS1, RepairParserRULE_s1)},
-	"s2": {galop((*RepairGalopParser).S2), rerun((*RepairGalopParser).ruleS2, RepairParserRULE_s2)},
-	"s3": {galop((*RepairGalopParser).S3), rerun((*RepairGalopParser).ruleS3, RepairParserRULE_s3)},
-	"s4": {galop((*RepairGalopParser).S4), rerun((*RepairGalopParser).ruleS4, RepairParserRULE_s4)},
-	"s5": {galop((*RepairGalopParser).S5), rerun((*RepairGalopParser).ruleS5, RepairParserRULE_s5)},
-	"s6": {galop((*RepairGalopParser).S6), rerun((*RepairGalopParser).ruleS6, RepairParserRULE_s6)},
-	"s7": {galop((*RepairGalopParser).S7), rerun((*RepairGalopParser).ruleS7, RepairParserRULE_s7)},
-	"s8": {galop((*RepairGalopParser).S8), rerun((*RepairGalopParser).ruleS8, RepairParserRULE_s8)},
-	"s9": {galop((*RepairGalopParser).S9), rerun((*RepairGalopParser).ruleS9, RepairParserRULE_s9)},
-	"s10": {galop((*RepairGalopParser).S10), rerun((*RepairGalopParser).ruleS10, RepairParserRULE_s10)},
-	"s11": {galop((*RepairGalopParser).S11), rerun((*RepairGalopParser).ruleS11, RepairParserRULE_s11)},
-	"s12": {galop((*RepairGalopParser).S12), rerun((*RepairGalopParser).ruleS12, RepairParserRULE_s12)},
+	"s1": {galop((*RepairGalopParser).ParseS1), rerun((*RepairGalopParser).ruleS1, RepairParserRULE_s1)},
+	"s2": {galop((*RepairGalopParser).ParseS2), rerun((*RepairGalopParser).ruleS2, RepairParserRULE_s2)},
+	"s3": {galop((*RepairGalopParser).ParseS3), rerun((*RepairGalopParser).ruleS3, RepairParserRULE_s3)},
+	"s4": {galop((*RepairGalopParser).ParseS4), rerun((*RepairGalopParser).ruleS4, RepairParserRULE_s4)},
+	"s5": {galop((*RepairGalopParser).ParseS5), rerun((*RepairGalopParser).ruleS5, RepairParserRULE_s5)},
+	"s6": {galop((*RepairGalopParser).ParseS6), rerun((*RepairGalopParser).ruleS6, RepairParserRULE_s6)},
+	"s7": {galop((*RepairGalopParser).ParseS7), rerun((*RepairGalopParser).ruleS7, RepairParserRULE_s7)},
+	"s8": {galop((*RepairGalopParser).ParseS8), rerun((*RepairGalopParser).ruleS8, RepairParserRULE_s8)},
+	"s9": {galop((*RepairGalopParser).ParseS9), rerun((*RepairGalopParser).ruleS9, RepairParserRULE_s9)},
+	"s10": {galop((*RepairGalopParser).ParseS10), rerun((*RepairGalopParser).ruleS10, RepairParserRULE_s10)},
+	"s11": {galop((*RepairGalopParser).ParseS11), rerun((*RepairGalopParser).ruleS11, RepairParserRULE_s11)},
+	"s12": {galop((*RepairGalopParser).ParseS12), rerun((*RepairGalopParser).ruleS12, RepairParserRULE_s12)},
 }
 
 // Entries are the same rules in ANTLR's own parser.

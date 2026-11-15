@@ -222,7 +222,28 @@ The Go target writes one of two kinds of parser, picked with `-Dflavor`:
 | Dependencies | none | ANTLR's Go runtime, and ANTLR's generated code in the same package |
 | Tokens | a slice of 20-byte tokens; comments and other off-channel tokens in a side slice | `antlr.CommonToken`s from an `antlr.TokenStream` |
 | Tree | galop's compact tree, with typed accessors per rule | ANTLR's own context types |
-| For | new code, and speed | programs already written against ANTLR's trees |
+| For | new code, and speed | a drop-in for ANTLR's parser in programs written against its trees |
+
+With the `antlr` flavor, a program that parses with ANTLR changes only its
+constructors. `NewExprGalopParser` embeds ANTLR's `ExprParser`, so error
+listeners and the rest of ANTLR's parser API work as before; its rule methods
+return ANTLR's contexts and, on input with syntax errors, report every error
+ANTLR reports to the error listeners and return the tree ANTLR's error
+recovery builds:
+
+```go
+lexer := parser.NewExprGalopLexer(antlr.NewInputStream(src)) // was NewExprLexer
+p := parser.NewExprGalopParser(antlr.NewCommonTokenStream(lexer, 0)) // was NewExprParser
+p.RemoveErrorListeners()
+p.AddErrorListener(myListener) // called as ANTLR calls it, GetExpectedTokens() included
+prog := p.Prog()               // ANTLR's IProgContext, error-recovered on bad input
+```
+
+`p.ParseProg()` instead returns the first syntax error and no tree, and calls
+no listener. The antlr flavor parses with galop's decisions and never with
+ANTLR's: an error strategy, parse listeners or a prediction mode set on the
+embedded parser are not used, and ATN state numbers (a listener's `GetState()`,
+a context's invoking state) are galop's, which differ from ANTLR's.
 
 With the `native` flavor, for `Expr.g4` in package `parser`:
 
@@ -240,7 +261,9 @@ Both flavors decide exactly as ANTLR does and give the same tokens and trees.
 On input with a syntax error, both report the same first error as ANTLR
 parsing that input in a fresh process, with the same message, line and column.
 (ANTLR's error text can depend on what the same process parsed earlier, because
-its prediction cache is shared.) A parse stops at that first error.
+its prediction cache is shared.) The native flavor's `Parse<Rule>` and the
+antlr flavor's `Parse<Rule>` method stop at that first error; the antlr
+flavor's rule methods recover as ANTLR does (above).
 
 For an editor, the native flavor's `Parse<Rule>WithRecovery` (and
 `ExprParseWithRecovery(toks, rule)`) recovers as ANTLR's default error strategy

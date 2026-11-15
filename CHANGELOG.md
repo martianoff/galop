@@ -5,6 +5,18 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Changed (breaking):** the antlr flavor is a drop-in for ANTLR's parser. Its
+  rule methods have ANTLR's signatures (`p.Prog()` returns `IProgContext`): on
+  input with syntax errors they report every error ANTLR reports to the
+  parser's error listeners and return the context ANTLR's default error
+  strategy builds, its error nodes, made-up tokens, label fields and
+  exceptions included. The galop parser embeds ANTLR's generated parser for its
+  error listeners and the rest of ANTLR's parser API, and passes it to the
+  contexts it makes, as ANTLR's code does. The former methods, which return
+  the first error and no tree, are now `Parse<Rule>()` (`p.ParseProg()`).
+  galop's ATN state numbers differ from ANTLR's, so `GetState()` and invoking
+  states are galop's; `GetExpectedTokens()` is answered by galop.
+
 - **Added:** each error of the native flavor's `Parse<Rule>WithRecovery` carries
   `Expected`, the token types ANTLR's `GetExpectedTokens()` gives an error
   listener at that error, so code that builds "expecting one of ..." messages

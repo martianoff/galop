@@ -9,6 +9,7 @@ DIFF_TEST_SRCS = [
     "at_test.go",
     "mutations_test.go",
     "recovery_test.go",
+    "antlr_recovery_test.go",
     "lexerrors_test.go",
 ]
 

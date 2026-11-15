@@ -442,7 +442,7 @@ func measureConversion(r perf.Report, srcs []string, name string) {
 		src = gala.StripBOM(src)
 		stream := gala.GalopTokens(src)
 		var root antlr.ParserRuleContext
-		root, err := antlrgala.NewgalaGalopParser(stream).SourceFile()
+		root, err := antlrgala.NewgalaGalopParser(stream).ParseSourceFile()
 		if err != nil {
 			stream = gala.Tokens(src)
 			root, _ = gala.Lenient(stream)

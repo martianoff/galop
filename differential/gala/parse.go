@@ -300,6 +300,15 @@ func ParseRecovered(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStre
 	return p.SourceFile(), stream, errs.errs
 }
 
+// ParseRecoveredWith parses src as ParseRecovered does, reporting syntax
+// errors to l. It returns the error-recovered tree and its token stream.
+func ParseRecoveredWith(src string, l antlr.ErrorListener) (antlr.ParserRuleContext, *antlr.CommonTokenStream) {
+	stream := Tokens(src)
+	p := antlrgala.NewgalaParser(stream)
+	setUp(p.BaseParser, LL, l, newDFA(p.GetATN()))
+	return p.SourceFile(), stream
+}
+
 // AllErrors parses src as ANTLR does for the GALA compiler when src has an
 // error (LL prediction alone, the default error strategy, an empty DFA): as a
 // whole file, or with expression set as one expression whose text starts at
