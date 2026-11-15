@@ -12,12 +12,15 @@ import (
     "github.com/martianoff/galop/repair"
 )
 
-// Transition kinds in the emitted tables. Actions and predicates are epsilon
-// for prediction (galop rejects grammars whose prediction needs predicates).
+// Transition kinds in the emitted tables. Actions and semantic predicates are
+// epsilon for prediction (the Go target rejects grammars with predicates); a
+// rewritten left-recursive rule's precedence predicate is kindPrec, whose Arg
+// is its level.
 val kindEpsilon = 0
 val kindRule = 1
 val kindAtom = 2
 val kindSet = 3
+val kindPrec = 4
 
 // flatTransition is one transition in table form.
 struct flatTransition(Kind int, Target int, Arg int)
@@ -32,9 +35,7 @@ func flatten(t atn.Transition, sets Array[atn.IntervalSet]) flatTransition = t m
     case atn.LexerActions(target, _) => flatTransition(kindEpsilon, target, 0)
     case atn.Predicate(target, _, _) => flatTransition(kindEpsilon, target, 0)
     case atn.Action(target, _, _) => flatTransition(kindEpsilon, target, 0)
-    // Runtime prediction evaluates these once phase 2 of the left-recursion
-    // work lands; until then the Go target rejects the rules that have them.
-    case atn.PrecedencePredicate(target, _, _) => flatTransition(kindEpsilon, target, 0)
+    case atn.PrecedencePredicate(target, _, level) => flatTransition(kindPrec, target, level)
 }
 
 // tables emits the parser ATN as Go literals for the runtime predictor.
@@ -61,6 +62,7 @@ func tables(e env) string {
         s"\t${x}KindRule    = $kindRule",
         s"\t${x}KindAtom    = $kindAtom",
         s"\t${x}KindSet     = $kindSet",
+        s"\t${x}KindPrec    = $kindPrec",
         ")",
         "",
         s"// ${x}MaxTokenType is the largest token type; DFA edges are indexed by type + 1.",
@@ -94,11 +96,13 @@ func goSlice(name string, typ string, values Array[string]) string = values matc
 val closAdd = 0
 val closCall = 1
 val closStop = 2
+val closPrec = 3
 
 // closureItem is one thing a configuration reaches from a state without
 // consuming a token and without leaving the state's rule: a state that consumes
 // (closAdd), a rule call (closCall, State = the rule's start, Arg = the follow
-// state), or the rule's end (closStop).
+// state), the rule's end (closStop), or a precedence predicate (closPrec, State
+// = its target, Arg = its level), whose outcome depends on the prediction.
 struct closureItem(Kind int, State int, Arg int)
 
 // staticClosure is the part of ANTLR's closure that does not depend on the
@@ -120,6 +124,7 @@ func visitClosure(a atn.ATN, s int, acc Tuple[Array[closureItem], HashSet[int]])
             val start = if (st.EpsilonOnly()) seen else Tuple(seen.V1.Append(closureItem(closAdd, s, 0)), seen.V2)
             st.Out.FoldLeft(start, (next, t) => t match {
                 case atn.RuleCall(target, _, follow) => Tuple(next.V1.Append(closureItem(closCall, target, follow)), next.V2)
+                case atn.PrecedencePredicate(target, _, level) => Tuple(next.V1.Append(closureItem(closPrec, target, level)), next.V2)
                 case _ if t.IsEpsilon() => visitClosure(a, t.Target(), next)
                 case _ => next
             })
