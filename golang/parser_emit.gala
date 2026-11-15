@@ -455,6 +455,10 @@ func emitLookahead(e env, d int, la analysis.Lookahead, ind string) Array[string
     case analysis.Adaptive(alts) => ArrayOf(ind + runtimeChoice(e, d, alts))
     case analysis.Otherwise() => ArrayOf(ind + runtimeChoice(e, d, allAlts(e, d)))
     case analysis.Automaton(states) => emitAutomaton(e, d, states)
+    // Only a rewritten left-recursive rule has these, and the Go target rejects
+    // such rules until their code generation lands (DESIGN.md, "Left-recursive
+    // rules").
+    case analysis.ByPrecedence(_, _) => ArrayOf(s"${ind}panic(\"galop: precedence decision $d is not generated yet\")")
     case analysis.Switch(depth, cases) => {
         val subject = if (depth == 1) "p.types[p.pos]" else s"p.la($depth)"
         val disjoint = cases.FoldLeft(Tuple(EmptyArray[analysis.LookaheadCase](), atn.EmptySet()), (acc, c) => {

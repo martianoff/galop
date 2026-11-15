@@ -29,6 +29,7 @@ func show(a atn.ATN, l Lookahead) string = l match {
     case Automaton(states) => s"dfa(${states.Size()})"
     case Otherwise() => "?"
     case Switch(_, cases) => "{" + cases.Map((c) => tokens(a, c.Tokens) + ":" + show(a, c.Then)).MkString(" ") + "}"
+    case ByPrecedence(bounds, cases) => "[" + cases.ZipWithIndex().Map((ci) => bounds.GetOption(ci.V2).Map((b) => s"<=$b").GetOrElse("else") + ":" + show(a, ci.V1)).MkString(" ") + "]"
 }
 
 func className(c DecisionClass) string = c match {

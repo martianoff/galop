@@ -1,0 +1,35 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+)
+
+// arith is the classic left-recursive rule: '*' (precedence 3, T__0) binds tighter
+// than '+' (2, T__1). Only EOF follows e from outside its own loop.
+val arith = "grammar A;\ns : e EOF ;\ne : e '*' e | e '+' e | X ;\nX : 'x' ;\n"
+
+func TestPrecedenceLoopEntry(t T) T {
+    val (a, an) = analyzed(arith)
+    val p = planFor(a, an, "e", "('*' e | '+' e)*")
+    // Up to precedence 2 both operators continue the loop; at 3 only '*' does;
+    // above 3 none does. An operator that continues is the one both ways out
+    // of the loop accept: ANTLR resolves it to continuing.
+    val t1 = Eq(t, show(a, p.Lookahead), "[<=2:{EOF:2 T__0 T__1:1} <=3:{EOF T__1:2 T__0:1} else:2]")
+    Eq(t1, className(p.Class), "LL(1)")
+}
+
+func TestPrecedenceOperatorBlock(t T) T {
+    val (a, an) = analyzed(arith)
+    // The loop's block picks the operator; above an operator's precedence its
+    // predicate fails and the operator has no alternative.
+    Eq(t, show(a, planFor(a, an, "e", "('*' e | '+' e)").Lookahead), "[<=2:{T__0:1 T__1:2} <=3:1 else:{}]")
+}
+
+func TestOperatorFollowingTheRuleStaysAdaptive(t T) T {
+    // '+' also follows e in s, so at '+' leaving e's loop can go on in s:
+    // which way ANTLR takes depends on the rest of the input.
+    val (a, an) = analyzed("grammar A;\ns : e '+' X EOF ;\ne : e '+' e | X ;\nX : 'x' ;\n")
+    val p = planFor(a, an, "e", "('+' e)*")
+    Eq(t, className(p.Class), "adaptive")
+}
