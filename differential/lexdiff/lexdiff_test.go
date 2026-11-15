@@ -8,9 +8,12 @@ package lexdiff
 import (
 	"flag"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
+	"unsafe"
 
 	"github.com/antlr4-go/antlr/v4"
 
@@ -112,18 +115,37 @@ func compare(t *testing.T, name string, a lexed, other string, b lexed) bool {
 
 // variants derives inputs from a file that reach the lexer's error and EOF
 // paths: prefixes cut inside tokens, and characters inserted mid-file that
-// open an unterminated token or match no rule.
+// open an unterminated token or match no rule. Others are not valid UTF-8:
+// an invalid byte or a lone continuation byte mid-file, an invalid byte
+// inside the first comment and the first string, and a multibyte sequence
+// cut short at the end, which ANTLR reads as U+FFFD each.
 func variants(src string) map[string]string {
 	v := map[string]string{}
 	r := []rune(src)
+	mid := len(r) / 2
 	for _, k := range []int{3, 7, 11, 13} {
 		cut := len(r) * k / 17
 		v[fmt.Sprintf("cut at %d", cut)] = string(r[:cut])
 	}
 	for _, ins := range []string{"§", "#", "\\", "'", "\"", "`", "s\"${", "/*", "@"} {
-		mid := len(r) / 2
 		v["insert "+ins] = string(r[:mid]) + ins + string(r[mid:])
 	}
+	for _, ins := range []string{"\x94", "\x80"} {
+		v[fmt.Sprintf("insert %q", ins)] = string(r[:mid]) + ins + string(r[mid:])
+	}
+	ts := nativegala.GalaLex(src)
+	inside := func(name string, at int32) {
+		v["invalid byte inside the first "+name] = src[:at] + "a\x94b" + src[at:]
+	}
+	if i := slices.IndexFunc(ts.Hidden, func(h nativegala.GalaHiddenToken) bool { return h.Type == nativegala.GalaCOMMENT }); i >= 0 {
+		inside("comment", ts.Hidden[i].Start+2) // after "//"
+	}
+	if i := slices.IndexFunc(ts.Tokens, func(t nativegala.GalaToken) bool { return t.Type == nativegala.GalaSTRING }); i >= 0 {
+		t := ts.Tokens[i]
+		inside("string", t.Start+int32(strings.IndexByte(src[t.Start:t.End], '"'))+1) // after the opening quote
+	}
+	v["truncated at the end"] = src + "\xe2\x82"
+	v["truncated in a comment at the end"] = src + "// €\xe2\x82"
 	return v
 }
 
@@ -171,6 +193,21 @@ func cases() map[string]string {
 		"backslash at end":     "\"a\\",
 		"lone dollar":          "s\"$\"",
 		"format string":        "f\"${x}%d ${\"a\"} $y\"",
+		// Not valid UTF-8: ANTLR reads each invalid byte as U+FFFD, in token
+		// text as in columns and error messages.
+		"invalid in block comment":    "a /* \xff\xfe */ b",
+		"invalid in raw string":       "val s = `a\x94b`\n",
+		"invalid in interpolation":    "s\"a ${b\x94} c\"",
+		"invalid before identifier":   "\x94abc",
+		"invalid after identifier":    "abc\x94 d",
+		"invalid inside identifier":   "ab\x94cd",
+		"lone continuation byte":      "a \x80 b",
+		"truncated in comment at end": "x // \xe2\x82",
+		"truncated in string at end":  "\"a\xe2\x82",
+		"truncated before ASCII":      "\"\xe2\x82a\"",
+		"surrogate encoding":          "\"\xed\xa0\x80\"",
+		"overlong encoding":           "// \xc0\xaf\nx",
+		"issue repro":                 "package main\n\n// Two placeho\x94 sum\nval s = \"a\x94b\"\n",
 	}
 	return cases
 }
@@ -276,6 +313,44 @@ func TestNativeCorpus(t *testing.T) { corpusAndVariants(t, sameNative) }
 // TestNativeCases is TestCases for the native lexer.
 func TestNativeCases(t *testing.T) { allCases(t, sameNative) }
 
+// TestNativeText checks the native tokens' text on every case: Src is the
+// input itself, not a copy, and the spans index its bytes; a token's text,
+// through Token.Text, Tokens.Text and Tokens.HiddenText, is the conversion
+// to []rune of its bytes that ANTLR's input stream makes, and valid text is
+// a slice of the input, not a copy. Texts and HiddenTexts are nil for valid
+// input and hold those texts otherwise.
+func TestNativeText(t *testing.T) {
+	for name, src := range cases() {
+		ts := nativegala.GalaLex(src)
+		if ts.Src != src || unsafe.StringData(ts.Src) != unsafe.StringData(src) {
+			t.Errorf("%s: Src is not the input", name)
+		}
+		if valid := utf8.ValidString(src); valid != (ts.Texts == nil) || valid != (ts.HiddenTexts == nil) {
+			t.Errorf("%s: valid input %v, but Texts nil %v and HiddenTexts nil %v", name, valid, ts.Texts == nil, ts.HiddenTexts == nil)
+		}
+		check := func(tok nativegala.GalaToken, text string) {
+			raw := src[tok.Start:tok.End]
+			switch {
+			case text != string([]rune(raw)):
+				t.Errorf("%s: token %q has text %q, want %q", name, raw, text, string([]rune(raw)))
+			case utf8.ValidString(raw) && raw != "" && unsafe.StringData(text) != unsafe.StringData(raw):
+				t.Errorf("%s: the text of valid token %q is a copy", name, raw)
+			}
+		}
+		for i, tok := range ts.Tokens[:len(ts.Tokens)-1] { // all but EOF
+			check(tok, tok.Text(src))
+			check(tok, ts.Text(i))
+		}
+		if got := ts.Text(len(ts.Tokens) - 1); got != "<EOF>" {
+			t.Errorf("%s: the EOF token's text is %q", name, got)
+		}
+		for i, h := range ts.Hidden {
+			check(h.GalaToken, h.Text(src))
+			check(h.GalaToken, ts.HiddenText(i))
+		}
+	}
+}
+
 // BenchmarkNative lexes the corpus with the native lexer into token lists.
 func BenchmarkNative(b *testing.B) {
 	fs := files(b)
@@ -286,4 +361,38 @@ func BenchmarkNative(b *testing.B) {
 			nativegala.GalaLex(f.Src)
 		}
 	}
+}
+
+// BenchmarkNativeText reads the text of every token of the lexed corpus: the
+// default-channel tokens through Tokens.Text, and the hidden ones (comments)
+// through Tokens.HiddenText. It is what reading a token list costs on top of
+// lexing.
+func BenchmarkNativeText(b *testing.B) {
+	fs := files(b)
+	tss := make([]*nativegala.GalaTokens, len(fs))
+	for i, f := range fs {
+		tss[i] = nativegala.GalaLex(f.Src)
+	}
+	b.Run("tokens", func(b *testing.B) {
+		b.SetBytes(int64(corpus.Bytes(fs)))
+		b.ReportAllocs()
+		for b.Loop() {
+			for _, ts := range tss {
+				for i := range ts.Tokens {
+					_ = ts.Text(i)
+				}
+			}
+		}
+	})
+	b.Run("hidden", func(b *testing.B) {
+		b.SetBytes(int64(corpus.Bytes(fs)))
+		b.ReportAllocs()
+		for b.Loop() {
+			for _, ts := range tss {
+				for i := range ts.Hidden {
+					_ = ts.HiddenText(i)
+				}
+			}
+		}
+	})
 }

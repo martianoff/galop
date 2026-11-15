@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/antlr4-go/antlr/v4"
 
@@ -464,4 +465,45 @@ func BenchmarkKind(b *testing.B) {
 		}
 	}
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*nodes), "ns/node")
+}
+
+// TestTextsFollowANTLR checks Texts and HiddenTexts of the native lexer's
+// tokens and of converted trees: nil for valid input, and otherwise each
+// token's text as ANTLR's input stream reads it, the conversion to []rune.
+func TestTextsFollowANTLR(t *testing.T) {
+	for _, src := range []string{
+		"package main\n\nval é = \"ü\" // ß\n",
+		"package main\n\n// Two placeho\x94 sum\nval s = \"a\x94b\"\n",
+		"package main\n\nval y = x match {\n\tcase \"a\x94\" => \"\xff\xfe\"\n\tcase _ => `\xc0`\n}\n// end \xe2\x82",
+	} {
+		stream := gala.Tokens(src)
+		ctx, _ := gala.Lenient(stream)
+		tree, _ := antlrgala.GalaToNative(ctx, stream, src)
+		for name, ts := range map[string]*nativegala.GalaTokens{"lexer": nativegala.Tokens(src), "converter": tree.GalaTokens} {
+			valid := utf8.ValidString(src)
+			if valid != (ts.Texts == nil) || valid != (ts.HiddenTexts == nil) {
+				t.Errorf("%s, %q: Texts nil %v and HiddenTexts nil %v for valid input %v", name, src, ts.Texts == nil, ts.HiddenTexts == nil, valid)
+				continue
+			}
+			if valid {
+				continue
+			}
+			want := func(tok nativegala.GalaToken) string {
+				if tok.Type == nativegala.GalaEOF {
+					return "<EOF>"
+				}
+				return string([]rune(src[tok.Start:tok.End]))
+			}
+			for i, tok := range ts.Tokens {
+				if ts.Texts[i] != want(tok) {
+					t.Errorf("%s, %q: Texts[%d] is %q, want %q", name, src, i, ts.Texts[i], want(tok))
+				}
+			}
+			for i, h := range ts.Hidden {
+				if ts.HiddenTexts[i] != want(h.GalaToken) {
+					t.Errorf("%s, %q: HiddenTexts[%d] is %q, want %q", name, src, i, ts.HiddenTexts[i], want(h.GalaToken))
+				}
+			}
+		}
+	}
 }

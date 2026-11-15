@@ -736,7 +736,7 @@ val nativeErrorHelpers = `
 // tokenDisplay is token i's text as ANTLR's error messages show it.
 func (p *PARSER) tokenDisplay(i int) string {
 	t := p.ts.Tokens[i]
-	if s := t.Text(p.ts.Src); s != "" {
+	if s := p.ts.Text(i); s != "" {
 		return s
 	}
 	// An empty token shows its type, as ANTLR's GetTokenErrorDisplay does.
@@ -749,14 +749,15 @@ func (p *PARSER) inputText(start, stop int) string {
 	var b strings.Builder
 	for i := start; i <= stop; i++ {
 		if i > start {
-			for _, h := range p.ts.HiddenBefore(i) {
-				b.WriteString(h.Text(p.ts.Src))
+			lo, end := p.ts.hiddenRange(i)
+			for h := lo; h < end; h++ {
+				b.WriteString(p.ts.HiddenText(h))
 			}
 		}
 		if p.types[i] == @EOF@ {
 			break
 		}
-		b.WriteString(p.ts.Tokens[i].Text(p.ts.Src))
+		b.WriteString(p.ts.Text(i))
 	}
 	return b.String()
 }
