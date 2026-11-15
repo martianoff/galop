@@ -100,6 +100,48 @@ func leafAlts(l Lookahead) Array[Array[int]] = l match {
 func (g grammarInfo) externalFollow(r int, entry int) atn.IntervalSet =
     g.callerFollows.Get(r).FoldLeft(atn.EmptySet(), (acc, follow) => acc.Union(g.tokensAfter(follow, r, entry)))
 
+// lookStep is a state ANTLR's LL1Analyzer visits: the return states of the
+// calls it is inside, innermost first, and the rules those calls entered.
+struct lookStep(State int, Returns List[int], Called List[int])
+
+// HitsPrecedencePredicate reports whether ANTLR's LL1Analyzer, collecting the
+// tokens a path from state from can begin with, meets a precedence predicate
+// before a token (its HIT_PRED). It enters rule calls, except into a rule it
+// is already inside, and at the end of a rule entered from elsewhere goes on
+// after every call of the rule. ANTLR's code generator makes no LL(1) switch
+// of a decision with such an alternative: it predicts adaptively.
+func HitsPrecedencePredicate(a atn.ATN, from int) bool {
+    val seen = m.EmptyHashSet[string]()
+    var work = ListOf(lookStep(from, EmptyList[int](), EmptyList[int]()))
+    var hit = false
+    for work.NonEmpty() && !hit {
+        val step = work.Head()
+        work = work.Tail()
+        val st = a.State(step.State)
+        if seen.Add(s"${step.State}/${step.Returns.MkString(",")}") {
+            if st.IsRuleStop() {
+                work = step.Returns match {
+                    case Cons(ret, rest) => work.Prepend(lookStep(ret, rest, step.Called.Filter(_ != st.Rule)))
+                    case _ => a.Callers(st.Rule).FoldLeft(work, (w, c) => w.Prepend(lookStep(c.Follow, step.Returns, step.Called)))
+                }
+            } else {
+                hit = st.Out.Exists((t) => t match {
+                    case atn.PrecedencePredicate(_, _, _) => true
+                    case _ => false
+                })
+                work = st.Out.FoldLeft(work, (w, t) => t match {
+                    case atn.RuleCall(target, rule, follow) =>
+                        if (step.Called.Contains(rule)) w else w.Prepend(lookStep(target, step.Returns.Prepend(follow), step.Called.Prepend(rule)))
+                    case atn.PrecedencePredicate(_, _, _) => w
+                    case _ if t.IsEpsilon() => w.Prepend(lookStep(t.Target(), step.Returns, step.Called))
+                    case _ => w
+                })
+            }
+        }
+    }
+    hit
+}
+
 // tokensAfter is what a parse can read next from state s, within s's rule,
 // without going past entry when that rule is r.
 func (g grammarInfo) tokensAfter(s int, r int, entry int) atn.IntervalSet {

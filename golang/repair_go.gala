@@ -262,9 +262,11 @@ func (pr *PFXPredictor) startLL(d int, stack []int32, cur *PFXConfigSet) {
 	cur.reset()
 	pr.busy.reset()
 	s := PFXDecisionState[d]
+	pr.collect = true
 	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
-		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, outer}, cur, false)
+		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, outer}, cur, false, 0)
 	}
+	pr.collect = false
 }
 
 // stepLL moves full-context prediction from cur past token t into next and
@@ -291,6 +293,7 @@ func (p *PARSER) predictLLUncached(d int) int {
 	pr.full = true
 	pr.pool.reset(false)
 	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
+	pr.prec = p.prec
 	pr.startLL(d, p.stack, cur)
 	for offset := 0; ; {
 		p.peekAt(p.pos + offset)
@@ -355,7 +358,7 @@ func (g *PFXFullCache) isFull() bool {
 // start returns the start state of decision d under the call stack whose key
 // (the decision, then the stack) is key, or nil when it is not cached and
 // the cache is full.
-func (g *PFXFullCache) start(d int, stack []int32, key []byte) *PFXDFAState {
+func (g *PFXFullCache) start(d int, stack []int32, key []byte, prec int32) *PFXDFAState {
 	g.mu.RLock()
 	st, ok := g.starts[string(key)]
 	g.mu.RUnlock()
@@ -370,6 +373,7 @@ func (g *PFXFullCache) start(d int, stack []int32, key []byte) *PFXDFAState {
 	if g.isFull() {
 		return nil
 	}
+	g.pr.prec = prec
 	g.pr.startLL(d, stack, &g.pr.sets[0])
 	st = PFXInternState(g.states, &g.pr, &g.key, -1, &g.pr.sets[0], PFXMaxTokenType+2)
 	g.starts[string(key)] = st
@@ -418,8 +422,12 @@ func (p *PARSER) predictLL(d int) int {
 	for _, ret := range p.stack {
 		key = binary.LittleEndian.AppendUint32(key, uint32(ret))
 	}
+	if PFXDecisionPrecedence[d] {
+		// A left-recursive rule's decision starts from its precedence.
+		key = binary.LittleEndian.AppendUint32(key, uint32(p.prec)|1<<31)
+	}
 	p.llKey = key
-	st := PFXFull.start(d, p.stack, key)
+	st := PFXFull.start(d, p.stack, key, p.prec)
 	for i := 1; st != nil; i++ {
 		p.peekAt(p.pos + i - 1)
 		t := p.la(i)

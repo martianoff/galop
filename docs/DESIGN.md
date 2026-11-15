@@ -135,8 +135,10 @@ runtime prediction and the speed ratios from regressing (see
 
 ### Left-recursive rules (in progress)
 
-Status: being built in phases (below); until the last one lands, code generation
-and `-report` reject a directly left-recursive rule (error 500).
+Status: being built in phases (below). `-report` analyzes a directly
+left-recursive rule; the native flavor generates one behind the experimental
+`-Xleft-recursion` option (phases 1 to 3); without it, and in the antlr flavor,
+code generation rejects such a rule (error 500).
 
 ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
 (`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse
@@ -199,8 +201,39 @@ What ANTLR 4.13.1's Go runtime does with precedence predicates in prediction
   transition (into the loop) for a configuration whose every return state is in
   the same rule and returns to the end of the loop's block. ANTLR tests this on its
   own ATN's shapes (the return state is the block's end, or leads to it or to a
-  block end that leads to the entry); galop's network has more states, so it
-  marks the equivalent return states when it builds the rewritten rule.
+  block end that leads to the entry); galop's network puts plain epsilon states
+  between elements, so it follows the return state's chain of single epsilon
+  transitions instead and accepts it when the chain reaches the loop entry
+  (`StateLoopReturn` in the tables). The two differ only for a call wrapped in
+  more than two nested one-alternative blocks at the end of an alternative,
+  which ANTLR does not accept and galop does; dropping the edge only removes
+  configurations another invocation duplicates, so predictions do not change.
+- **Code generation.** ANTLR's LL(1) analysis stops at a predicate (`HIT_PRED`),
+  so it never makes a decision whose lookahead meets a precedence predicate an
+  LL(1) switch, and such a decision is predicted adaptively, Sync included. That
+  covers the loop entry and the operator block, and any decision whose exit leads
+  out of a rule into the loop of a left-recursive one.
+
+How galop's runtime predictor does the same (`runtime_go.gala`): every decision
+of a left-recursive rule gets one SLL start state per precedence, cached without
+a lock. While a start state is computed, a precedence predicate met at depth 0
+is evaluated at once, as full context does, and the loop entry's start state then
+goes through ANTLR's precedence filter, with `precedenceFilterSuppressed` kept
+per closure path. For a decision other than the loop entry ANTLR instead carries
+the predicate to the state that accepts or conflicts; evaluating it at the start
+removes the failing alternative's configurations earlier, which can only change
+which token a "no viable alternative" error ends at, and the comparisons below
+have found no input where it does. The first-error replay (`errors_go.gala`)
+keeps the precedences of the calls on its stack, reports a failing
+`CheckPrecedence` as ANTLR's Go runtime words it ("rule e failed predicate:
+{p.Precpred(p.GetParserRuleContext(), 2)}?"), and builds its own flagged SLL
+states the same way.
+
+Checked against ANTLR 4.13.1: 20,000 random sentences of a grammar with every
+kind of alternative (prefix, suffix, binary, right-associative, ternary, labels)
+and 9,626 mutated, invalid ones give ANTLR's tree and ANTLR's first error; so do
+Milvus's 1,613 filter expressions, ten-expression conjunctions of them, and 3,399
+mutated, invalid ones.
 
 The phases, each tested against ANTLR before the next:
 

@@ -99,7 +99,7 @@ func predictor(e env) string {
         case NativeFlavor(x) => (nativeErrorHelpers, x + "EOF")
         case ANTLRFlavor() => (antlrErrorHelpers, "antlr.TokenEOF")
     }
-    val code = fill(predictorSource + repairSource + guessSource + (if (guessesGoOn(e)) guessOrSource else "") + (if (readsAutomata(e)) scanSource else "") + fullCacheSource + errorsSource + helpers,
+    val code = fill(predictorSource + repairSource + guessSource + (if (guessesGoOn(e)) guessOrSource else "") + (if (readsAutomata(e)) scanSource else "") + (if (e.rules.Exists(_.Rewrite.IsDefined())) predictAtSource else "") + fullCacheSource + errorsSource + helpers,
         "@RULE@", ruleFuncType(e), "@ROOT@", root, "@ZERO@", zero, "@SYNTAXERROR@", syntaxError, "@EOF@", eof,
         "PARSER", e.parserType, "PFX", e.pfx)
     strings.TrimPrefix(code, "\n")
@@ -125,7 +125,7 @@ func tokenAssertions(e env) string {
 // the input's bracket pairs, group says prediction reads bracketed groups,
 // and stats counts the parse's work for the differential harness.
 func predictorFields(e env) string =
-    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats\n\n\t// keepErr skips antlrError: a recovering parse finds ANTLR's errors itself.\n\tkeepErr bool\n\t// peek is the furthest token prediction read (see peekAt).\n\tpeek int\n\t// fallbacks are where ANTLR's prediction falls back on an alternative (see deadEnd).\n\tfallbacks []${e.pfx}Fallback"
+    s"\n\tstack []int32\n\tll    bool\n\tpred  ${e.pfx}Predictor\n\trp    ${e.pfx}Repair\n\tllKey []byte\n\tpairs []int32\n\tgroup bool\n\tllBad bool\n\tfirst bool\n\tgs    ${e.pfx}Guesses\n\tstats ${e.pfx}Stats\n\n\t// keepErr skips antlrError: a recovering parse finds ANTLR's errors itself.\n\tkeepErr bool\n\t// peek is the furthest token prediction read (see peekAt).\n\tpeek int\n\t// fallbacks are where ANTLR's prediction falls back on an alternative (see deadEnd).\n\tfallbacks []${e.pfx}Fallback\n\t// prec is the precedence of the left-recursive rule a runtime prediction is for (see predictAt).\n\tprec int32"
 
 // retryCode handles a failed SLL parse, whose result is in variable root.
 // With runtime prediction the parse runs in SLL mode first, as GALA does with
@@ -361,7 +361,7 @@ struct scope(CtxType string = "", Labels Array[string] = EmptyArray[string](), R
 
 // precedenceDecision says whether decision d picks by the precedence its rule
 // was called with (analysis.ByPrecedence): its function takes it.
-func (e env) precedenceDecision(d int) bool = e.plans.GetOption(d).Exists((p) => p.Lookahead match {
+func (e env) precedenceDecision(d int) bool = e.recursive(e.parser.Decisions.Get(d).Rule) || e.plans.GetOption(d).Exists((p) => p.Lookahead match {
     case analysis.ByPrecedence(_, _) => true
     case _ => false
 })
@@ -490,7 +490,7 @@ func emitDecision(e env, plan analysis.DecisionPlan) string {
         case analysis.ByPrecedence(bounds, cases) => ("_p int32", ArrayOf("\tswitch {").AppendAll(cases.ZipWithIndex().FlatMap((ci) =>
             ArrayOf(bounds.GetOption(ci.V2).Map((b) => s"\tcase _p <= $b:").GetOrElse("\tdefault:")).AppendAll(emitLookahead(e, d, ci.V1, "\t\t"))
         )).Append("\t}"))
-        case l => ("", emitLookahead(e, d, l, "\t"))
+        case l => (if (e.precedenceDecision(d)) "_p int32" else "", emitLookahead(e, d, l, "\t"))
     }
     s"// decide$d decides ${e.ruleName(plan.Decision.Rule)}: $text\nfunc (p *${e.parserType}) decide$d($params) int {\n" + body.MkString("\n") + "\n}\n"
 }
