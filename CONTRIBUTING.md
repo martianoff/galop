@@ -31,7 +31,8 @@ only changes Markdown, the large fuzz runs. The full lanes (the large fuzz runs,
 performance sweep, and `gala test` on Linux and Windows) run on every push to `main` and on demand through the CI
 workflow's **Run workflow** button. `gala test` on macOS takes about 2 hours, so it
 runs after the merge, on pushes to `main`, and on demand only when the run's `macos`
-input is ticked.
+input is ticked. It is informational: it never runs on pull requests, and a macOS
+failure or timeout doesn't make the run red. Check it after merging all the same.
 
 If you hit a GALA compiler bug, report it in [martianoff/gala](https://github.com/martianoff/gala/issues)
 with a minimal repro rather than working around it in galop.
