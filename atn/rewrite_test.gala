@@ -102,3 +102,17 @@ func TestRightAssociativeOption(t T) T {
     val rw = rewriteOf("grammar P;\ne : <assoc=right> e '^' e | <assoc=left> e '+' e | INT ;\nINT : [0-9]+ ;\n", "e")
     Eq(t, rw.Ops.Map(altSummary), ArrayOf("0:binary:3:3:", "1:binary:2:3:"))
 }
+
+func TestSourceAlternatives(t T) T {
+    val c = compiled(t, lrGrammar)
+    val alts = SourceAlts(c.Rules.Get(1))
+    // The rule's own order and labels, op alternatives with their leading call
+    // (Mul's labeled l) back.
+    val t1 = Eq(t, alts.Map(_.Label.GetOrElse("")), ArrayOf("Neg", "Pow", "Fact", "Mul", "Cond", "Int", "Paren"))
+    val mul = alts.Get(3).Steps
+    val t2 = Eq(t1, mul.Map(stepShape), ArrayOf("call", "set", "call"))
+    Eq(t2, mul.Head() match {
+        case CallRule(r, _, label, _) => s"$r ${label.Map(_.Name).GetOrElse("")}"
+        case _ => ""
+    }, "1 l")
+}

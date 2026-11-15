@@ -355,7 +355,23 @@ func ruleBody(e env, r atn.RuleIR, alt func(atn.AltIR, string) Array[string]) Ar
 // scope is what emitting a step needs to know about its rule: the antlr
 // flavor's context type, whose fields hold labels, or the native flavor's
 // label numbering (a label's number is its position in Labels plus one).
-struct scope(CtxType string = "", Labels Array[string] = EmptyArray[string]())
+// A rewritten left-recursive rule's steps also need the rule's index (Rule)
+// and its alternative labels (AltLabels, numbered as Labels are).
+struct scope(CtxType string = "", Labels Array[string] = EmptyArray[string](), Rule int = -1, AltLabels Array[string] = EmptyArray[string]())
+
+// precedenceDecision says whether decision d picks by the precedence its rule
+// was called with (analysis.ByPrecedence): its function takes it.
+func (e env) precedenceDecision(d int) bool = e.plans.GetOption(d).Exists((p) => p.Lookahead match {
+    case analysis.ByPrecedence(_, _) => true
+    case _ => false
+})
+
+// decideCall is the call of decision d's function.
+func (e env) decideCall(d int) string = if (e.precedenceDecision(d)) s"p.decide$d(_p)" else s"p.decide$d()"
+
+// recursive says whether rule index is a rewritten left-recursive rule, whose
+// function takes the precedence it is called with.
+func (e env) recursive(index int) bool = e.rules.Get(index).Rewrite.IsDefined()
 
 func emitSteps(e env, steps Array[atn.Step], ind string, sc scope) Array[string] =
     steps.FlatMap((s) => emitStep(e, s, ind, sc))
@@ -365,14 +381,14 @@ func emitSteps(e env, steps Array[atn.Step], ind string, sc scope) Array[string]
 func emitStep(e env, s atn.Step, ind string, sc scope) Array[string] = s match {
     case atn.MatchToken(t, label) => tokenStep(e, ind, "match", e.tokenRef(t), label, sc)
     case atn.MatchSet(set, label, _) => tokenStep(e, ind, "matchIf", setTest(e, set, "p.types[p.pos]"), label, sc)
-    case atn.CallRule(rule, follow, label, _) => {
+    case atn.CallRule(rule, follow, label, precedence) => {
         // Only runtime prediction reads the stack during a parse; the error
         // replay keeps its own.
         val push = if (e.adaptive) ArrayOf(s"$ind\tp.stack = append(p.stack, $follow)") else EmptyArray[string]()
         val pop = if (e.adaptive) ArrayOf(s"$ind\tp.stack = p.stack[:len(p.stack)-1]") else EmptyArray[string]()
         val (call, attach) = e.flavor match {
             case ANTLRFlavor() => (s"p.${e.ruleFunc(rule)}(localctx, ${follow - 1})", "localctx.AddChild(child)")
-            case NativeFlavor(_) => (s"p.${e.ruleFunc(rule)}()", "p.kids = append(p.kids, child)")
+            case NativeFlavor(_) => (s"p.${e.ruleFunc(rule)}(${if (e.recursive(rule)) s"$precedence" else ""})", "p.kids = append(p.kids, child)")
         }
         val store = label match {
             case Some(l) => ArrayOf(ind + "\t" + ruleLabelStore(e, rule, l, sc))
@@ -386,24 +402,49 @@ func emitStep(e env, s atn.Step, ind string, sc scope) Array[string] = s match {
             .AppendAll(store)
             .Append(s"$ind}")
     }
-    case atn.Choose(d, alts, exitAlt) => ArrayOf(s"${ind}switch p.decide$d() {")
+    case atn.Choose(d, alts, exitAlt) => ArrayOf(s"${ind}switch ${e.decideCall(d)} {")
         .AppendAll(alts.ZipWithIndex().FlatMap((ai) =>
             ArrayOf(s"${ind}case ${atn.AltNumber(exitAlt, ai.V2)}:").AppendAll(emitSteps(e, ai.V1, ind + "\t", sc))
         ))
         .Append(s"$ind}")
     case atn.Loop(plus, d, cont, body) if plus => ArrayOf(s"${ind}for {")
         .AppendAll(emitSteps(e, body, ind + "\t", sc))
-        .AppendAll(ArrayOf(s"$ind\tif p.decide$d() != $cont {", s"$ind\t\tbreak", s"$ind\t}", s"$ind}"))
-    case atn.Loop(_, d, cont, body) => ArrayOf(s"${ind}for p.decide$d() == $cont {")
+        .AppendAll(ArrayOf(s"$ind\tif ${e.decideCall(d)} != $cont {", s"$ind\t\tbreak", s"$ind\t}", s"$ind}"))
+    case atn.Loop(_, d, cont, body) => ArrayOf(s"${ind}for ${e.decideCall(d)} == $cont {")
         .AppendAll(emitSteps(e, body, ind + "\t", sc))
         .Append(s"$ind}")
     case atn.RunAction(body) => ArrayOf(ind + strings.TrimSpace(body))
     case atn.CheckPredicate(body) => ArrayOf(s"${ind}if !(${strings.TrimSpace(body)}) {", s"$ind\tp.noViableAlt(-1)", s"$ind}")
-    // The Go target rejects rewritten left-recursive rules until code
-    // generation for them lands (DESIGN.md, "Left-recursive rules").
-    case atn.CheckPrecedence(_) => EmptyArray[string]()
-    case atn.RecursionStart(_, _) => EmptyArray[string]()
-    case atn.ReplaceContext(_) => EmptyArray[string]()
+    // A rewritten left-recursive rule's steps; the antlr flavor rejects such
+    // rules until its code generation for them lands (DESIGN.md).
+    case atn.CheckPrecedence(level) => e.flavor match {
+        case NativeFlavor(_) => ArrayOf(s"${ind}if $level < _p {", s"$ind\tp.noViableAlt(-1)", s"$ind}")
+        case ANTLRFlavor() => EmptyArray[string]()
+    }
+    case atn.RecursionStart(label, left) => e.flavor match {
+        case NativeFlavor(_) => recursionStart(e, ind, sc, label, left)
+        case ANTLRFlavor() => EmptyArray[string]()
+    }
+    case atn.ReplaceContext(label) => e.flavor match {
+        case NativeFlavor(_) => ArrayOf(s"${ind}alt = ${sc.AltLabels.IndexOf(label) + 1}")
+        case ANTLRFlavor() => EmptyArray[string]()
+    }
+}
+
+// recursionStart starts an iteration of a rewritten rule's loop in the native
+// tree, as ANTLR's PushNewRecursionContext does: the rule's node so far is
+// finished, ending at the last token read, and becomes the first child of the
+// next one, which starts where it did; the label of the call the rewrite
+// removed, if any, names it, and the next node is of the alternative's label.
+func recursionStart(e env, ind string, sc scope, label Option[string], left Option[atn.LabelRef]) Array[string] {
+    val altArg = if (sc.AltLabels.NonEmpty()) "alt" else "0"
+    val finish = if (e.tokenLabels) s"p.finishLabeled(${sc.Rule}, $altArg, start, mark, labs)" else s"p.finish(${sc.Rule}, $altArg, start, mark)"
+    val store = left match {
+        case Some(l) => ArrayOf(s"$ind\tp.tree.Nodes[prev].Label = ${sc.Labels.IndexOf(l.Name) + 1}")
+        case None() => EmptyArray[string]()
+    }
+    val setAlt = if (sc.AltLabels.NonEmpty()) ArrayOf(s"$ind\talt = ${label.Map((l) => sc.AltLabels.IndexOf(l) + 1).GetOrElse(0)}") else EmptyArray[string]()
+    ArrayOf(s"$ind{", s"$ind\tprev := $finish").AppendAll(store).Append(s"$ind\tp.kids = append(p.kids, prev)").AppendAll(setAlt).Append(s"$ind}")
 }
 
 // ruleLabelStore stores the rule's result child under label l: in the antlr
@@ -444,8 +485,14 @@ func setTest(e env, set atn.IntervalSet, v string) string = set.Ranges.Map((r) =
 func emitDecision(e env, plan analysis.DecisionPlan) string {
     val d = plan.Decision.Id
     val text = strings.ReplaceAll(plan.Decision.Text, "\n", " ")
-    val body = emitLookahead(e, d, plan.Lookahead, "\t")
-    s"// decide$d decides ${e.ruleName(plan.Decision.Rule)}: $text\nfunc (p *${e.parserType}) decide$d() int {\n" + body.MkString("\n") + "\n}\n"
+    val (params, body) = plan.Lookahead match {
+        // One lookahead per range of the precedence the rule was called with.
+        case analysis.ByPrecedence(bounds, cases) => ("_p int32", ArrayOf("\tswitch {").AppendAll(cases.ZipWithIndex().FlatMap((ci) =>
+            ArrayOf(bounds.GetOption(ci.V2).Map((b) => s"\tcase _p <= $b:").GetOrElse("\tdefault:")).AppendAll(emitLookahead(e, d, ci.V1, "\t\t"))
+        )).Append("\t}"))
+        case l => ("", emitLookahead(e, d, l, "\t"))
+    }
+    s"// decide$d decides ${e.ruleName(plan.Decision.Rule)}: $text\nfunc (p *${e.parserType}) decide$d($params) int {\n" + body.MkString("\n") + "\n}\n"
 }
 
 // emitLookahead emits the code of a lookahead tree. Cases are made disjoint

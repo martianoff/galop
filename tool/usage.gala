@@ -31,6 +31,7 @@ val galopOptions = ArrayOf(
     OptionHelp("-format", "print each grammar in canonical form"),
     OptionHelp("-report", "print the decisions static lookahead cannot settle"),
     OptionHelp("-Xno-brackets", "predict over tokens only, never reading a bracketed group as one"),
+    OptionHelp("-Xleft-recursion", "generate left-recursive rules (experimental: syntax errors in them may differ from ANTLR's)"),
     OptionHelp("-version", "print the galop version"),
     OptionHelp("-help", "print this help"),
 )

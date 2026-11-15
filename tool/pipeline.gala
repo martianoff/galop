@@ -35,7 +35,7 @@ struct FileResult(Diagnostics Array[diag.Diagnostic], Stdout string)
 struct Source(Path string, Text Option[string])
 
 // Stage is the part of the configuration the front end needs.
-struct Stage(Action Action, Werror bool, NoBrackets bool = false)
+struct Stage(Action Action, Werror bool, NoBrackets bool = false, LeftRecursion bool = false)
 
 // Analyzed is a grammar that passed the front end and is ready for a target.
 struct Analyzed(Grammar g4.Grammar, Compiled atn.Compiled, Analysis Option[analysis.Analysis])
@@ -67,7 +67,7 @@ func Run(args Array[string], kit Toolkit) Outcome {
             if diag.HasErrors(setup) || (cfg.Werror && setup.NonEmpty()) {
                 return finish(cfg, setup, "")
             }
-            val stage = Stage(cfg.Action, cfg.Werror, cfg.NoBrackets)
+            val stage = Stage(cfg.Action, cfg.Werror, cfg.NoBrackets, cfg.LeftRecursion)
             val sources = cfg.Files.Map((path) => Source(path, kit.Files.Read(path).ToOption()))
             val fronts = sources.Map((src) => Future(frontEnd(stage, src)))
             val results = sources.Zip(fronts).Map((pair) => {
@@ -139,7 +139,7 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
                     case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
                     // Code generation for rewritten left-recursive rules lands in
                     // phases (DESIGN.md, "Left-recursive rules").
-                    case _ if !plan.LeftRecursion.Direct.IsEmpty() =>
+                    case _ if !plan.LeftRecursion.Direct.IsEmpty() && !stage.LeftRecursion =>
                         done(problemsOnly(ArrayOf(directLeftRecursionProblem(plan.LeftRecursion, g, c))))
                     case _ => {
                         val plans = c.Parser.Map((p) => analysis.Analyze(p, plan, stage.NoBrackets))
@@ -233,6 +233,7 @@ func backEnd(cfg Config, kit Toolkit, path string, a Analyzed) FileResult {
         Listener = cfg.Listener,
         Visitor = cfg.Visitor,
         Defines = mergedOptions(cfg, g),
+        LeftRecursion = cfg.LeftRecursion,
     )
     val language = opts.Define("language").GetOrElse(DefaultLanguage)
     val diagrams = if (cfg.ATN) ATNFiles(g, a.Compiled) else EmptyArray[codegen.OutputFile]()

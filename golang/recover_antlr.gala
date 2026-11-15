@@ -332,8 +332,8 @@ struct contextLabels(CtxType string, Rule atn.RuleIR, Uses Array[labelUse])
 // PFXLabelList for a list label, which appends).
 func labelSetter(e env) string {
     val kinds = e.rules.FlatMap((r) => altLabelsOf(r) match {
-        case Array() => ArrayOf(contextLabels(e.names.Context(r.Name), r, r.Alts.FlatMap((a) => labelUses(a.Steps))))
-        case names => names.Map((l) => contextLabels(e.names.Context(l), r, r.Alts.Filter(_.Label == Some(l)).FlatMap((a) => labelUses(a.Steps))))
+        case Array() => ArrayOf(contextLabels(e.names.Context(r.Name), r, atn.SourceAlts(r).FlatMap((a) => labelUses(a.Steps))))
+        case names => names.Map((l) => contextLabels(e.names.Context(l), r, atn.SourceAlts(r).Filter(_.Label == Some(l)).FlatMap((a) => labelUses(a.Steps))))
     }).Filter(_.Uses.NonEmpty())
     val cases = kinds.Map((k) => {
         val numbered = ruleLabels(k.Rule)

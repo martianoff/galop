@@ -39,16 +39,19 @@ func (g grammarInfo) planByPrecedence(dec atn.Decision, maxK int, levels Array[i
 
 // continueOnOperators resolves, at a left-recursive rule's loop entry, each
 // first token that both continuing the loop (alternative 1) and leaving it
-// (alternative 2) accept, when that token can follow the rule only by going
-// on in its own loop: leaving then goes on in an enclosing invocation of the
-// rule, which reads the same operator and what follows it as continuing does,
-// and ANTLR's full-context prediction, finding the two ambiguous, takes
-// alternative 1. A token that can also follow the rule elsewhere
-// (externalFollow), or after which only leaving the loop can go on, keeps
-// what the static tree says.
+// (alternative 2) accept, when that token starts exactly one of the loop's
+// alternatives and can follow the rule only by going on in its own loop:
+// leaving then goes on in an enclosing invocation of the rule with that same
+// alternative, which reads the operator and what follows it as continuing
+// does, and ANTLR's full-context prediction, finding the two ambiguous, takes
+// alternative 1. A token that starts several of the loop's alternatives may
+// be read by a different one in the enclosing invocation, whose precedence is
+// lower (`a < x < b` with a range alternative and a relational one), so it
+// keeps what the static tree says, as does a token that can also follow the
+// rule elsewhere (externalFollow) or after which only leaving can go on.
 func (g grammarInfo) continueOnOperators(dec atn.Decision, tree Lookahead) Lookahead = tree match {
     case Switch(1, cases) => {
-        val external = g.externalFollow(dec.Rule, dec.State)
+        val external = g.externalFollow(dec.Rule, dec.State).Union(g.sharedOperatorStarts(dec))
         Switch(1, cases.FlatMap((c) => {
             val leaves = leafAlts(c.Then)
             val ambiguous = leaves.Exists(_.Contains(1)) && leaves.Exists(_.Contains(2)) && leaves.ForAll(_.Contains(1))
@@ -62,6 +65,20 @@ func (g grammarInfo) continueOnOperators(dec atn.Decision, tree Lookahead) Looka
         }).SortWith((x, y) => x.Tokens.Min().GetOrElse(0) < y.Tokens.Min().GetOrElse(0)))
     }
     case _ => tree
+}
+
+// sharedOperatorStarts are the tokens that start more than one alternative
+// of the loop whose entry is dec: the loop's block alternatives, or its one
+// alternative.
+func (g grammarInfo) sharedOperatorStarts(dec atn.Decision) atn.IntervalSet {
+    val body = g.a.State(dec.State).Out.HeadOption().Map(_.Target()).GetOrElse(dec.State)
+    val starts = g.a.State(body).Decision match {
+        case Some(_) => g.a.State(body).Out.Map((t) => g.tokensAfter(t.Target(), -1, -1))
+        case None() => ArrayOf(g.tokensAfter(body, -1, -1))
+    }
+    starts.ZipWithIndex().FoldLeft(atn.EmptySet(), (acc, si) =>
+        acc.Union(starts.Drop(si.V2 + 1).FoldLeft(atn.EmptySet(), (inner, other) => inner.Union(si.V1.Intersect(other))))
+    )
 }
 
 // leafAlts lists the alternatives each leaf of a lookahead tree can predict.
