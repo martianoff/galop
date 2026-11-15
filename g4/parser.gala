@@ -165,7 +165,11 @@ func (p Ptr[parser]) grammar() Grammar {
     }
     var rules = EmptyArray[Rule]()
     for p.ok() && !p.atEOF() {
-        rules = rules.Append(p.rule())
+        if p.atModeDeclaration() {
+            p.unsupported("lexer modes")
+        } else {
+            rules = rules.Append(p.rule())
+        }
     }
     Grammar(kind, name, options, tokens, channels, actions, rules, posOf(nameTok))
 }
@@ -272,6 +276,11 @@ func (p Ptr[parser]) rule() Rule {
     p.expectPunct(";")
     Rule(name, isFragment, alts, posOf(nameTok), p.nodePos)
 }
+
+// atModeDeclaration says whether a lexer mode starts here (`mode NAME;`),
+// rather than a rule called mode.
+func (p Ptr[parser]) atModeDeclaration() bool =
+    p.peek().IsId("mode") && p.peekAt(1).Kind.isTokId() && p.peekAt(2).IsPunct(";")
 
 // rejectRulePrequel reports the rule-level constructs the model does not hold yet.
 func (p Ptr[parser]) rejectRulePrequel() {

@@ -5,6 +5,13 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Fixed:** code generation and `-report` no longer run without end on a
+  directly left-recursive rule with more than one left-recursive alternative
+  (`e : e '*' e | e '+' e | INT`); they report error 500 at the rule, as for
+  other constructs galop does not support yet.
+- **Fixed:** a lexer mode (`mode M;`) is reported as not supported yet (error
+  500), not as a syntax error.
+
 ## 0.3.3
 
 - **Fixed:** for input that is not valid UTF-8, the native flavor's token text is now
