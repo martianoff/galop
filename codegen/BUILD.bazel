@@ -8,7 +8,15 @@ gala_library(
     deps = [
         "//analysis",
         "//atn",
+        "//brackets",
+        "//diag",
         "//g4",
+        "//leftrec",
+        "//repair",
         "@gala//collection_immutable",
+        "@gala//collection_mutable",
+        "@gala//concurrent",
+        "@gala//go_interop",
+        "@gala//stream",
     ],
 )
