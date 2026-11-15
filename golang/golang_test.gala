@@ -555,3 +555,15 @@ func TestRecoveryStartsRecursionContexts(t T) T {
     val t1 = Eq(t, strings.Count(entries, ": 2147483648,"), 2)
     IsTrue(t1, strings.Contains(parserOf(generate(exprGrammar, EmptyArray[g4.OptionEntry]())), "StateContext = map[int32]uint32{}"))
 }
+
+func TestANTLRFlavorPassesEachCallsOwnState(t T) T {
+    // a and b end r's alternatives, so they return to the same state; each
+    // is still invoked from its own state, ANTLR's invoking state.
+    val code = parserOf(generate("grammar R;\nr : a | b ;\na : 'a' ;\nb : 'b' ;\n", antlrDefines))
+    val (_, afterA, _) = strings.Cut(code, "p.ruleA(localctx, ")
+    val (_, afterB, _) = strings.Cut(code, "p.ruleB(localctx, ")
+    val (stateA, _, _) = strings.Cut(afterA, ")")
+    val (stateB, _, _) = strings.Cut(afterB, ")")
+    val t1 = IsTrue(t, stateA != "")
+    IsTrue(t1, stateA != stateB)
+}

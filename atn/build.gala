@@ -208,7 +208,7 @@ func (b Ptr[builder]) tailReturns() Array[int] {
 // retargetCalls makes the calls in steps return where tailReturns made the
 // network's calls return.
 func retargetCalls(steps Array[Step], returns Array[int]) Array[Step] = steps.Map((s) => s match {
-    case CallRule(rule, follow, label, precedence) => CallRule(rule, returns.Get(follow), label, precedence)
+    case CallRule(rule, follow, label, precedence, from) => CallRule(rule, returns.Get(follow), label, precedence, from)
     case Choose(d, alts, exit) => Choose(d, alts.Map((a) => retargetCalls(a, returns)), exit)
     case Loop(plus, d, cont, body) => Loop(plus, d, cont, retargetCalls(body, returns))
     case _ => s
@@ -459,7 +459,7 @@ func (b Ptr[builder]) ruleCall(rule int, name string, label Option[LabelRef], pr
     b.edge(from, RuleCall(b.ruleStart.Get(target), target, follow))
     b.labels = b.labels.Updated(from, label)
     b.precedences = b.precedences.Updated(from, precedence)
-    Piece(Frag(from, follow), ArrayOf(CallRule(target, follow, label, precedence)))
+    Piece(Frag(from, follow), ArrayOf(CallRule(target, follow, label, precedence, from)))
 }
 
 // matchSet compiles a one-symbol match. listed says whether the set lists its

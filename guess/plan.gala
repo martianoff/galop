@@ -162,7 +162,7 @@ func goOnOrStop(steps Array[atn.Step]) Array[int] = steps.FlatMap((s) => s match
 
 // separatorTerminated says a block starts with a rule call and ends with a token.
 func separatorTerminated(body Array[atn.Step]) bool = body.Size() >= 2 && (body.Head() match {
-    case atn.CallRule(_, _, _, _) => true
+    case atn.CallRule(_, _, _, _, _) => true
     case _ => false
 }) && isToken(body.Last())
 
@@ -195,7 +195,7 @@ val unfoldDepth = 4
 // unfold replaces an alternative that is only a call of a rule with one
 // alternative by that alternative, a few levels deep.
 func unfold(rules Array[atn.RuleIR], steps Array[atn.Step], depth int) Array[atn.Step] = steps match {
-    case Array(atn.CallRule(r, _, _, _)) if depth < unfoldDepth && rules.Get(r).Alts.Size() == 1 => unfold(rules, rules.Get(r).Alts.Get(0).Steps, depth + 1)
+    case Array(atn.CallRule(r, _, _, _, _)) if depth < unfoldDepth && rules.Get(r).Alts.Size() == 1 => unfold(rules, rules.Get(r).Alts.Get(0).Steps, depth + 1)
     case _ => steps
 }
 
@@ -217,7 +217,7 @@ func tokensOf(s atn.Step) atn.IntervalSet = s match {
 
 // scanSteps turns steps into scan steps, or None when one has another shape.
 func scanSteps(steps Array[atn.Step]) Option[Array[ScanStep]] = steps.FoldLeft(Some(EmptyArray[ScanStep]()), (acc, s) => acc.FlatMap((ss) => (s match {
-    case atn.CallRule(r, _, _, _) => Some[ScanStep](ScanRule(r))
+    case atn.CallRule(r, _, _, _, _) => Some[ScanStep](ScanRule(r))
     case atn.MatchToken(t, _) => Some[ScanStep](ScanToken(atn.SetOf(t)))
     case atn.MatchSet(set, _, _) => Some[ScanStep](ScanToken(set))
     case atn.Choose(_, Array(alt), Some(2)) => scanSteps(alt).Map((inner) => ScanOptional(inner))

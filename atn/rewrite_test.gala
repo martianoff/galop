@@ -112,7 +112,7 @@ func TestSourceAlternatives(t T) T {
     val mul = alts.Get(3).Steps
     val t2 = Eq(t1, mul.Map(stepShape), ArrayOf("call", "set", "call"))
     Eq(t2, mul.Head() match {
-        case CallRule(r, _, label, _) => s"$r ${label.Map(_.Name).GetOrElse("")}"
+        case CallRule(r, _, label, _, _) => s"$r ${label.Map(_.Name).GetOrElse("")}"
         case _ => ""
     }, "1 l")
 }

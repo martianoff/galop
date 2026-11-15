@@ -94,7 +94,7 @@ func stepShape(s Step) string = s match {
     case MatchToken(tok, _) if tok == TokenEOF => "eof"
     case MatchToken(_, _) => "token"
     case MatchSet(_, _, _) => "set"
-    case CallRule(_, _, _, _) => "call"
+    case CallRule(_, _, _, _, _) => "call"
     case Choose(d, _, exitAlt) => s"choose($d,exit=${exitAlt.GetOrElse(0)})"
     case Loop(plus, d, cont, _) => s"loop(${if (plus) "+" else "*"},$d,continue=$cont)"
     case RunAction(_) => "action"
@@ -186,7 +186,7 @@ func kindName(k StateKind) string = k match {
 
 // callFollows are the return states of the calls in steps, nested ones included.
 func callFollows(steps Array[Step]) Array[int] = steps.FlatMap((s) => s match {
-    case CallRule(_, follow, _, _) => ArrayOf(follow)
+    case CallRule(_, follow, _, _, _) => ArrayOf(follow)
     case Choose(_, alts, _) => alts.FlatMap(callFollows)
     case Loop(_, _, _, body) => callFollows(body)
     case _ => EmptyArray[int]()

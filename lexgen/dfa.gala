@@ -219,7 +219,7 @@ func grow(sim Sim, parallel bool, g growth) growth {
     }
     val frontier = g.States.Drop(g.Edges.Size())
     val rows = if (parallel) {
-        frontier.Map((st) => Future(sim.row(st.Configs))).Map(_.Get())
+        Traverse(frontier, (st) => Future(sim.row(st.Configs))).Get()
     } else {
         frontier.Map((st) => sim.row(st.Configs))
     }

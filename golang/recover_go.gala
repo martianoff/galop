@@ -912,10 +912,7 @@ func recoveryTables(e env, align bool) string {
     val ax = alignPrefix(e)
     // Numbered as the native parser numbers them (see ruleLabels).
     val byRule = e.rules.Map(ruleLabels)
-    val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => {
-        val number = byRule.Get(s.Rule).IndexOf(l.Name) + 1
-        if (l.Append) number + maxRuleLabels + 1 else number
-    }).GetOrElse(0))
+    val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => labelCode(l, byRule.Get(s.Rule))).GetOrElse(0))
     // The alternatives of each labeled rule's top-level decision, as node Alts.
     val altLabels = e.rules.Map(altLabelsOf)
     val byDecision = decisionRules(e.rules)
@@ -978,9 +975,16 @@ func recoveryTables(e env, align bool) string {
 func contextCode(step atn.Step, altLabels Array[string], labels Array[string]) int = step match {
     case atn.RecursionStart(label, left) => {
         val alt = label.Map((l) => altLabels.IndexOf(l) + 1).GetOrElse(0)
-        val leftCode = left.Map((l) => labels.IndexOf(l.Name) + 1 + (if (l.Append) maxRuleLabels + 1 else 0)).GetOrElse(0)
+        val leftCode = left.Map((l) => labelCode(l, labels)).GetOrElse(0)
         1 << 31 | leftCode << 8 | alt
     }
     case atn.ReplaceContext(label) => altLabels.IndexOf(label) + 1
     case _ => 0
+}
+
+// labelCode is PFXStateLabel's encoding of label l in a rule whose labels are
+// labels: its number there, from 1, above maxRuleLabels for a list label.
+func labelCode(l atn.LabelRef, labels Array[string]) int {
+    val number = labels.IndexOf(l.Name) + 1
+    if (l.Append) number + maxRuleLabels + 1 else number
 }

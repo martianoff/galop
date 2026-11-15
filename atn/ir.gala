@@ -22,8 +22,10 @@ sealed type Step {
     // CallRule invokes rule Rule; Follow is the ATN state matching resumes at,
     // which a parser pushes as its return state for context-aware prediction.
     // Precedence is the precedence argument of a call of a rewritten
-    // left-recursive rule (0 for every other call).
-    case CallRule(Rule int, Follow int, Label Option[LabelRef], Precedence int)
+    // left-recursive rule (0 for every other call). From is the state the
+    // call is made from (ANTLR's invoking state); calls ending alternatives of
+    // one block share their Follow, as in ANTLR's network.
+    case CallRule(Rule int, Follow int, Label Option[LabelRef], Precedence int, From int)
     // Choose picks one of Alts by Decision. ExitAlt is the decision's
     // alternative that matches nothing (an optional block): alternative 1 when
     // non-greedy, len(Alts)+1 when greedy. Use AltNumber for the others.
