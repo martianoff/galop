@@ -31,7 +31,9 @@ func Compile(g g4.Grammar) Either[Array[diag.Diagnostic], Compiled] {
     val rewritten = parserRules.Map((r) => if (StartsWithItself(r)) RewriteOf(r) else Right[diag.Diagnostic, Option[Rewrite]](None[Rewrite]()))
     val rewriteErrors = rewritten.Collect({ case Left(d) => d })
     val parser = newBuilder(false, vocab, parserRules, rewritten.Map((e) => e.Fold((_) => None[Rewrite](), (rw) => rw)))
-    val ruleIRs = parserRules.ZipWithIndex().Map((ri) => parser.rule(ri.V2, ri.V1))
+    val built = parserRules.ZipWithIndex().Map((ri) => parser.rule(ri.V2, ri.V1))
+    val returns = parser.tailReturns()
+    val ruleIRs = built.Map((ir) => ir.Copy(Alts = ir.Alts.Map((a) => a.Copy(Steps = retargetCalls(a.Steps, returns)))))
     val lexer = newBuilder(true, vocab, lexerRules)
     val tokensStart = lexer.tokensStart()
     lexerRules.ZipWithIndex().ForEach((ri) => lexer.rule(ri.V2, ri.V1))
@@ -87,6 +89,9 @@ type builder struct {
     var wildcards Array[bool]
     // precedences is the precedence each state's rule call passes.
     var precedences Array[int]
+    // contextSteps is the context step each state starts an alternative of
+    // a rewritten rule with.
+    var contextSteps Array[Option[Step]]
     // rewrites is, by rule, ANTLR's rewrite of a directly left-recursive rule.
     rewrites Array[Option[Rewrite]]
     lexer bool
@@ -111,6 +116,7 @@ func newBuilder(lexer bool, vocab Vocabulary, rules Array[g4.Rule], rewrites Arr
         labels: EmptyArray[Option[LabelRef]](),
         wildcards: EmptyArray[bool](),
         precedences: EmptyArray[int](),
+        contextSteps: EmptyArray[Option[Step]](),
         rewrites: rewrites,
         lexer: lexer,
         vocab: vocab,
@@ -133,6 +139,7 @@ func (b Ptr[builder]) state(rule int, kind StateKind) int {
     b.labels = b.labels.Append(None[LabelRef]())
     b.wildcards = b.wildcards.Append(false)
     b.precedences = b.precedences.Append(0)
+    b.contextSteps = b.contextSteps.Append(None[Step]())
     id
 }
 
@@ -174,9 +181,42 @@ func (b Ptr[builder]) located(g g4.Grammar) Array[diag.Diagnostic] = b.problems.
 
 func (b Ptr[builder]) ruleName(rule int) string = b.names.Get(rule)
 
+// tailReturns does what ANTLR's TailEpsilonRemover does to rule calls: a
+// call whose return state's one transition is an epsilon to a block end or
+// a loop back returns there instead. Calls that end alternatives of one block
+// then return to the same state, as in ANTLR's network, which full-context
+// prediction can see: two alternatives whose paths meet in such a call have
+// the same context. It retargets the calls and returns the return state of
+// each state (itself unless retargeted).
+func (b Ptr[builder]) tailReturns() Array[int] {
+    val returns = ArrayTabulate(b.kinds.Size(), (q) => b.outs.Get(q) match {
+        case Array(Epsilon(r)) if b.kinds.Get(q) == BasicState() => b.kinds.Get(r) match {
+            case BlockEndState() => r
+            case StarLoopBackState() => r
+            case PlusLoopBackState() => r
+            case _ => q
+        }
+        case _ => q
+    })
+    b.outs = b.outs.Map((ts) => ts.Map((t) => t match {
+        case RuleCall(target, rule, follow) => RuleCall(target, rule, returns.Get(follow))
+        case _ => t
+    }))
+    returns
+}
+
+// retargetCalls makes the calls in steps return where tailReturns made the
+// network's calls return.
+func retargetCalls(steps Array[Step], returns Array[int]) Array[Step] = steps.Map((s) => s match {
+    case CallRule(rule, follow, label, precedence) => CallRule(rule, returns.Get(follow), label, precedence)
+    case Choose(d, alts, exit) => Choose(d, alts.Map((a) => retargetCalls(a, returns)), exit)
+    case Loop(plus, d, cont, body) => Loop(plus, d, cont, retargetCalls(body, returns))
+    case _ => s
+})
+
 func (b Ptr[builder]) finish(kind ATNKind, name string, tokensStart Option[int], tokenTypes Array[Option[int]]) ATN {
     val states = ArrayTabulate(b.kinds.Size(), (i) => State(i, b.owner.Get(i), b.kinds.Get(i), b.outs.Get(i), b.decisionOf.Get(i)))
-    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes, b.labels, b.wildcards, b.precedences)
+    ATN(kind, name, states, b.names, b.ruleStart, b.ruleStop, b.decisions, b.vocab, tokensStart, tokenTypes, b.labels, b.wildcards, b.precedences, b.contextSteps)
 }
 
 // tokensStart creates a lexer's start state: one alternative per token rule,

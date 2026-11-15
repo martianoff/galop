@@ -129,6 +129,16 @@ runtime prediction and the speed ratios from regressing (see
   `Step`s (`MatchToken`, `MatchSet`, `CallRule`, `Choose`, `Loop`, `RunAction`,
   `CheckPredicate`) annotated with decision ids and, for each rule call, the ATN
   follow state. Code generators walk the IR; the analysis works on the ATN.
+  A call that ends an alternative returns where ANTLR's does: ANTLR's
+  `TailEpsilonRemover` points a call whose follow state only leads, by one
+  epsilon, to a block end or a loop back straight at that state, and galop does
+  the same to its network and the IR once the rules are built. Calls ending
+  alternatives of one block then share a return state, so two alternatives whose
+  paths meet in such calls have the same context, which full-context prediction
+  sees: it takes the lower alternative as soon as their configurations agree, as
+  ANTLR does (Milvus's `(1 < A < {max)` reads as a range there, not as two
+  comparisons). galop's network otherwise keeps its own states, numbered
+  differently from ANTLR's.
 - `Lexer`: the lexer ATN, rules in ANTLR's lexer order (implicit `T__n` rules first),
   `TokensStart` with one alternative per token rule, `RuleTokenType` per rule.
   Lexer commands sit on `LexerActions` transitions at the end of an alternative.
@@ -137,8 +147,8 @@ runtime prediction and the speed ratios from regressing (see
 
 Status: being built in phases (below). `-report` analyzes a directly
 left-recursive rule; the native flavor generates one behind the experimental
-`-Xleft-recursion` option (phases 1 to 3); without it, and in the antlr flavor,
-code generation rejects such a rule (error 500).
+`-Xleft-recursion` option (phases 1 to 3, and phase 5's error recovery); without
+it, and in the antlr flavor, code generation rejects such a rule (error 500).
 
 ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
 (`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse
@@ -234,7 +244,11 @@ kind of alternative (prefix, suffix, binary, right-associative, ternary, labels)
 and 20,000 mutated ones give ANTLR's tree and ANTLR's first error, or no error
 where ANTLR reports none; so do Milvus's 1,613 filter expressions, ten-expression
 conjunctions of them, and 8,065 mutated ones (Milvus's entry rule has no EOF, so
-ANTLR accepts many of them by stopping early).
+ANTLR accepts many of them by stopping early). The native flavor's error recovery
+gives every syntax error ANTLR reports in LL mode, and ANTLR's recovered tree, on
+the 4,193 mutated sentences of that grammar ANTLR reports an error in (alternative
+contexts, spans, error tokens and labels compared) and on 3,356 mutated Milvus
+expressions.
 
 The phases, each tested against ANTLR before the next:
 
@@ -246,7 +260,9 @@ The phases, each tested against ANTLR before the next:
 3. The native flavor: rule functions with `_p`, ANTLR's tree, the first-error
    replay (failed predicates included).
 4. The antlr flavor: ANTLR's recursion contexts.
-5. Error recovery in left-recursive rules, both flavors, and the converter.
+5. Error recovery in left-recursive rules, both flavors, and the converter. The
+   native flavor's is done (see "Left-recursive rules" under recovery); the antlr
+   flavor's and the converter come with phase 4.
 6. The corpus: test grammars for each shape of alternative, then Milvus `Plan.g4`,
    SigNoz `HavingExpression.g4`, CEL and Grule; benchmarks.
 
@@ -778,6 +794,20 @@ the node is the replacement's. It also records the tokens an error listener's
 `GetExpectedTokens()` gives then (`Expected`): the replay's expected set at the
 walk's state (the generated code's last `SetState`), through the rules on the
 stack, as in ANTLR's `ATN.getExpectedTokens`.
+
+**Left-recursive rules.** The walk goes through a rewritten rule as ANTLR's
+generated code for it does. It keeps the precedence each call on the stack
+passes, so prediction and the rule's precedence predicates see the precedence
+the rule was called with. At an alternative's entry state (`StateContext` in the
+tables) it changes the rule's context: a labeled primary alternative's new
+context keeps none of the rule's children, as a labeled alternative does
+elsewhere, and an op alternative's `PushNewRecursionContext` finishes the rule's
+node so far (ending at the last token read, its labels recorded) and starts the
+next with it as the first child, at the same token, with no exception, and with
+it in the left operand's label (`l=e`). That happens before the precedence
+predicate, so a predicate that fails (`rule e failed predicate:
+{p.Precpred(p.GetParserRuleContext(), 4)}?`) goes to the rule's error exit in the
+new context, which ANTLR then unrolls into the parent as it ends any rule.
 
 #### Recovering into ANTLR's contexts
 

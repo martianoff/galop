@@ -158,3 +158,36 @@ func TestLabelsByState(t T) T {
         case _ => false
     })))
 }
+
+func TestTailCallsReturnToTheirBlockEnd(t T) T {
+    // As ANTLR's TailEpsilonRemover makes them: the calls that end the
+    // alternatives of r's block, and of the loop, return to the block's end
+    // and the loop back; the call followed by 'x' and the one ending r's
+    // only alternative do not.
+    val c = compiled(t, "grammar T;\nr : (a | 'y' b) c 'x' ;\ns : (a | b)* a ;\na : 'a' ;\nb : 'b' ;\nc : 'c' ;\n")
+    val net = c.Parser.Get()
+    val returns = net.States.FlatMap((s) => s.Out.Collect({
+        case RuleCall(_, callee, follow) => s"${net.RuleNames.Get(s.Rule)}.${net.RuleNames.Get(callee)}:${kindName(net.State(follow).Kind)}"
+    }))
+    val t1 = Eq(t, returns, ArrayOf("r.a:blockEnd", "r.b:blockEnd", "r.c:basic", "s.a:blockEnd", "s.b:blockEnd", "s.a:basic"))
+    // The rule's steps return where the network's calls do.
+    val follows = c.Rules.FlatMap((r) => r.Alts.FlatMap((a) => callFollows(a.Steps)))
+    val networkFollows = net.States.FlatMap((s) => s.Out.Collect({ case RuleCall(_, _, follow) => follow })).Sorted()
+    Eq(t1, follows.Sorted(), networkFollows)
+}
+
+// kindName names a state's kind for TestTailCallsReturnToTheirBlockEnd.
+func kindName(k StateKind) string = k match {
+    case BlockEndState() => "blockEnd"
+    case StarLoopBackState() => "starLoopBack"
+    case PlusLoopBackState() => "plusLoopBack"
+    case _ => "basic"
+}
+
+// callFollows are the return states of the calls in steps, nested ones included.
+func callFollows(steps Array[Step]) Array[int] = steps.FlatMap((s) => s match {
+    case CallRule(_, follow, _, _) => ArrayOf(follow)
+    case Choose(_, alts, _) => alts.FlatMap(callFollows)
+    case Loop(_, _, _, body) => callFollows(body)
+    case _ => EmptyArray[int]()
+})

@@ -168,6 +168,12 @@ struct ATN(
     // left-recursive rule's rewrite gives a call of the rule, 0 for every
     // other call and state.
     CallPrecedence Array[int],
+    // ContextSteps is, by state, what a rewritten left-recursive rule's
+    // alternative does to the rule's context at its entry state: an op
+    // alternative's RecursionStart (its entry's only transition is its
+    // precedence predicate), a labeled primary one's ReplaceContext; None for
+    // every other state.
+    ContextSteps Array[Option[Step]],
 )
 
 // State returns state id.
