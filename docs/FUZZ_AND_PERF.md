@@ -232,7 +232,7 @@ ANTLR's recovered one where it does not). It is only reported.
 | Where | What | Judged |
 |---|---|---|
 | every PR and push: job `performance gate` | `perfgate` with the defaults above (about 2 minutes once built) | against `baseline.json`; enforcing (`PERF_ENFORCE: "true"` in `ci.yml`): a regression or a missing number fails the job |
-| pushes to main and `workflow_dispatch`: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, corpus recovery, held-out recovery, generated sets 1–4 | parity with ANTLR |
+| pushes to main, `workflow_dispatch`, and PRs that change more than Markdown: jobs `fuzz (…)` | the large fuzz runs, one runner each: corpus mutants, held-out mutants, corpus recovery, held-out recovery, generated sets 1–4 | parity with ANTLR |
 | pushes to main and `workflow_dispatch`: job `performance sweep` | `perfgate -every=1 -mutants=300 -runs=7 -passes=7` | not judged: a wider report |
 
 A cold cache never turns a pull request red. The gate's build and measurement run
