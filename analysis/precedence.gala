@@ -1,0 +1,172 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+    m "martianoff/gala/collection_mutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// Decisions of a rewritten left-recursive rule (DESIGN.md, "Left-recursive
+// rules"). Prediction evaluates the rule's precedence predicates against the
+// precedence the rule was called with, so such a decision is planned once per
+// range of precedences that pass the same predicates.
+
+// precedenceLevels are the levels of the precedence predicates in dec's
+// rule, ascending and distinct; empty unless the rule is a rewritten
+// left-recursive one.
+func (g grammarInfo) precedenceLevels(dec atn.Decision) Array[int] =
+    g.a.States.Filter(_.Rule == dec.Rule).FlatMap((s) => s.Out.Collect({
+        case atn.PrecedencePredicate(_, _, level) => level
+    })).Distinct().Sorted()
+
+// planByPrecedence plans decision dec of a rewritten rule whose predicate
+// levels are levels: one lookahead per range of precedences, up to the lowest
+// level (every predicate passes), up to each next level, and above the
+// highest (none passes). At the rule's loop entry, the operators both ways
+// out accept are resolved as ANTLR resolves them (continueOnOperators). A tree
+// that leaves some inputs to runtime prediction sends it any unexpected token
+// past the first too (deferUnexpected). When every range gets the same
+// lookahead, the plan is that one lookahead.
+func (g grammarInfo) planByPrecedence(dec atn.Decision, maxK int, levels Array[int]) DecisionPlan {
+    val ranges = levels.Append(levels.Last() + 1)
+    val trees = ranges.Map((p) => {
+        val (tree, _) = g.lookaheadTree(dec, maxK, Some(p))
+        val resolved = if (dec.Precedence) g.continueOnOperators(dec, tree) else tree
+        if (NeedsRuntime(resolved)) deferUnexpected(resolved) else resolved
+    })
+    val first = render(trees.Head())
+    val l = if (trees.ForAll((t) => render(t) == first)) trees.Head() else ByPrecedence(levels, trees)
+    DecisionPlan(dec, classify(l), l, conflictsOf(l, EmptyArray[int]()))
+}
+
+// continueOnOperators resolves, at a left-recursive rule's loop entry, each
+// first token that both continuing the loop (alternative 1) and leaving it
+// (alternative 2) accept, when that token starts exactly one of the loop's
+// alternatives and can follow the rule only by going on in its own loop:
+// leaving then goes on in an enclosing invocation of the rule with that same
+// alternative, which reads the operator and what follows it as continuing
+// does, and ANTLR's full-context prediction, finding the two ambiguous, takes
+// alternative 1. A token that starts several of the loop's alternatives may
+// be read by a different one in the enclosing invocation, whose precedence is
+// lower (`a < x < b` with a range alternative and a relational one), so it
+// keeps what the static tree says, as does a token that can also follow the
+// rule elsewhere (externalFollow) or after which only leaving can go on.
+func (g grammarInfo) continueOnOperators(dec atn.Decision, tree Lookahead) Lookahead = tree match {
+    case Switch(1, cases) => {
+        val external = g.externalFollow(dec.Rule, dec.State).Union(g.sharedOperatorStarts(dec))
+        Switch(1, cases.FlatMap((c) => {
+            val leaves = leafAlts(c.Then)
+            val ambiguous = leaves.Exists(_.Contains(1)) && leaves.Exists(_.Contains(2)) && leaves.ForAll(_.Contains(1))
+            val own = c.Tokens.Subtract(external)
+            if (!ambiguous || own.IsEmpty()) ArrayOf(c)
+            else {
+                val shared = c.Tokens.Intersect(external)
+                val resolved = LookaheadCase(own, Predict(1))
+                if (shared.IsEmpty()) ArrayOf(resolved) else ArrayOf(resolved, LookaheadCase(shared, c.Then))
+            }
+        }).SortWith((x, y) => x.Tokens.Min().GetOrElse(0) < y.Tokens.Min().GetOrElse(0)))
+    }
+    case _ => tree
+}
+
+// sharedOperatorStarts are the tokens that start more than one alternative
+// of the loop whose entry is dec: the loop's block alternatives, or its one
+// alternative.
+func (g grammarInfo) sharedOperatorStarts(dec atn.Decision) atn.IntervalSet {
+    val body = g.a.State(dec.State).Out.HeadOption().Map(_.Target()).GetOrElse(dec.State)
+    val starts = g.a.State(body).Decision match {
+        case Some(_) => g.a.State(body).Out.Map((t) => g.tokensAfter(t.Target(), -1, -1))
+        case None() => ArrayOf(g.tokensAfter(body, -1, -1))
+    }
+    starts.ZipWithIndex().FoldLeft(atn.EmptySet(), (acc, si) =>
+        acc.Union(starts.Drop(si.V2 + 1).FoldLeft(atn.EmptySet(), (inner, other) => inner.Union(si.V1.Intersect(other))))
+    )
+}
+
+// leafAlts lists the alternatives each leaf of a lookahead tree can predict.
+func leafAlts(l Lookahead) Array[Array[int]] = l match {
+    case Predict(alt) => ArrayOf(ArrayOf(alt))
+    case Adaptive(alts) => ArrayOf(alts)
+    case Otherwise() => EmptyArray[Array[int]]()
+    case Automaton(states) => states.Collect({ case s if s.Final.IsDefined() => ArrayOf(s.Final.Get()) })
+    case Switch(_, cases) => cases.FlatMap((c) => leafAlts(c.Then))
+    case ByPrecedence(_, cases) => cases.FlatMap(leafAlts)
+}
+
+// externalFollow is what can follow a call of left-recursive rule r other
+// than by going on in r's own loop, whose entry is state entry: the tokens
+// after each call of r up to the end of the calling rule, and that rule's
+// FOLLOW where its end can be reached. From a call inside r the walk stops at
+// the loop entry: past it is r's own loop, and r's end, whose followers are
+// the calls of r this already covers.
+func (g grammarInfo) externalFollow(r int, entry int) atn.IntervalSet =
+    g.callerFollows.Get(r).FoldLeft(atn.EmptySet(), (acc, follow) => acc.Union(g.tokensAfter(follow, r, entry)))
+
+// lookStep is a state ANTLR's LL1Analyzer visits: the return states of the
+// calls it is inside, innermost first, and the rules those calls entered.
+struct lookStep(State int, Returns List[int], Called List[int])
+
+// HitsPrecedencePredicate reports whether ANTLR's LL1Analyzer, collecting the
+// tokens a path from state from can begin with, meets a precedence predicate
+// before a token (its HIT_PRED). It enters rule calls, except into a rule it
+// is already inside, and at the end of a rule entered from elsewhere goes on
+// after every call of the rule. ANTLR's code generator makes no LL(1) switch
+// of a decision with such an alternative: it predicts adaptively.
+func HitsPrecedencePredicate(a atn.ATN, from int) bool =
+    hitsPrecedencePredicate(a, ListOf(lookStep(from, EmptyList[int](), EmptyList[int]())), m.EmptyHashSet[string]())
+
+// hitsPrecedencePredicate goes on with HitsPrecedencePredicate's work list;
+// seen holds the steps already visited.
+func hitsPrecedencePredicate(a atn.ATN, work List[lookStep], seen Ptr[m.HashSet[string]]) bool = work match {
+    case Cons(step, rest) => {
+        val st = a.State(step.State)
+        if (!seen.Add(s"${step.State}/${step.Returns.MkString(",")}")) hitsPrecedencePredicate(a, rest, seen)
+        else if (st.IsRuleStop()) hitsPrecedencePredicate(a, step.Returns match {
+            case Cons(ret, outer) => rest.Prepend(lookStep(ret, outer, step.Called.Filter(_ != st.Rule)))
+            case _ => a.Callers(st.Rule).FoldLeft(rest, (w, c) => w.Prepend(lookStep(c.Follow, step.Returns, step.Called)))
+        }, seen)
+        else if (st.Out.Exists((t) => t match {
+            case atn.PrecedencePredicate(_, _, _) => true
+            case _ => false
+        })) true
+        else hitsPrecedencePredicate(a, st.Out.FoldLeft(rest, (w, t) => t match {
+            case atn.RuleCall(target, rule, follow) =>
+                if (step.Called.Contains(rule)) w
+                else w.Prepend(lookStep(target, step.Returns.Prepend(follow), step.Called.Prepend(rule)))
+            case _ if t.IsEpsilon() => w.Prepend(lookStep(t.Target(), step.Returns, step.Called))
+            case _ => w
+        }), seen)
+    }
+    case _ => false
+}
+
+// tokensAfter is what a parse can read next from state s, within s's rule,
+// without going past entry when that rule is r.
+func (g grammarInfo) tokensAfter(s int, r int, entry int) atn.IntervalSet {
+    val rule = g.a.State(s).Rule
+    val seen = m.EmptyHashSet[int]()
+    var tokens = atn.EmptySet()
+    var work = ListOf(s)
+    for work.NonEmpty() {
+        val cur = work.Head()
+        work = work.Tail()
+        if (rule != r || cur != entry) && seen.Add(cur) {
+            val st = g.a.State(cur)
+            if st.IsRuleStop() && rule != r {
+                tokens = tokens.Union(g.follow.Get(rule))
+            }
+            st.Out.ForEach((t) => t match {
+                case atn.RuleCall(_, callee, after) => {
+                    tokens = tokens.Union(g.first.Get(callee))
+                    if g.nullable.Get(callee) {
+                        work = work.Prepend(after)
+                    }
+                }
+                case _ if t.IsEpsilon() => work = work.Prepend(t.Target())
+                case _ => tokens = tokens.Union(t.Symbols())
+            })
+        }
+    }
+    tokens
+}

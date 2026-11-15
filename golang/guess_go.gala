@@ -156,7 +156,7 @@ func runtimeChoice(e env, d int, alts Array[int]) string = (altMask(alts), e.gue
     case (Some(m), Some(guess.GoOn())) => s"return p.guessOr($d, $m)"
     case (Some(m), Some(guess.Scanned(_, _))) => s"return p.scanned$d($m)"
     case (Some(m), Some(guess.Bounded(_))) => s"return p.bounded$d($m)"
-    case _ => s"return p.adaptivePredict($d)"
+    case _ => if (e.precedenceDecision(d)) s"return p.predictAt($d, _p)" else s"return p.adaptivePredict($d)"
 }
 
 // guessesGoOn says some decision of e's plan goes on (and needs guessOr).

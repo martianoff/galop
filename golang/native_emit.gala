@@ -85,7 +85,7 @@ func nativeRuleConstants(e env) string {
 
 // altLabelsOf are the labels of a rule's labeled alternatives; a node's Alt is
 // a label's position here plus one.
-func altLabelsOf(r atn.RuleIR) Array[string] = r.Alts.Collect((a) => a.Label).Distinct()
+func altLabelsOf(r atn.RuleIR) Array[string] = atn.SourceAlts(r).Collect((a) => a.Label).Distinct()
 
 // nativeEntry is the public function that parses tokens as one rule.
 func nativeEntry(e env, r atn.RuleIR) string = fill(`// ParseMETHOD parses the tokens of ts as RULE, from the first token, and
@@ -93,7 +93,7 @@ func nativeEntry(e env, r atn.RuleIR) string = fill(`// ParseMETHOD parses the t
 // The parse stops after the input RULE matches; Tree().Next is the index of
 // the token after it.
 func ParseMETHOD(ts *@X@Tokens) (HANDLE, error) {
-	t, root, err := newPARSER(ts).run((*PARSER).RULEFUNC, START, REPAIR)
+	t, root, err := PFXRun(ts, RULEREF, START, REPAIR)
 	if err != nil {
 		return HANDLE{}, err
 	}
@@ -106,7 +106,7 @@ func ParseMETHODWithRecovery(ts *@X@Tokens) (HANDLE, []@X@ParseError) {
 	root, errs := @X@ParseWithRecovery(ts, RULEINDEX)
 	return HANDLE{root}, errs
 }
-`, "RULEINDEX", s"${r.Index}", "METHOD", e.names.RuleMethod(r.Name), "RULEFUNC", e.ruleFunc(r.Index), "RULE", r.Name,
+`, "RULEINDEX", s"${r.Index}", "METHOD", e.names.RuleMethod(r.Name), "RULEREF", nativeRuleRef(e, r), "RULE", r.Name,
     "HANDLE", nodeType(r.Name), "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported(),
     "REPAIR", s"${e.repairPlan.Repairs(r.Index)}", "START", s"${e.parser.RuleStart.Get(r.Index)}")
 
@@ -125,17 +125,26 @@ val nativeReserved = ArrayOf(
 // nativeName escapes a method name that clashes with a handle's own methods.
 func nativeName(name string) string = if (nativeReserved.Contains(name)) name + "_" else name
 
+// nativeRuleRef is rule r's function as a func(*PARSER) int32, for entry
+// points: a rewritten left-recursive rule's is called with precedence 0, as
+// ANTLR's entry method calls it.
+func nativeRuleRef(e env, r atn.RuleIR) string =
+    if (r.Rewrite.IsDefined()) s"func(p *${e.parserType}) int32 { return p.${e.ruleFunc(r.Index)}(0) }"
+    else s"(*${e.parserType}).${e.ruleFunc(r.Index)}"
+
 // emitNativeRule emits the function that parses one rule into the tree. A
-// labeled alternative records which one it is in the node.
+// labeled alternative records which one it is in the node. A rewritten
+// left-recursive rule's function takes the precedence it is called with.
 func emitNativeRule(e env, r atn.RuleIR) string {
     val altLabels = altLabelsOf(r)
     val labeled = altLabels.NonEmpty()
-    val sc = scope(Labels = ruleLabels(r))
+    val sc = scope(Labels = ruleLabels(r), Rule = r.Index, AltLabels = altLabels)
     val vars = if (labeled) "\tmark, start, alt := len(p.kids), p.pos, uint8(0)" else "\tmark, start := len(p.kids), p.pos"
     val altArg = if (labeled) "alt" else "0"
     val labMark = if (e.tokenLabels) ArrayOf("\tlabs := len(p.labs)") else EmptyArray[string]()
     val finish = if (e.tokenLabels) s"\treturn p.finishLabeled(${r.Index}, $altArg, start, mark, labs)" else s"\treturn p.finish(${r.Index}, $altArg, start, mark)"
-    val header = ArrayOf(s"func (p *${e.parserType}) ${e.ruleFunc(r.Index)}() int32 {", vars).AppendAll(labMark)
+    val params = if (r.Rewrite.IsDefined()) "_p int32" else ""
+    val header = ArrayOf(s"func (p *${e.parserType}) ${e.ruleFunc(r.Index)}($params) int32 {", vars).AppendAll(labMark)
     val body = ruleBody(e, r, (alt, ind) => alt.Label match {
         case Some(l) => ArrayOf(s"${ind}alt = ${altLabels.IndexOf(l) + 1}").AppendAll(emitSteps(e, alt.Steps, ind, sc))
         case None() => emitSteps(e, alt.Steps, ind, sc)
@@ -159,11 +168,11 @@ func labelUses(steps Array[atn.Step]) Array[labelUse] = steps.FlatMap((s) => s m
 
 // ruleLabels are the distinct label names of a rule; a label's number is its
 // position here plus one.
-func ruleLabels(r atn.RuleIR) Array[string] = r.Alts.FlatMap((a) => labelUses(a.Steps)).Map(_.Name).Distinct()
+func ruleLabels(r atn.RuleIR) Array[string] = atn.SourceAlts(r).FlatMap((a) => labelUses(a.Steps)).Map(_.Name).Distinct()
 
 // HasTokenLabels reports whether any rule labels a token, which the native
 // parser then records in the tree.
-func HasTokenLabels(rules Array[atn.RuleIR]) bool = rules.Exists((r) => r.Alts.Exists((a) => labelUses(a.Steps).Exists(_.Rule.IsEmpty())))
+func HasTokenLabels(rules Array[atn.RuleIR]) bool = rules.Exists((r) => atn.SourceAlts(r).Exists((a) => labelUses(a.Steps).Exists(_.Rule.IsEmpty())))
 
 // elemRef is an element an accessor reaches: a rule (IsRule) or a token type.
 struct elemRef(IsRule bool, Id int)
@@ -212,7 +221,7 @@ func nativeHandles(e env, r atn.RuleIR) string {
     val ruleType = nodeType(r.Name)
     val doc = s"// $ruleType is a node of rule ${r.Name}, or no node when !Ok().\ntype $ruleType struct{ ${x}NodeRef }\n\n"
     altLabels match {
-        case Array() => doc + accessors(e, ruleType, ArrayOf(atn.Choose(-1, r.Alts.Map(_.Steps), None())), labels)
+        case Array() => doc + accessors(e, ruleType, ArrayOf(atn.Choose(-1, atn.SourceAlts(r).Map(_.Steps), None())), labels)
         case _ => {
             val casts = altLabels.ZipWithIndex().Map((li) => {
                 val t = nodeType(li.V1)
@@ -221,7 +230,7 @@ func nativeHandles(e env, r atn.RuleIR) string {
             })
             val alts = altLabels.Map((l) => {
                 val t = nodeType(l)
-                val steps = ArrayOf(atn.Choose(-1, r.Alts.Filter(_.Label == Some(l)).Map(_.Steps), None()))
+                val steps = ArrayOf(atn.Choose(-1, atn.SourceAlts(r).Filter(_.Label == Some(l)).Map(_.Steps), None()))
                 s"// $t is rule ${r.Name}'s labeled alternative $l.\ntype $t struct{ ${x}NodeRef }\n\n" + accessors(e, t, steps, labels)
             })
             doc + casts.MkString("") + alts.MkString("")
@@ -306,7 +315,7 @@ func nativeParserCore(e env) string {
     // The helpers go in through one placeholder, and fill does not rescan
     // what it inserts, so their own placeholders are filled first.
     val labelHelpers = if (e.tokenLabels) fill(nativeLabelHelpers, "PARSER", e.parserType, "@X@", e.exported()) else ""
-    val ruleFuncs = e.rules.Map((r) => s"\n\t(*${e.parserType}).${e.ruleFunc(r.Index)},").MkString("")
+    val ruleFuncs = e.rules.Map((r) => s"\n\t${nativeRuleRef(e, r)},").MkString("")
     fill(nativeCoreTemplate, "PREDICTOR", predictor, "RULEFUNCS", ruleFuncs, "GROUPON", groupsOn(e), "LABS", labs, "RETRY", retry, "ERRORS", errorsHook("root"), "RESETSTACK", resetPass,
         "RESETLABS", resetLabs, "LABELHELPERS", labelHelpers, "PARSER", e.parserType, "PFX", e.pfx, "@X@", e.exported())
 }
@@ -344,7 +353,7 @@ func PFXParse(ts *@X@Tokens, rule int) (*@X@Tree, int32, error) {
 	if rule < 0 || rule >= len(PFXRuleFuncs) {
 		return nil, -1, &@X@SyntaxError{Msg: "no rule with index " + strconv.Itoa(rule)}
 	}
-	return newPARSER(ts).run(PFXRuleFuncs[rule], PFXRuleStartState[rule], false)
+	return PFXRun(ts, PFXRuleFuncs[rule], PFXRuleStartState[rule], false)
 }
 
 // PFXRuleFuncs are the rule functions, by rule index.
@@ -353,15 +362,50 @@ var PFXRuleFuncs = []func(*PARSER) int32{RULEFUNCS
 
 // newPARSER prepares a parse of the tokens of ts.
 func newPARSER(ts *@X@Tokens) *PARSER {
+	p := &PARSER{}
+	p.init(ts, nil)
+	return p
+}
+
+// init sets p up for a parse of the tokens of ts, with types as the buffer
+// for their types.
+func (p *PARSER) init(ts *@X@Tokens, types []int32) {
 	n := len(ts.Tokens)
-	p := &PARSER{ts: ts, types: make([]int32, n)}
+	p.ts, p.types = ts, slices.Grow(types[:0], n)[:n]
 	for i := range ts.Tokens {
 		p.types[i] = ts.Tokens[i].Type
 	}
 	// Grammars like GALA's have about four nodes and five child references
 	// per token; sizing for that saves growing the arrays.
 	p.tree = &@X@Tree{@X@Tokens: ts, Nodes: make([]@X@NodeData, 0, 4*n+4), Kids: make([]int32, 0, 5*n+4), Read: -1}
-	return p
+}
+
+// PFXParsers keeps parsers between parses: a parser's prediction scratch
+// grows to what the grammar's predictions need, and a fresh parser would grow
+// it again.
+var PFXParsers sync.Pool
+
+// PFXRun parses the tokens of ts as run does, on a pooled parser. The tree
+// it returns shares nothing with the parser.
+func PFXRun(ts *@X@Tokens, rule func(*PARSER) int32, start int32, repair bool) (*@X@Tree, int32, error) {
+	p, _ := PFXParsers.Get().(*PARSER)
+	if p == nil {
+		p = newPARSER(ts)
+	} else {
+		p.reuse(ts)
+	}
+	t, root, err := p.run(rule, start, repair)
+	p.ts, p.tree = nil, nil
+	PFXParsers.Put(p)
+	return t, root, err
+}
+
+// reuse prepares p, which parsed before, for a parse of the tokens of ts as
+// newPARSER does, keeping the capacity of its scratch.
+func (p *PARSER) reuse(ts *@X@Tokens) {
+	types, kids, stack, pred := p.types, p.kids[:0], p.stack[:0], p.pred
+	*p = PARSER{kids: kids, stack: stack, pred: pred}
+	p.init(ts, types)
 }
 
 // run parses with rule, whose start state is start; repair says whether a

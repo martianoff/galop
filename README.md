@@ -351,7 +351,9 @@ Not supported yet, and reported as errors rather than ignored: rule arguments,
 predicates. Directly left-recursive rules (`e : e '+' e | INT`) are rewritten into
 a precedence loop as ANTLR rewrites them, which `-report` shows; code generation
 for them is being built (see [design](docs/DESIGN.md#left-recursive-rules-in-progress))
-and rejects them until then. Mutually left-recursive rules are an error, as in
+and rejects them until then, unless the experimental `-Xleft-recursion` option is
+given: it generates them in the native flavor, without error recovery inside them
+yet. Mutually left-recursive rules are an error, as in
 ANTLR (error 119), and so is a left-recursive rule with no other alternative
 (147); `-check` does not report ANTLR's errors for left recursion its rewrite
 cannot handle (148, 169).

@@ -33,6 +33,10 @@ struct Options(
     // command line last. `language` selects the target; targets read their own
     // keys (Go: `flavor`).
     Defines Array[g4.OptionEntry] = EmptyArray[g4.OptionEntry](),
+    // LeftRecursion lets a target generate rewritten left-recursive rules while
+    // their support is being built (-Xleft-recursion): in the Go target's native
+    // flavor, parsing is ANTLR's, but syntax errors in such rules may not be yet.
+    LeftRecursion bool = false,
 )
 
 // Define is the value of option name, if set.

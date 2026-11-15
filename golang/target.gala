@@ -153,7 +153,11 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             // (the front end reports other left recursion as error 119); parsed
             // as written, they would call themselves forever.
             val lr = an.Repair.LeftRecursion
-            if !lr.IsEmpty() {
+            val allowed = opts.LeftRecursion && lr.Cycles.IsEmpty() && (f match {
+                case NativeFlavor(_) => true
+                case ANTLRFlavor() => false
+            })
+            if !lr.IsEmpty() && !allowed {
                 val names = lr.Direct.AppendAll(lr.Cycles.FlatMap((c) => c)).Distinct()
                     .Map((i) => compiled.Rules.Get(i).Name).MkString(", ")
                 return Left(ArrayOf(s"Go target: left-recursive rules are not supported yet: $names"))

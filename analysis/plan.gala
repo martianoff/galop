@@ -37,6 +37,11 @@ sealed type Lookahead {
     // Tokens contain it; no such edge is a syntax error. A state with Final
     // consumes nothing more: it predicts that alternative.
     case Automaton(States Array[DFAState])
+    // ByPrecedence picks by the precedence a rewritten left-recursive rule was
+    // called with, for a decision whose prediction evaluates the rule's
+    // precedence predicates: Cases[i] is the lookahead when that precedence is
+    // at most Bounds[i], the last case (one more than Bounds) when it is higher.
+    case ByPrecedence(Bounds Array[int], Cases Array[Lookahead])
 }
 
 // DFAState is one state of an Automaton; Final is the alternative it predicts.

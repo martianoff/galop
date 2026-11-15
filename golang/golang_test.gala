@@ -33,11 +33,12 @@ func generate(
     defines Array[g4.OptionEntry],
     listener bool = true,
     visitor bool = false,
+    leftRecursion bool = false,
 ) Either[Array[string], Array[codegen.OutputFile]] {
     val (g, c) = grammartest.Compile(src)
     Target("test").Generate(
         codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, repair.PlanFor(g, c), false))),
-        codegen.Options(Package = "expr", Defines = defines, Listener = listener, Visitor = visitor),
+        codegen.Options(Package = "expr", Defines = defines, Listener = listener, Visitor = visitor, LeftRecursion = leftRecursion),
     )
 }
 
@@ -504,4 +505,43 @@ func TestTooManyLabelsAreRejected(t T) T {
         case Left(errs) => IsTrue(t, errs.Exists((m) => strings.Contains(m, "at most 255 labels: r")))
         case Right(_) => t.Error("a rule with 256 labels was generated")
     }
+}
+
+// arithmetic has a left-recursive rule with binary, suffix and prefix
+// alternatives.
+val arithmetic = `grammar A;
+s : e EOF ;
+e : e '*' e | e '!' | '-' e | X ;
+X : 'x' ;
+`
+
+// table is the body of the generated Go slice whose name ends with name.
+func table(code string, name string) string {
+    val (_, after, _) = strings.Cut(code, name + " = []")
+    val (body, _, _) = strings.Cut(after, "}")
+    body
+}
+
+func TestLeftRecursivePredictionTables(t T) T {
+    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry](), leftRecursion = true))
+    // The loop entry is ANTLR's precedence decision, and the calls of e that
+    // end an operator or prefix alternative return straight to it.
+    val t1 = IsTrue(t, strings.Contains(table(code, "DecisionLoopEntry"), "true"))
+    val t2 = IsTrue(t1, strings.ContainsAny(strings.ReplaceAll(table(code, "StateLoopReturn"), "-1", ""), "0123456789"))
+    // Neither decision is an LL(1) switch in ANTLR's generated code.
+    val t3 = IsTrue(t2, strings.Count(table(code, "DecisionLL1"), "false") >= 2)
+    val t4 = IsTrue(t3, strings.Contains(code, "func (p *AGalopParser) predictAt(d int, prec int32) int"))
+    IsTrue(t4, strings.Contains(code, "failed predicate: {p.Precpred(p.GetParserRuleContext(), "))
+}
+
+func TestPredictAtOnlyWithLeftRecursion(t T) T =
+    IsFalse(t, strings.Contains(parserOf(generate(exprGrammar, EmptyArray[g4.OptionEntry]())), "predictAt("))
+
+// A precedence decision decided statically still meets ANTLR's fallbacks at
+// a dead end, which are kept per precedence.
+func TestPrecedenceDecisionsRecordTheirPrecedence(t T) T {
+    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry](), leftRecursion = true))
+    val heads = ArrayFromSlice(strings.Split(code, "(_p int32) int {\n"))
+    val t1 = IsTrue(t, heads.Size() > 1)
+    IsTrue(t1, heads.Drop(1).ForAll((h) => strings.HasPrefix(h, "\tp.prec = _p\n")))
 }

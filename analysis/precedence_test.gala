@@ -1,0 +1,72 @@
+package analysis
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+)
+
+// arith is the classic left-recursive rule: '*' (precedence 3, T__0) binds tighter
+// than '+' (2, T__1). Only EOF follows e from outside its own loop.
+val arith = "grammar A;\ns : e EOF ;\ne : e '*' e | e '+' e | X ;\nX : 'x' ;\n"
+
+func TestPrecedenceLoopEntry(t T) T {
+    val (a, an) = analyzed(arith)
+    val p = planFor(a, an, "e", "('*' e | '+' e)*")
+    // Up to precedence 2 both operators continue the loop; at 3 only '*' does;
+    // above 3 none does. An operator that continues is the one both ways out
+    // of the loop accept: ANTLR resolves it to continuing.
+    val t1 = Eq(t, show(a, p.Lookahead), "[<=2:{EOF:2 T__0 T__1:1} <=3:{EOF T__1:2 T__0:1} else:2]")
+    Eq(t1, className(p.Class), "LL(1)")
+}
+
+func TestPrecedenceOperatorBlock(t T) T {
+    val (a, an) = analyzed(arith)
+    // The loop's block picks the operator; above an operator's precedence its
+    // predicate fails and the operator has no alternative.
+    Eq(t, show(a, planFor(a, an, "e", "('*' e | '+' e)").Lookahead), "[<=2:{T__0:1 T__1:2} <=3:1 else:{}]")
+}
+
+func TestOperatorFollowingTheRuleStaysAdaptive(t T) T {
+    // '+' also follows e in s, so at '+' leaving e's loop can go on in s:
+    // which way ANTLR takes depends on the rest of the input.
+    val (a, an) = analyzed("grammar A;\ns : e '+' X EOF ;\ne : e '+' e | X ;\nX : 'x' ;\n")
+    val p = planFor(a, an, "e", "('+' e)*")
+    Eq(t, className(p.Class), "adaptive")
+}
+
+// hitsPerAlt says, for each alternative of the decision with text in rule,
+// whether ANTLR's LL(1) analysis meets a precedence predicate in it.
+func hitsPerAlt(src string, rule string, text string) string {
+    val (a, an) = analyzed(src)
+    val d = planFor(a, an, rule, text).Decision
+    a.State(d.State).Out.Map((t) => s"${HitsPrecedencePredicate(a, t.Target())}").MkString(" ")
+}
+
+func TestLoopEntryHitsPrecedencePredicates(t T) T =
+    // Entering the loop meets the operators' predicates; leaving it ends e,
+    // and after the calls of e inside e the loop entry is met again.
+    Eq(t, hitsPerAlt(arith, "e", "('*' e | '+' e)*"), "true true")
+
+func TestOperatorBlockHitsPrecedencePredicates(t T) T =
+    Eq(t, hitsPerAlt(arith, "e", "('*' e | '+' e)"), "true true")
+
+func TestPrimaryBlockMeetsTokensFirst(t T) T =
+    Eq(t, hitsPerAlt("grammar A;\ns : e EOF ;\ne : e '*' e | '-' e | X ;\nX : 'x' ;\n", "e", "e : '-' e | X"), "false false")
+
+func TestExitIntoLeftRecursiveRuleHitsPrecedencePredicates(t T) T =
+    // f's loop exit ends f, which e calls last in its primary alternative:
+    // e's loop entry, and its predicates, come next.
+    Eq(t, hitsPerAlt("grammar A;\ns : e EOF ;\ne : e '*' e | f ;\nf : X (Y X)* ;\nX : 'x' ; Y : 'y' ;\n", "f", "(Y X)*"), "false true")
+
+func TestUnexpectedTokensPastTheFirstGoToRuntime(t T) T {
+    // e is an entry rule without EOF, and '>' starts two of its operators,
+    // so the loop entry leaves some inputs to runtime prediction. A token no
+    // case expects past the first goes there too, not to a syntax error:
+    // ANTLR's prediction can settle before it (`x > y z` parses `x > y`).
+    val (a, an) = analyzed("grammar A;\ne : e '>' X '>' e | e '>' e | X | Y ;\nX : 'x' ; Y : 'y' ;\n")
+    Eq(
+        t,
+        show(a, planFor(a, an, "e", "('>' X '>' e | '>' e)*").Lookahead),
+        "[<=3:{EOF:2 T__0:{X Y:{EOF T__0:?1,2 :?} :?}} <=4:{EOF:2 T__0:{X:{EOF:2 T__0:?1,2 :?} Y:2 :?}} else:2]",
+    )
+}

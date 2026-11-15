@@ -135,8 +135,10 @@ runtime prediction and the speed ratios from regressing (see
 
 ### Left-recursive rules (in progress)
 
-Status: being built in phases (below); until the last one lands, code generation
-and `-report` reject a directly left-recursive rule (error 500).
+Status: being built in phases (below). `-report` analyzes a directly
+left-recursive rule; the native flavor generates one behind the experimental
+`-Xleft-recursion` option (phases 1 to 3); without it, and in the antlr flavor,
+code generation rejects such a rule (error 500).
 
 ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
 (`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse
@@ -170,6 +172,70 @@ what that rewrite means:
   its alternative is ANTLR's `FailedPredicateException`, "rule e failed predicate:
   {precpred(_ctx, 2)}?".
 
+What ANTLR 4.13.1's Go runtime does with precedence predicates in prediction
+(`parser_atn_simulator.go`), which phase 2 reproduces:
+
+- **Which predicates count.** Only those met at closure depth 0, the decision's own
+  rule before any call or return (`inContext`), and only while computing a start
+  state (`collectPredicates`); a closure after a token treats them as epsilon.
+- **Full context** evaluates such a predicate at once against the parser's current
+  precedence (`precedenceTransition`): a failing path is dropped.
+- **SLL** attaches it to the configuration (`SemanticContextandContext`).
+  - A precedence decision (the loop entry) has a start state per precedence
+    (`getPrecedenceStartState`), made by `applyPrecedenceFilter`: alternative 1's
+    predicates are evaluated and failing configurations dropped, and a
+    configuration of another alternative is dropped where an alternative-1
+    configuration has the same state and context, unless it is
+    `precedenceFilterSuppressed`. Closure sets that flag on a configuration that
+    leaves a rule through a rule-stop follow link whose call was the decision
+    rule's outermost one (`outermostPrecedenceReturn`: a call of the rule with
+    precedence 0).
+  - Any other decision with predicated configurations evaluates them when a state
+    accepts or conflicts (`predicateDFAState`, `evalSemanticContext`): an
+    alternative passes if one of its configurations has no predicate or a passing
+    one; none passing is no viable alternative, one is the answer, several give
+    the lowest. With LL fallback, a conflict first evaluates its predicates and
+    goes to full context only if more than one alternative passes.
+- **`canDropLoopEntryEdgeInLeftRecursiveRule`**, on by default
+  (`lRLoopEntryBranchOpt`): closure skips a precedence loop entry's first
+  transition (into the loop) for a configuration whose every return state is in
+  the same rule and returns to the end of the loop's block. ANTLR tests this on its
+  own ATN's shapes (the return state is the block's end, or leads to it or to a
+  block end that leads to the entry); galop's network puts plain epsilon states
+  between elements, so it follows the return state's chain of single epsilon
+  transitions instead and accepts it when the chain reaches the loop entry
+  (`StateLoopReturn` in the tables). The two differ only for a call wrapped in
+  more than two nested one-alternative blocks at the end of an alternative,
+  which ANTLR does not accept and galop does; dropping the edge only removes
+  configurations another invocation duplicates, so predictions do not change.
+- **Code generation.** ANTLR's LL(1) analysis stops at a predicate (`HIT_PRED`),
+  so it never makes a decision whose lookahead meets a precedence predicate an
+  LL(1) switch, and such a decision is predicted adaptively, Sync included. That
+  covers the loop entry and the operator block, and any decision whose exit leads
+  out of a rule into the loop of a left-recursive one.
+
+How galop's runtime predictor does the same (`runtime_go.gala`): every decision
+of a left-recursive rule gets one SLL start state per precedence, cached without
+a lock. While a start state is computed, a precedence predicate met at depth 0
+is evaluated at once, as full context does, and the loop entry's start state then
+goes through ANTLR's precedence filter, with `precedenceFilterSuppressed` kept
+per closure path. For a decision other than the loop entry ANTLR instead carries
+the predicate to the state that accepts or conflicts; evaluating it at the start
+removes the failing alternative's configurations earlier, which can only change
+which token a "no viable alternative" error ends at, and the comparisons below
+have found no input where it does. The first-error replay (`errors_go.gala`)
+keeps the precedences of the calls on its stack, reports a failing
+`CheckPrecedence` as ANTLR's Go runtime words it ("rule e failed predicate:
+{p.Precpred(p.GetParserRuleContext(), 2)}?"), and builds its own flagged SLL
+states the same way.
+
+Checked against ANTLR 4.13.1: 20,000 random sentences of a grammar with every
+kind of alternative (prefix, suffix, binary, right-associative, ternary, labels)
+and 20,000 mutated ones give ANTLR's tree and ANTLR's first error, or no error
+where ANTLR reports none; so do Milvus's 1,613 filter expressions, ten-expression
+conjunctions of them, and 8,065 mutated ones (Milvus's entry rule has no EOF, so
+ANTLR accepts many of them by stopping early).
+
 The phases, each tested against ANTLR before the next:
 
 1. The rewrite: classification, `<assoc=right|left>` on alternatives, the rewritten
@@ -183,6 +249,36 @@ The phases, each tested against ANTLR before the next:
 5. Error recovery in left-recursive rules, both flavors, and the converter.
 6. The corpus: test grammars for each shape of alternative, then Milvus `Plan.g4`,
    SigNoz `HavingExpression.g4`, CEL and Grule; benchmarks.
+
+**Performance target.** On Milvus's filter expressions, the native flavor's
+throughput on 32 goroutines is at least 10 times ANTLR's, against two baselines:
+ANTLR's default LL parse, which galop reproduces, and Milvus's own driver (pooled
+lexer and parser, SLL first, LL again after an SLL error). Measured on ANTLR 4.13.1
+with 1,613 expressions from Milvus's plan parser tests (about 33 bytes each), one
+machine with 32 hardware threads:
+
+| | ANTLR, default LL | ANTLR, Milvus's driver | target for galop |
+|---|---:|---:|---:|
+| 32 goroutines | 68k expressions/s | 104k expressions/s | ≥ 1.04M expressions/s |
+| one goroutine, warm | 20.5 µs | 12.6 µs | reported |
+
+Measured with phase 3 (`-Xleft-recursion`), all in one session on the same
+machine (the ANTLR numbers vary by about 20% between sessions):
+
+| | ANTLR, default LL | ANTLR, Milvus's driver | galop, native |
+|---|---:|---:|---:|
+| 32 goroutines | 93k expressions/s | 124k expressions/s | 1.87M expressions/s |
+| one goroutine, warm | 22.0 µs | 15.1 µs | 1.6 µs |
+| allocations per expression | 308 (24 KB) | 187 (15 KB) | 9 (1.8 KB) |
+
+On these inputs 8% of the expressions send ANTLR's prediction to full context,
+each time over a real ambiguity (19% of ten times longer ones, about 4 times
+each). So the precedence decisions are settled at generation time wherever the
+analysis can prove ANTLR's answer: the next token and a comparison with the
+current precedence, no runtime prediction. The runtime port above is the exact
+fallback for the rest, which should be rare. The benchmark joins the performance
+gate with the 10× ratio as its bar once the native flavor generates these
+parsers (phase 3).
 
 ## Analysis (`analysis`)
 
@@ -555,7 +651,15 @@ depends on more than the token where the input stops making sense:
 
 So when the final parse fails (after the repair or the LL rerun), the parser
 replays ANTLR's generated parser from the first token over galop's ATN, up to
-the first error ANTLR reports (`golang/errors_go.gala`). It walks the ATN with
+the first error ANTLR reports (`golang/errors_go.gala`). Where that replay finds
+no error, only alternatives ANTLR's prediction fell back on, the parse runs
+again taking them. The replay reads token types alone, so that answer holds
+for every input with the same types; the parser caches it by entry rule and
+token types (`FallbackCache`, at most 4,096 inputs of at most 1,024 tokens),
+as ANTLR's DFA caches prediction by token types. An entry rule that does not
+end with EOF meets this on ordinary input: prediction that reads to the end of
+the input finds nothing after the rule and falls back (37 of Milvus's 1,613
+filter expressions). It walks the ATN with
 the call stack. It makes each decision with a one-token switch where ANTLR's
 code generator would, and with the runtime predictor elsewhere. For rule-level
 token alternatives it does the one set match ANTLR's tool turns them into.

@@ -8,6 +8,7 @@ gala_library(
         "errorsets.gala",
         "lookahead.gala",
         "plan.gala",
+        "precedence.gala",
         "report.gala",
         "sets.gala",
     ],
@@ -33,6 +34,7 @@ gala_test(
     srcs = [
         "analysis_test.gala",
         "errorsets_test.gala",
+        "precedence_test.gala",
     ],
     importpath = "github.com/martianoff/galop/analysis",
     lib_srcs = [
@@ -43,6 +45,7 @@ gala_test(
         "sets.gala",
         "dfa.gala",
         "errorsets.gala",
+        "precedence.gala",
     ],
     pkg = "analysis",
     deps = [

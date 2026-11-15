@@ -216,3 +216,40 @@ func (b Ptr[builder]) recLoop(rule int, ops Array[RecAlt], text string) Piece {
     val d = b.decide(entry, rule, StarEntry(), true, text + "*", true)
     Piece(Frag(entry, end), ArrayOf(Loop(false, d, 1, body.Steps)))
 }
+
+// SourceAlts are r's alternatives as the grammar writes them. For a
+// rewritten left-recursive rule they are rebuilt from the rewritten rule's IR
+// in the rule's order: an op alternative gets its leading call of the rule
+// back (a call with no follow state), and the steps that only drive ANTLR's
+// recursion contexts are left out. ANTLR's contexts, accessors and labels are
+// those of these alternatives.
+func SourceAlts(r RuleIR) Array[AltIR] = r.Rewrite match {
+    case None() => r.Alts
+    case Some(rw) => {
+        val steps = r.Alts.Head().Steps
+        val primary = branches(steps.Init(), rw.Primary.Size())
+        val ops = steps.LastOption() match {
+            case Some(Loop(_, _, _, body)) => branches(body, rw.Ops.Size())
+            case _ => EmptyArray[Array[Step]]()
+        }
+        val rebuilt = rw.Primary.Zip(primary).Map((ap) => (ap.V1, withoutContextSteps(ap.V2)))
+            .AppendAll(rw.Ops.Zip(ops).Map((ap) => (ap.V1, ArrayOf[Step](CallRule(r.Index, -1, ap.V1.Left, 0)).AppendAll(withoutContextSteps(ap.V2)))))
+        rebuilt.SortWith((x, y) => x.V1.Index < y.V1.Index).Map((as) => AltIR(as.V1.Label, as.V2))
+    }
+}
+
+// branches are the n alternatives of a block's steps: a decision's branches,
+// or the steps themselves when the block has one alternative.
+func branches(steps Array[Step], n int) Array[Array[Step]] = (n, steps) match {
+    case (1, _) => ArrayOf(steps)
+    case (_, Array(Choose(_, alts, _))) => alts
+    case _ => EmptyArray[Array[Step]]()
+}
+
+// withoutContextSteps drops the rewrite's own steps from an alternative.
+func withoutContextSteps(steps Array[Step]) Array[Step] = steps.Filter((s) => s match {
+    case CheckPrecedence(_) => false
+    case RecursionStart(_, _) => false
+    case ReplaceContext(_) => false
+    case _ => true
+})

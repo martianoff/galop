@@ -442,12 +442,12 @@ func TestGenerateRejectsDirectLeftRecursion(t T) T {
 }
 
 func TestReportOnDirectLeftRecursion(t T) T {
-    // The rule is rewritten into a precedence loop, as ANTLR does, which the
-    // report shows.
+    // The rule is rewritten into a precedence loop, as ANTLR does, whose
+    // decisions one token and the rule's precedence settle.
     val m = newMemory(("L.g4", directLeftRecursion))
     val out = run(m, ArrayOf(fakeGo), "-report L.g4")
     val t1 = Eq(t, out.ExitCode, 0)
-    Contains(t1, out.Stdout, "decision 1 in rule e (star): ('*' e | '+' e)*")
+    Contains(t1, out.Stdout, "2 decisions: 2 LL(1), 0 LL(2), 0 LL(3), 0 adaptive")
 }
 
 func TestCheckAcceptsDirectLeftRecursion(t T) T {

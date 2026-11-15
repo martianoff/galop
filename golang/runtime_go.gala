@@ -403,6 +403,39 @@ type PFXPredictor struct {
 	groupMin   []int32
 	stateAlt   []int32
 	stateMulti []bool
+	// prec is the precedence the decision's rule invocation was called with,
+	// and collect says a start state is being computed (see closure).
+	prec    int32
+	collect bool
+	// While the start state of a left-recursive rule's loop entry is
+	// computed, filter is set and rule is the decision's rule; suppress
+	// says the closure being followed left an outermost call of that rule,
+	// and suppressed collects the (state, alt) keys of the configurations
+	// it added (ANTLR's precedenceFilterSuppressed). alt1 is scratch for
+	// precedenceFilter.
+	filter     bool
+	rule       int32
+	suppress   bool
+	suppressed PFXMap
+	alt1       PFXMap
+}
+
+// busyKey is c's key in the closure's busy set: ANTLR's configurations
+// differ in their precedenceFilterSuppressed flag too.
+func (pr *PFXPredictor) busyKey(c PFXConfig) uint64 {
+	if pr.suppress {
+		return c.key() | 1<<63
+	}
+	return c.key()
+}
+
+// added records, while a start state is filtered, that c was added with
+// the current suppress flag.
+func (pr *PFXPredictor) added(out *PFXConfigSet, c PFXConfig) {
+	out.add(c, &pr.pool)
+	if pr.suppress {
+		pr.suppressed.put(uint64(uint32(c.state))<<32|uint64(uint32(c.alt)), 0)
+	}
 }
 
 // matches reports whether consuming transition i accepts token type t.
@@ -436,19 +469,27 @@ func PFXInSet(set []int32, t int32) bool {
 // a token to out (ANTLR's closureCheckingStopState and closureWork).
 //
 // Within a rule, what a state reaches without consuming is the same in every
-// context, so it comes from the precomputed PFXClos tables; only rule calls
-// and rule ends are handled here. After EOF, transitions that match EOF also
-// count as epsilon, which the tables do not cover, so that case walks the ATN.
-func (pr *PFXPredictor) closure(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool) {
-	if _, isNew := pr.busy.put(c.key(), 0); !isNew {
+// context, so it comes from the precomputed PFXClos tables; only rule calls,
+// rule ends and precedence predicates are handled here. After EOF,
+// transitions that match EOF also count as epsilon, which the tables do not
+// cover, so that case walks the ATN.
+//
+// depth is ANTLR's closure depth: rules entered since the decision, less
+// rules left (it stays negative once the decision's rule is left). While a
+// start state is computed (pr.collect), a precedence predicate met at depth 0,
+// in the decision's own rule invocation, passes when its level is at least
+// pr.prec, the precedence that invocation was called with, and the path
+// stops otherwise; anywhere else it is epsilon, as in ANTLR's prediction.
+func (pr *PFXPredictor) closure(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool, depth int32) {
+	if _, isNew := pr.busy.put(pr.busyKey(c), 0); !isNew {
 		return
 	}
 	if PFXStateIsStop[c.state] {
-		pr.ruleEnd(c, out, eofAsEpsilon)
+		pr.ruleEnd(c, out, eofAsEpsilon, depth)
 		return
 	}
 	if eofAsEpsilon {
-		pr.walk(c, out)
+		pr.walk(c, out, depth)
 		return
 	}
 	cp := &pr.pool
@@ -456,30 +497,99 @@ func (pr *PFXPredictor) closure(c PFXConfig, out *PFXConfigSet, eofAsEpsilon boo
 		s := PFXClosState[i]
 		switch PFXClosKind[i] {
 		case 0:
-			out.add(PFXConfig{s, c.alt, c.ctx}, cp)
+			pr.added(out, PFXConfig{s, c.alt, c.ctx})
 		case 1:
-			pr.closure(PFXConfig{s, c.alt, cp.singleton(c.ctx, PFXClosArg[i])}, out, false)
+			pr.closure(PFXConfig{s, c.alt, cp.singleton(c.ctx, PFXClosArg[i])}, out, false, PFXDeeper(depth))
+		case 3:
+			if !pr.passes(PFXClosArg[i], depth) {
+				continue
+			}
+			pr.closure(PFXConfig{s, c.alt, c.ctx}, out, false, depth)
+		case 4:
+			pr.loopEntry(PFXConfig{s, c.alt, c.ctx}, out, depth)
 		default:
-			pr.closure(PFXConfig{s, c.alt, c.ctx}, out, false)
+			pr.closure(PFXConfig{s, c.alt, c.ctx}, out, false, depth)
 		}
 	}
 }
 
-// walk is closure over the ATN transitions themselves, for after EOF.
-func (pr *PFXPredictor) walk(c PFXConfig, out *PFXConfigSet) {
-	cp := &pr.pool
-	if !PFXStateEpsOnly[c.state] {
-		out.add(c, cp)
+// loopEntry continues c, at the loop entry of a left-recursive rule, into
+// the loop and out of it, but not into the loop where canDrop says the
+// invocation returned to goes on in it the same way.
+func (pr *PFXPredictor) loopEntry(c PFXConfig, out *PFXConfigSet, depth int32) {
+	if _, isNew := pr.busy.put(pr.busyKey(c)|1<<62, 0); !isNew {
+		return
 	}
 	for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
+		if i == PFXTransStart[c.state] && pr.canDrop(c) {
+			continue
+		}
+		pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, false, depth)
+	}
+}
+
+// canDrop is ANTLR's canDropLoopEntryEdgeInLeftRecursiveRule: c is at the
+// loop entry of a left-recursive rule, and every return state of its context
+// leads straight back to that entry (PFXStateLoopReturn), so the invocation
+// returned to goes on in the loop and c need not enter it.
+func (pr *PFXPredictor) canDrop(c PFXConfig) bool {
+	return PFXStatePrecLoop[c.state] && pr.pool.canDrop(c.state, c.ctx)
+}
+
+// canDrop is canDrop for a configuration at state with context ctx in cp.
+func (cp *PFXCtxPool) canDrop(state, ctx int32) bool {
+	if cp.isEmpty(ctx) {
+		return false
+	}
+	from, n := cp.start[ctx], cp.length[ctx]
+	if cp.rets[from+n-1] == PFXEmptyReturn {
+		return false
+	}
+	for i := int32(0); i < n; i++ {
+		if PFXStateLoopReturn[cp.rets[from+i]] != state {
+			return false
+		}
+	}
+	return true
+}
+
+// PFXDeeper is the depth inside a rule called at depth: one more, unless the
+// decision's rule was already left.
+func PFXDeeper(depth int32) int32 {
+	if depth >= 0 {
+		return depth + 1
+	}
+	return depth
+}
+
+// passes says whether a precedence predicate of level, met at depth, lets a
+// closure go on (see closure).
+func (pr *PFXPredictor) passes(level int32, depth int32) bool {
+	return !pr.collect || depth != 0 || level >= pr.prec
+}
+
+// walk is closure over the ATN transitions themselves, for after EOF.
+func (pr *PFXPredictor) walk(c PFXConfig, out *PFXConfigSet, depth int32) {
+	cp := &pr.pool
+	if !PFXStateEpsOnly[c.state] {
+		pr.added(out, c)
+	}
+	for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
+		if i == PFXTransStart[c.state] && pr.canDrop(c) {
+			continue
+		}
 		switch PFXTransKind[i] {
 		case PFXKindEpsilon:
-			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, true)
+			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, true, depth)
+		case PFXKindPrec:
+			if pr.passes(PFXTransArg[i], depth) {
+				pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, true, depth)
+			}
 		case PFXKindRule:
-			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, cp.singleton(c.ctx, PFXTransArg[i])}, out, true)
+			pr.closure(PFXConfig{PFXTransTarget[i], c.alt, cp.singleton(c.ctx, PFXTransArg[i])}, out, true, PFXDeeper(depth))
 		default:
 			if PFXMatches(i, -1) {
-				pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, true)
+				pr.closure(PFXConfig{PFXTransTarget[i], c.alt, c.ctx}, out, true, depth)
 			}
 		}
 	}
@@ -488,7 +598,7 @@ func (pr *PFXPredictor) walk(c PFXConfig, out *PFXConfigSet) {
 // ruleEnd continues a configuration at a rule's end: back to each return state
 // of its context, or, with the context exhausted, at the end of the start rule
 // (LL) or after every call of the rule (SLL).
-func (pr *PFXPredictor) ruleEnd(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool) {
+func (pr *PFXPredictor) ruleEnd(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool, depth int32) {
 	cp := &pr.pool
 	{
 		if !cp.isEmpty(c.ctx) {
@@ -498,11 +608,11 @@ func (pr *PFXPredictor) ruleEnd(c PFXConfig, out *PFXConfigSet, eofAsEpsilon boo
 					if pr.full {
 						out.add(PFXConfig{c.state, c.alt, 0}, cp)
 					} else {
-						pr.follow(c, out, eofAsEpsilon)
+						pr.follow(c, out, eofAsEpsilon, depth-1)
 					}
 					continue
 				}
-				pr.closure(PFXConfig{ret, c.alt, parent}, out, eofAsEpsilon)
+				pr.closure(PFXConfig{ret, c.alt, parent}, out, eofAsEpsilon, depth-1)
 			}
 			return
 		}
@@ -511,21 +621,29 @@ func (pr *PFXPredictor) ruleEnd(c PFXConfig, out *PFXConfigSet, eofAsEpsilon boo
 			out.add(c, cp)
 			return
 		}
-		pr.follow(c, out, eofAsEpsilon)
+		pr.follow(c, out, eofAsEpsilon, depth-1)
 	}
 }
 
 // follow continues a configuration at a rule's end after every call of the
 // rule (ANTLR's rule-stop follow links, used when the caller is unknown). A
 // rule nobody calls keeps the configuration at its end.
-func (pr *PFXPredictor) follow(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool) {
+func (pr *PFXPredictor) follow(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool, depth int32) {
 	rule := PFXStateRule[c.state]
 	if PFXFollowStart[rule] == PFXFollowStart[rule+1] {
-		out.add(c, &pr.pool)
+		pr.added(out, c)
 		return
 	}
 	for i := PFXFollowStart[rule]; i < PFXFollowStart[rule+1]; i++ {
-		pr.closure(PFXConfig{PFXFollowState[i], c.alt, c.ctx}, out, eofAsEpsilon)
+		if pr.filter && rule == pr.rule && PFXFollowOuter[i] && !pr.suppress {
+			// Past an outermost call of the decision's rule, the precedence
+			// filter spares what the closure reaches.
+			pr.suppress = true
+			pr.closure(PFXConfig{PFXFollowState[i], c.alt, c.ctx}, out, eofAsEpsilon, depth)
+			pr.suppress = false
+			continue
+		}
+		pr.closure(PFXConfig{PFXFollowState[i], c.alt, c.ctx}, out, eofAsEpsilon, depth)
 	}
 }
 
@@ -579,7 +697,7 @@ func (pr *PFXPredictor) reach(closure *PFXConfigSet, t int32, group bool, interm
 	out.reset()
 	pr.busy.reset()
 	for _, c := range intermediate.list {
-		pr.closure(c, out, t == -1)
+		pr.closure(c, out, t == -1, 0)
 	}
 	if t == -1 {
 		// After EOF only configurations at the end of a rule matter.
@@ -696,6 +814,10 @@ type PFXDFAState struct {
 // over by replacing the whole generation.
 type PFXDFAGen struct {
 	starts []atomic.Pointer[PFXDFAState]
+	// precStarts are the start states of the decisions of left-recursive
+	// rules, one per decision and precedence (see startAt), at
+	// d*(PFXMaxPrec+1)+prec.
+	precStarts []atomic.Pointer[PFXDFAState]
 	states map[string]*PFXDFAState
 	pr     PFXPredictor
 	key    []byte
@@ -742,7 +864,7 @@ var PFXDFAError = &PFXDFAState{}
 
 // PFXNewDFAGen returns an empty generation of the SLL DFA cache.
 func PFXNewDFAGen() *PFXDFAGen {
-	g := &PFXDFAGen{starts: make([]atomic.Pointer[PFXDFAState], len(PFXDecisionState)), states: map[string]*PFXDFAState{}}
+	g := &PFXDFAGen{starts: make([]atomic.Pointer[PFXDFAState], len(PFXDecisionState)), precStarts: make([]atomic.Pointer[PFXDFAState], len(PFXDecisionState)*(PFXMaxPrec+1)), states: map[string]*PFXDFAState{}}
 	g.pr.pool.reset(true)
 	return g
 }
@@ -827,8 +949,49 @@ func (pr *PFXPredictor) startSLL(d int, cur *PFXConfigSet) {
 	cur.reset()
 	pr.busy.reset()
 	s := PFXDecisionState[d]
+	pr.collect = true
+	pr.filter, pr.rule = PFXDecisionLoopEntry[d], PFXStateRule[s]
+	if pr.filter {
+		pr.suppressed.reset()
+	}
 	for i := PFXTransStart[s]; i < PFXTransStart[s+1]; i++ {
-		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, 0}, cur, false)
+		pr.closure(PFXConfig{PFXTransTarget[i], i - PFXTransStart[s] + 1, 0}, cur, false, 0)
+	}
+	pr.collect = false
+	if pr.filter {
+		pr.precedenceFilter(cur)
+		pr.filter = false
+	}
+}
+
+// precedenceFilter is ANTLR's applyPrecedenceFilter, for the start state of a
+// left-recursive rule's loop entry: a configuration that leaves the loop is
+// dropped where one that goes on in it (alternative 1) is at the same state
+// with the same context, since leaving goes on in an enclosing invocation the
+// same way, unless it got there past an outermost call of the rule. The
+// precedence predicates of alternative 1 were evaluated by the closure.
+func (pr *PFXPredictor) precedenceFilter(cur *PFXConfigSet) {
+	pr.alt1.reset()
+	for _, c := range cur.list {
+		if c.alt == 1 {
+			pr.alt1.put(uint64(uint32(c.state)), c.ctx)
+		}
+	}
+	n := 0
+	for _, c := range cur.list {
+		if c.alt != 1 {
+			_, spared := pr.suppressed.get(uint64(uint32(c.state))<<32 | uint64(uint32(c.alt)))
+			if ctx, ok := pr.alt1.get(uint64(uint32(c.state))); ok && ctx == c.ctx && !spared {
+				continue
+			}
+		}
+		cur.list[n] = c
+		n++
+	}
+	cur.list = cur.list[:n]
+	cur.at.reset()
+	for i, c := range cur.list {
+		cur.at.put(uint64(uint32(c.state))<<32|uint64(uint32(c.alt)), int32(i))
 	}
 }
 
@@ -883,6 +1046,31 @@ func (g *PFXDFAGen) start(d int) *PFXDFAState {
 	g.pr.startSLL(d, cur)
 	st := g.intern(d, cur)
 	g.starts[d].Store(st)
+	g.checkFull()
+	return st
+}
+
+// startAt is start for decision d of a left-recursive rule, whose start state
+// depends on the precedence prec its rule was called with: one cached state
+// per precedence, as ANTLR's precedence DFA keeps.
+func (g *PFXDFAGen) startAt(d int, prec int32) *PFXDFAState {
+	at := &g.precStarts[d*(PFXMaxPrec+1)+int(prec)]
+	if st := at.Load(); st != nil {
+		return st
+	}
+	PFXDFA.mu.Lock()
+	defer PFXDFA.mu.Unlock()
+	if st := at.Load(); st != nil {
+		return st
+	}
+	if !g.grows() {
+		return nil
+	}
+	cur := &g.pr.sets[0]
+	g.pr.prec = prec
+	g.pr.startSLL(d, cur)
+	st := g.intern(d, cur)
+	at.Store(st)
 	g.checkFull()
 	return st
 }
@@ -957,11 +1145,14 @@ func (p *PARSER) peekAt(i int) {
 func (p *PARSER) adaptivePredict(d int) int {
 	p.stats.Predictions++
 	g := PFXDFA.gen.Load()
-	st := g.starts[d].Load()
+	var st *PFXDFAState
+	if PFXDecisionPrecedence[d] {
+		st = g.startAt(d, p.prec)
+	} else if st = g.starts[d].Load(); st == nil {
+		st = g.start(d)
+	}
 	if st == nil {
-		if st = g.start(d); st == nil {
-			return p.predictSLLUncached(d)
-		}
+		return p.predictSLLUncached(d)
 	}
 	for i := p.pos; ; {
 		p.peekAt(i)
@@ -1002,6 +1193,7 @@ func (p *PARSER) predictSLLUncached(d int) int {
 	pr := &p.pred
 	pr.pool.reset(true)
 	cur, intermediate, next := &pr.sets[0], &pr.sets[1], &pr.sets[2]
+	pr.prec = p.prec
 	pr.startSLL(d, next)
 	for i := p.pos; ; {
 		p.peekAt(i)
@@ -1063,5 +1255,16 @@ func PFXBracketMatch(types []int32, m []int32) (pairs []int32, balanced bool) {
 		}
 	}
 	return m, balanced && len(open) == 0
+}
+`
+
+// predictAtSource is predictAt, which only a grammar with left-recursive
+// rules uses.
+val predictAtSource = `
+// predictAt is adaptivePredict for decision d of a left-recursive rule called
+// with precedence prec.
+func (p *PARSER) predictAt(d int, prec int32) int {
+	p.prec = prec
+	return p.adaptivePredict(d)
 }
 `

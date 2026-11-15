@@ -167,18 +167,32 @@ struct closureResult(Moves Array[move], Predicated bool, Overflow bool)
 struct expansion(Moves Array[move], Groups Array[int64], Predicated bool, Overflow bool)
 
 // grammarInfo is what every decision's analysis shares: the ATN and, per rule,
-// the return states of its call sites and whether it is a start rule.
+// the return states of its call sites, whether it is a start rule, and its
+// FIRST set, nullability and global FOLLOW set.
 struct grammarInfo(
     a atn.ATN,
     callerFollows Array[Array[int]],
     startRule Array[bool],
+    first Array[atn.IntervalSet] = EmptyArray[atn.IntervalSet](),
+    nullable Array[bool] = EmptyArray[bool](),
+    follow Array[atn.IntervalSet] = EmptyArray[atn.IntervalSet](),
 )
 
-func newGrammarInfo(a atn.ATN, sites Array[callSite], starts Array[bool]) grammarInfo =
+func newGrammarInfo(
+    a atn.ATN,
+    sites Array[callSite],
+    starts Array[bool],
+    first Array[atn.IntervalSet] = EmptyArray[atn.IntervalSet](),
+    nullable Array[bool] = EmptyArray[bool](),
+    follow Array[atn.IntervalSet] = EmptyArray[atn.IntervalSet](),
+) grammarInfo =
     grammarInfo(
         a,
         ArrayTabulate(a.RuleNames.Size(), (r) => sites.Collect({ case cs if cs.Callee == r => cs.Follow })),
         starts,
+        first,
+        nullable,
+        follow,
     )
 
 val eofSet = atn.SetOf(atn.TokenEOF)
@@ -201,9 +215,20 @@ struct decider(
     // trackExit records Exit on configurations leaving the decision's rule;
     // the SLL automaton does not need it.
     trackExit bool,
+    // precedence, when set, is the precedence of the decision's rule
+    // invocation: a precedence predicate met in that invocation (no rule
+    // entered, the rule not left) passes when its level is at least this,
+    // and fails otherwise, as ANTLR evaluates it in prediction. Unset, such a
+    // predicate makes the decision adaptive.
+    precedence Option[int] = None(),
 )
 
-func newDecider(g grammarInfo, maxK int, trackExit bool = true) decider =
+func newDecider(
+    g grammarInfo,
+    maxK int,
+    trackExit bool = true,
+    precedence Option[int] = None(),
+) decider =
     decider(
         g,
         maxK,
@@ -212,6 +237,7 @@ func newDecider(g grammarInfo, maxK int, trackExit bool = true) decider =
         m.ArrayTabulate(maxK + 2, (_) => m.EmptyHashMap[int64, expansion]()),
         m.EmptyHashSet[int64](),
         trackExit,
+        precedence,
     )
 
 // closure follows every non-consuming path from the start configurations,
@@ -308,11 +334,22 @@ func (d decider) expand(c0 config, consumed int) expansion {
                         predicated = true
                         visit(config(target, c.Stack, c.Exit, c.Alt))
                     }
-                    // Precedence predicates are settled by phase 2 of the left-recursion
-                    // work (DESIGN.md); until then they make a decision adaptive.
-                    case atn.PrecedencePredicate(target, _, _) => {
-                        predicated = true
-                        visit(config(target, c.Stack, c.Exit, c.Alt))
+                    // In the decision rule's own invocation a precedence predicate
+                    // passes or fails against the decider's precedence; elsewhere
+                    // ANTLR's prediction does not evaluate it.
+                    case atn.PrecedencePredicate(target, _, level) => d.precedence match {
+                        case Some(p) if c.Stack == emptyStack && c.Exit == inside => {
+                            if level >= p {
+                                visit(config(target, c.Stack, c.Exit, c.Alt))
+                            }
+                        }
+                        case Some(_) => visit(config(target, c.Stack, c.Exit, c.Alt))
+                        case None() => {
+                            if c.Stack == emptyStack && c.Exit == inside {
+                                predicated = true
+                            }
+                            visit(config(target, c.Stack, c.Exit, c.Alt))
+                        }
                     }
                     case atn.Action(target, _, _) => visit(config(target, c.Stack, c.Exit, c.Alt))
                 })
@@ -449,6 +486,7 @@ func render(l Lookahead) string = l match {
     case Predict(alt) => s"$alt"
     case Adaptive(alts) => s"adaptive(${alts.MkString(",")})"
     case Automaton(states) => s"automaton(${states.Size()})"
+    case ByPrecedence(bounds, cases) => "precedence{" + cases.ZipWithIndex().Map((ci) => s"${bounds.GetOption(ci.V2).Map((b) => s"<=$b").GetOrElse("else")}:${render(ci.V1)}").MkString(" ") + "}"
     case Otherwise() => "otherwise"
     case Switch(depth, cases) => s"LA$depth{" + cases.Map((c) => c.Tokens.String() + ":" + render(c.Then)).MkString(" ") + "}"
 }
@@ -460,7 +498,13 @@ func render(l Lookahead) string = l match {
 // predict the decision (class and conflicts describe the tree). A decision
 // whose alternatives start with a predicate stays Adaptive: ANTLR evaluates
 // those predicates while it predicts.
-func (g grammarInfo) planDecision(dec atn.Decision, maxK int) DecisionPlan {
+func (g grammarInfo) planDecision(dec atn.Decision, maxK int) DecisionPlan = g.precedenceLevels(dec) match {
+    case Array() => g.planPlain(dec, maxK)
+    case levels => g.planByPrecedence(dec, maxK, levels)
+}
+
+// planPlain plans a decision whose prediction evaluates no precedence predicate.
+func (g grammarInfo) planPlain(dec atn.Decision, maxK int) DecisionPlan {
     val (tree, static) = g.lookaheadTree(dec, maxK)
     val lookahead =
         if (static && NeedsRuntime(tree)) g.buildAutomaton(dec).GetOrElse(deferUnexpected(tree))
@@ -471,8 +515,12 @@ func (g grammarInfo) planDecision(dec atn.Decision, maxK int) DecisionPlan {
 // lookaheadTree is the static lookahead tree of dec, and whether static
 // lookahead applies at all (no predicate before the first token, no runaway
 // call stack); when it does not, the tree is Adaptive over every alternative.
-func (g grammarInfo) lookaheadTree(dec atn.Decision, maxK int) Tuple[Lookahead, bool] {
-    val d = newDecider(g, maxK)
+func (g grammarInfo) lookaheadTree(
+    dec atn.Decision,
+    maxK int,
+    precedence Option[int] = None(),
+) Tuple[Lookahead, bool] {
+    val d = newDecider(g, maxK, true, precedence)
     val start = decisionSeed(g, dec, d)
     val r = d.closure(start.Starts, 0)
     if (start.Predicated || r.Predicated || r.Overflow) (allAdaptive(dec), false)
@@ -497,12 +545,14 @@ func classify(l Lookahead) DecisionClass =
 func NeedsRuntime(l Lookahead) bool = l match {
     case Adaptive(_) | Otherwise() => true
     case Switch(_, cases) => cases.Exists((c) => NeedsRuntime(c.Then))
+    case ByPrecedence(_, cases) => cases.Exists(NeedsRuntime)
     case _ => false
 }
 
 // depthOf is the deepest token a lookahead tree looks at.
 func depthOf(l Lookahead) int = l match {
     case Switch(depth, cases) => cases.FoldLeft(depth, (acc, c) => atn.MaxInt(acc, depthOf(c.Then)))
+    case ByPrecedence(_, cases) => cases.FoldLeft(0, (acc, c) => atn.MaxInt(acc, depthOf(c)))
     case _ => 0
 }
 
@@ -513,6 +563,7 @@ func conflictsOf(l Lookahead, prefix Array[int]) Array[Conflict] = l match {
     case Adaptive(alts) => ArrayOf(Conflict(alts, prefix))
     case Automaton(_) => EmptyArray[Conflict]()
     case Otherwise() => EmptyArray[Conflict]()
+    case ByPrecedence(_, cases) => cases.FlatMap((c) => conflictsOf(c, prefix))
     case Switch(_, cases) => cases.FlatMap((c) => conflictsOf(c.Then, prefix.Append(exampleToken(c.Tokens))))
 }
 
@@ -537,5 +588,6 @@ func deferUnexpected(l Lookahead) Lookahead = l match {
         val inner = cases.Map((c) => LookaheadCase(c.Tokens, deferUnexpected(c.Then)))
         if (depth > 1) Switch(depth, inner.Append(LookaheadCase(atn.EmptySet(), Otherwise()))) else Switch(depth, inner)
     }
+    case ByPrecedence(bounds, cases) => ByPrecedence(bounds, cases.Map(deferUnexpected))
     case _ => l
 }

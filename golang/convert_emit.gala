@@ -51,7 +51,7 @@ func internal(e env) string = decapitalize(e.pfx)
 
 // kindAlts are the alternatives of rule k.Rule whose nodes are of kind k.
 func kindAlts(k nodeKind) Array[atn.AltIR] =
-    if (k.Alt == 0) k.Rule.Alts.Filter(_.Label.IsEmpty()) else k.Rule.Alts.Filter(_.Label == Some(k.Name))
+    if (k.Alt == 0) atn.SourceAlts(k.Rule).Filter(_.Label.IsEmpty()) else atn.SourceAlts(k.Rule).Filter(_.Label == Some(k.Name))
 
 // labelStores are the statements that record the labels of kind k's nodes,
 // numbered as the native flavor numbers them (see labelGroups): a rule label
