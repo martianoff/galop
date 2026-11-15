@@ -261,6 +261,15 @@ machine with 32 hardware threads:
 | 32 goroutines | 68k expressions/s | 104k expressions/s | ≥ 1.04M expressions/s |
 | one goroutine, warm | 20.5 µs | 12.6 µs | reported |
 
+Measured with phase 3 (`-Xleft-recursion`), all in one session on the same
+machine (the ANTLR numbers vary by about 20% between sessions):
+
+| | ANTLR, default LL | ANTLR, Milvus's driver | galop, native |
+|---|---:|---:|---:|
+| 32 goroutines | 93k expressions/s | 124k expressions/s | 1.87M expressions/s |
+| one goroutine, warm | 22.0 µs | 15.1 µs | 1.6 µs |
+| allocations per expression | 308 (24 KB) | 187 (15 KB) | 9 (1.8 KB) |
+
 On these inputs 8% of the expressions send ANTLR's prediction to full context,
 each time over a real ambiguity (19% of ten times longer ones, about 4 times
 each). So the precedence decisions are settled at generation time wherever the
