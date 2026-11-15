@@ -69,7 +69,7 @@ func crashes(parse func()) (crashed bool) {
 // parseFlavor parses src with galop's antlr flavor.
 func parseFlavor(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStream, error) {
 	stream := antlr.NewCommonTokenStream(ga.New@G@GalopLexer(antlr.NewInputStream(src)), antlr.TokenDefaultChannel)
-	ctx, err := ga.New@G@GalopParser(stream).@START@()
+	ctx, err := ga.New@G@GalopParser(stream).Parse@START@()
 	return ctx, stream, err
 }
 
@@ -367,21 +367,35 @@ func BenchmarkConvert(b *testing.B) {
 	}
 }
 
-// allErrors keeps every syntax error ANTLR's parser reports.
+// allErrors keeps every syntax error ANTLR's parser reports, and the tokens
+// its parser expects then (GetExpectedTokens), as an error listener sees them.
 type allErrors struct {
 	*antlr.DefaultErrorListener
-	errs []string
+	errs, expected []string
 }
 
-func (l *allErrors) SyntaxError(_ antlr.Recognizer, _ interface{}, line, column int, msg string, _ antlr.RecognitionException) {
+func (l *allErrors) SyntaxError(rec antlr.Recognizer, _ interface{}, line, column int, msg string, _ antlr.RecognitionException) {
 	l.errs = append(l.errs, fmt.Sprintf("%d:%d: %s", line, column, msg))
+	l.expected = append(l.expected, expectedText(rec.(antlr.Parser).GetExpectedTokens()))
+}
+
+// expectedText renders an ANTLR token set as the types in it, ascending
+// (its intervals end before Stop).
+func expectedText(set *antlr.IntervalSet) string {
+	var types []int32
+	for _, iv := range set.GetIntervals() {
+		for t := iv.Start; t < iv.Stop; t++ {
+			types = append(types, int32(t))
+		}
+	}
+	return fmt.Sprint(types)
 }
 
 // recoverANTLR parses src with ANTLR's parser as a fresh process does (its
 // DFA starts empty) and returns every syntax error and the error-recovered
 // tree, converted. crashed says ANTLR's runtime panicked: its MatchWildcard
 // dereferences the nil token RecoverInline returns for a wildcard at EOF.
-func recoverANTLR(src string) ([]string, *gn.@G@Tree, bool) {
+func recoverANTLR(src string) ([]string, []string, *gn.@G@Tree, bool) {
 	lexer := ga.New@G@Lexer(antlr.NewInputStream(src))
 	lexer.RemoveErrorListeners()
 	stream := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
@@ -397,21 +411,23 @@ func recoverANTLR(src string) ([]string, *gn.@G@Tree, bool) {
 	p.AddErrorListener(listener)
 	var ctx antlr.ParserRuleContext
 	if crashes(func() { ctx = p.@START@() }) {
-		return nil, nil, true
+		return nil, nil, nil, true
 	}
 	tree, _ := ga.@G@ToNative(ctx, stream, src)
-	return listener.errs, tree, false
+	return listener.errs, listener.expected, tree, false
 }
 
-// recoverGalop is Parse@START@WithRecovery's errors, rendered as
-// recoverANTLR renders ANTLR's, and its tree.
-func recoverGalop(src string) ([]string, *gn.@G@Tree) {
+// recoverGalop is Parse@START@WithRecovery's errors and the tokens expected
+// at each, rendered as recoverANTLR renders ANTLR's, and its tree.
+func recoverGalop(src string) ([]string, []string, *gn.@G@Tree) {
 	root, errs := gn.Parse@START@WithRecovery(gn.@G@Lex(src))
 	out := make([]string, len(errs))
+	expected := make([]string, len(errs))
 	for i, e := range errs {
 		out[i] = fmt.Sprintf("%d:%d: %s", e.Line, e.Column, e.Msg)
+		expected[i] = fmt.Sprint(e.Expected)
 	}
-	return out, root.Tree()
+	return out, expected, root.Tree()
 }
 
 // sameRecoveredTree describes the first difference between two trees,
@@ -450,7 +466,7 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 		if len(gn.@G@Lex(src).Errors) > 0 {
 			continue
 		}
-		wantErrs, wantTree, crashed := recoverANTLR(src)
+		wantErrs, wantExp, wantTree, crashed := recoverANTLR(src)
 		if crashed {
 			crashes++
 			continue
@@ -462,8 +478,11 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 		if len(wantErrs) > 1 {
 			multi++
 		}
-		gotErrs, gotTree := recoverGalop(src)
+		gotErrs, gotExp, gotTree := recoverGalop(src)
 		d := sameRecoveredTree(wantTree, gotTree)
+		if !slices.Equal(wantExp, gotExp) {
+			d += fmt.Sprintf("\n expected tokens %v, want %v", gotExp, wantExp)
+		}
 		if slices.Equal(wantErrs, gotErrs) && d == "" {
 			same++
 			continue
@@ -476,4 +495,166 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 		t.Fatal("no mutant was rejected")
 	}
 	t.Logf("%d rejected mutants (%d with several errors), %d recovered as ANTLR recovers; ANTLR crashed on %d more", checked, multi, same, crashes)
+}
+
+// observed is everything an error listener sees of a parser, ANTLR's or the
+// antlr flavor's: each error's position, message, offending token and
+// exception, and the parser's expected tokens, rule stack and context
+// (its type and number of children) when the error is reported. ATN state
+// numbers are left out: the antlr flavor's are galop's.
+type observed struct {
+	*antlr.DefaultErrorListener
+	reports []string
+}
+
+func (l *observed) SyntaxError(rec antlr.Recognizer, offending interface{}, line, column int, msg string, e antlr.RecognitionException) {
+	p := rec.(antlr.Parser)
+	tok := offending.(antlr.Token)
+	ctx := p.GetParserRuleContext()
+	var offendingOfE string
+	// A NoViableAltException's GetOffendingToken is nil in ANTLR's Go runtime.
+	if e != nil && e.GetOffendingToken() != nil {
+		offendingOfE = fmt.Sprint(e.GetOffendingToken().GetTokenIndex())
+	}
+	l.reports = append(l.reports, fmt.Sprintf("%d:%d: %s | token %d | %T %s | expected %s | stack %v | %T with %d children",
+		line, column, msg, tok.GetTokenIndex(), e, offendingOfE, expectedText(p.GetExpectedTokens()),
+		p.GetRuleInvocationStack(nil), ctx, ctx.GetChildCount()))
+}
+
+// dumpTree prints every node of an ANTLR tree: each context's type, start
+// and stop tokens and exception, each token's index and text, error nodes
+// marked.
+func dumpTree(t antlr.Tree) string {
+	var b strings.Builder
+	var walk func(antlr.Tree, string)
+	walk = func(t antlr.Tree, ind string) {
+		switch n := t.(type) {
+		case antlr.ErrorNode:
+			fmt.Fprintf(&b, "%serror %d %q\n", ind, n.GetSymbol().GetTokenIndex(), n.GetText())
+		case antlr.TerminalNode:
+			fmt.Fprintf(&b, "%stoken %d %q\n", ind, n.GetSymbol().GetTokenIndex(), n.GetText())
+		case antlr.ParserRuleContext:
+			stop := -2
+			if n.GetStop() != nil {
+				stop = n.GetStop().GetTokenIndex()
+			}
+			fmt.Fprintf(&b, "%s%T %d..%d exception %s\n", ind, n, n.GetStart().GetTokenIndex(), stop, exceptionType(n))
+			for _, c := range n.GetChildren() {
+				walk(c, ind+"  ")
+			}
+		}
+	}
+	walk(t, "")
+	return b.String()
+}
+
+// recoverWith parses src with ANTLR's parser or, with flavor set, galop's
+// antlr flavor, as ANTLR's parser is used: through the rule method, with an
+// error listener. It returns what the listener saw, the tree as dumpTree
+// prints it and converted, and whether ANTLR's runtime crashed.
+func recoverWith(src string, flavor bool) ([]string, string, *gn.@G@Tree, bool) {
+	l := &observed{DefaultErrorListener: antlr.NewDefaultErrorListener()}
+	var stream *antlr.CommonTokenStream
+	var ctx antlr.ParserRuleContext
+	if flavor {
+		lexer := ga.New@G@GalopLexer(antlr.NewInputStream(src))
+		lexer.RemoveErrorListeners()
+		stream = antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
+		p := ga.New@G@GalopParser(stream)
+		p.RemoveErrorListeners()
+		p.AddErrorListener(l)
+		ctx = p.@START@()
+	} else {
+		lexer := ga.New@G@Lexer(antlr.NewInputStream(src))
+		lexer.RemoveErrorListeners()
+		stream = antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
+		p := ga.New@G@Parser(stream)
+		atn := p.GetATN()
+		dfa := make([]*antlr.DFA, len(atn.DecisionToState))
+		for i, ds := range atn.DecisionToState {
+			dfa[i] = antlr.NewDFA(ds, i)
+		}
+		p.Interpreter = antlr.NewParserATNSimulator(p, atn, dfa, antlr.NewPredictionContextCache())
+		p.RemoveErrorListeners()
+		p.AddErrorListener(l)
+		if crashes(func() { ctx = p.@START@() }) {
+			return nil, "", nil, true
+		}
+	}
+	tree, _ := ga.@G@ToNative(ctx, stream, src)
+	return l.reports, dumpTree(ctx) + fmt.Sprintf("stream at %d\n", stream.Index()), tree, false
+}
+
+// TestANTLRFlavorRecoversAsANTLR compares the antlr flavor's rule method with
+// ANTLR's on mutants ANTLR rejects: every call of the error listener, with
+// what it reads of the parser, and the error-recovered tree, node by node
+// and converted (which compares the label fields).
+func TestANTLRFlavorRecoversAsANTLR(t *testing.T) {
+	srcs := sentences(t)
+	r := rand.New(rand.NewSource(3))
+	checked, multi := 0, 0
+	for tries := 0; checked < *mutants && tries < 50**mutants; tries++ {
+		src := mutate(r, srcs[r.Intn(len(srcs))])
+		if len(gn.@G@Lex(src).Errors) > 0 {
+			continue
+		}
+		want, wantDump, wantTree, crashed := recoverWith(src, false)
+		if crashed || len(want) == 0 {
+			continue
+		}
+		checked++
+		if len(want) > 1 {
+			multi++
+		}
+		got, gotDump, gotTree, _ := recoverWith(src, true)
+		if !slices.Equal(want, got) {
+			t.Errorf("mutant %d %q: the listener sees\n %s\nANTLR's sees\n %s", checked, src, strings.Join(got, "\n "), strings.Join(want, "\n "))
+			continue
+		}
+		if gotDump != wantDump {
+			t.Errorf("mutant %d %q: tree\n%s\nANTLR's\n%s", checked, src, gotDump, wantDump)
+			continue
+		}
+		if d := sameRecoveredTree(wantTree, gotTree); d != "" {
+			t.Errorf("mutant %d %q: converted tree: %s", checked, src, d)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no mutant was rejected")
+	}
+	t.Logf("%d rejected mutants (%d with several errors) recovered as ANTLR recovers", checked, multi)
+}
+
+// TestANTLRFlavorRuleMethodOnValidInput checks that the rule method gives
+// ANTLR's tree on the sentences ANTLR accepts, and calls no error listener.
+func TestANTLRFlavorRuleMethodOnValidInput(t *testing.T) {
+	checked := 0
+	for i, src := range sentences(t) {
+		want, wantDump, _, crashed := recoverWith(src, false)
+		if crashed || len(want) > 0 {
+			continue
+		}
+		checked++
+		got, gotDump, _, _ := recoverWith(src, true)
+		if len(got) > 0 || gotDump != wantDump {
+			t.Fatalf("sentence %d: reports %q, tree\n%s\nANTLR's\n%s", i, got, gotDump, wantDump)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("ANTLR accepted no sentence")
+	}
+}
+
+// exceptionType is the type of a context's exception field, which ANTLR's
+// Go runtime sets but has no getter for, or "<nil>".
+func exceptionType(ctx antlr.ParserRuleContext) string {
+	v := reflect.ValueOf(ctx)
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	f := v.FieldByName("exception")
+	if !f.IsValid() || f.IsNil() {
+		return "<nil>"
+	}
+	return f.Elem().Type().String()
 }

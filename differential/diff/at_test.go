@@ -57,7 +57,7 @@ func antlrAt(text string, line, column int) atResult {
 // galopAt is antlrAt with galop's antlr flavor.
 func galopAt(text string, line, column int) atResult {
 	stream := gala.GalopTokensAt(text, line, column)
-	ctx, err := antlrgala.NewgalaGalopParser(stream).Expression()
+	ctx, err := antlrgala.NewgalaGalopParser(stream).ParseExpression()
 	if err != nil {
 		return atResult{err: err.Error()}
 	}

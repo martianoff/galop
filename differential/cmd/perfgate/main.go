@@ -72,7 +72,7 @@ var flavors = []string{"native", "antlrflavor"}
 
 // defaultRules judge a baseline written without rules: counters exactly but
 // allocations within 1% (the Go runtime's own background allocations move
-// them by a few), and ratios on one goroutine within 30%. Ratios on 32
+// them by a few), and ratios on one goroutine within 40%. Ratios on 32
 // goroutines are only reported: on the CI runner's four cores two runs of the
 // same code differ by about a third. The input's size and how much of it
 // parses are reported, not judged: the parity tests fail on any difference
@@ -82,7 +82,7 @@ var defaultRules = []perf.Rule{
 	{Pattern: "*/*/accepted", ReportOnly: true},
 	{Pattern: "*/*/allocs-per-pass", Tolerance: 0.01},
 	{Pattern: "*/w32/*/*", ReportOnly: true},
-	{Pattern: "*/*/*/*", Tolerance: 0.3},
+	{Pattern: "*/*/*/*", Tolerance: 0.4},
 }
 
 func main() {
@@ -474,7 +474,7 @@ func measureConversion(r perf.Report, srcs []string, name string) {
 		src = gala.StripBOM(src)
 		stream := gala.GalopTokens(src)
 		var root antlr.ParserRuleContext
-		root, err := antlrgala.NewgalaGalopParser(stream).SourceFile()
+		root, err := antlrgala.NewgalaGalopParser(stream).ParseSourceFile()
 		if err != nil {
 			stream = gala.Tokens(src)
 			root, _ = gala.Lenient(stream)

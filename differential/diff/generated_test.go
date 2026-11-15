@@ -30,7 +30,7 @@ func TestGeneratedMatchesANTLR(t *testing.T) {
 			return tree, err
 		}},
 		{"antlr flavor", func(src string) (string, error) {
-			ctx, err := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).SourceFile()
+			ctx, err := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).ParseSourceFile()
 			if err != nil {
 				return "", err
 			}
@@ -89,7 +89,7 @@ func TestParseWithStatsMatchesParse(t *testing.T) {
 		if got != want || (wantErr == nil) != (gotErr == nil) {
 			t.Errorf("%s: native ParseWithStats differs from Parse", f.Name)
 		}
-		ref, refErr := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).SourceFile()
+		ref, refErr := antlrgala.NewgalaGalopParser(gala.GalopTokens(src)).ParseSourceFile()
 		ctx, _, err := antlrgala.ParseGalopWithStats(gala.GalopTokens(src))
 		if (refErr == nil) != (err == nil) || refErr == nil && gala.TreeString(ref) != gala.TreeString(ctx) {
 			t.Errorf("%s: ParseGalopWithStats differs from SourceFile", f.Name)

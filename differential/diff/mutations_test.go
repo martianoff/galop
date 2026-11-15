@@ -64,7 +64,7 @@ func TestMutations(t *testing.T) {
 				return antlrFlavor(src, antlrgala.ParseGalopByRerun)
 			}
 			return antlrFlavor(src, func(s antlr.TokenStream) (antlr.ParserRuleContext, error) {
-				return antlrgala.NewgalaGalopParser(s).SourceFile()
+				return antlrgala.NewgalaGalopParser(s).ParseSourceFile()
 			})
 		}, func(src string) (string, string, error) {
 			return antlrFlavor(src, antlrgala.ParseGalopTokens)

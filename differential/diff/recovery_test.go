@@ -27,10 +27,13 @@ var (
 // errorContext is what the GALA compiler's error hints read of an error:
 // the node of the rule the parser was in (-1 when ANTLR's context for it
 // is not in the tree: choosing a labeled alternative replaced it), the
-// node's number of children then, and the offending token's index.
+// node's number of children then, and the offending token's index; and
+// what an error listener reads of the parser: the tokens it expects, as
+// the types in ascending order.
 type errorContext struct {
 	node        int32
 	kids, token int
+	expected    string
 }
 
 // recoveredByANTLR is what ANTLR gives for src, a file with a syntax error,
@@ -60,7 +63,7 @@ func recoveredByANTLR(src string) ([]string, []errorContext, *nativegala.GalaTre
 		if !ok {
 			id = -1
 		}
-		contexts[i] = errorContext{id, e.Kids, native[e.Token.GetTokenIndex()]}
+		contexts[i] = errorContext{id, e.Kids, native[e.Token.GetTokenIndex()], fmt.Sprint(e.Expected)}
 	}
 	return texts, contexts, tree
 }
@@ -71,7 +74,7 @@ func recoveredByGalop(src string) ([]string, []errorContext, *nativegala.GalaTre
 	root, errs := nativegala.ParseSourceFileWithRecovery(nativegala.Tokens(src))
 	contexts := make([]errorContext, len(errs))
 	for i, e := range errs {
-		contexts[i] = errorContext{e.Node, e.Kids, e.Token}
+		contexts[i] = errorContext{e.Node, e.Kids, e.Token, fmt.Sprint(e.Expected)}
 	}
 	return renderErrors(errs), contexts, root.Tree()
 }
@@ -174,7 +177,7 @@ func compareRecovery(src string) recoveryOutcome {
 			}
 			if g != w {
 				o.contexts = false
-				o.diff += fmt.Sprintf("\n error %d: node, children, token %+v, want %+v", i, g, w)
+				o.diff += fmt.Sprintf("\n error %d: node, children, token, expected tokens %+v, want %+v", i, g, w)
 			}
 		}
 	}

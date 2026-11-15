@@ -1,0 +1,359 @@
+package golang
+
+import (
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+)
+
+// antlrRecoverySource is the antlr flavor's error recovery: on input with a
+// syntax error it parses again the way ANTLR 4.13.1's Go runtime parses with
+// its default error strategy (recoveryWalkSource's walk), builds the
+// error-recovered contexts ANTLR's parser builds, and reports each syntax
+// error ANTLR reports to the parser's error listeners, with the galop parser
+// as the recognizer. It parses nothing with ANTLR: the ANTLR parser the galop
+// parser embeds supplies the listeners, the token factory and most of what a
+// listener asks of its recognizer (its context, rule invocation stack and
+// current token are set to ANTLR's at each report); the galop parser answers
+// GetExpectedTokens from its own state machine. ATN state numbers (GetState,
+// a context's invoking state) are galop's, which differ from ANTLR's. PFX,
+// PARSER and @EOF@ are filled as in parserCore.
+//
+// The contexts are built as ANTLR's parser builds them: a rule's context is
+// added to its parent's children when the rule starts, a labeled
+// alternative's context takes its place (keeping none of its children),
+// tokens consumed in error recovery mode are error nodes, a token single-token
+// insertion makes up is an error node of the rule whose match made it up, a
+// label field gets what ANTLR's generated code assigns it, in the same order,
+// and a rule that recovered from an error has the error's exception.
+val antlrRecoverySource = `
+// PFXRecovery is the state of a recovering parse: ANTLR's parser state
+// (GetState, the error strategy's fields) and the contexts of the rules
+// being parsed.
+type PFXRecovery struct {
+	e PFXEmu
+	// state is ANTLR's GetState(): the ATN state of the generated code's
+	// last SetState.
+	state int32
+	// The default error strategy's errorRecoveryMode, lastErrorIndex and
+	// lastErrorStates.
+	recovering bool
+	lastIndex  int
+	lastStates []int32
+	// ctxs are the contexts of the rules being parsed, innermost last; the
+	// parser's stack holds their return states, as in the replay.
+	ctxs []antlr.ParserRuleContext
+	// root is the entry rule's context, once the rule is done.
+	root antlr.ParserRuleContext
+	// conjured are the tokens single-token insertion made up: a token
+	// reference past the parser's tokens is one of them.
+	conjured []antlr.Token
+	// exc is the pending error's exception (see pend).
+	exc antlr.RecognitionException
+	// errors counts the errors reported.
+	errors int
+}
+
+// recoverParse parses from the first token as rule (its index) with ANTLR's
+// error recovery; see antlrRecoverySource. It predicts in LL mode over the
+// tokens alone, as antlrError's replay does. It returns the entry rule's
+// context and the number of syntax errors reported, and leaves the token
+// stream and the embedded parser as ANTLR's parse leaves them.
+func (p *PARSER) recoverParse(rule int) (antlr.ParserRuleContext, int) {
+	p.ll, p.group, p.peek = true, false, 0
+	r := &PFXRecovery{e: PFXEmu{p: p}, lastIndex: -1}
+	r.parse(rule)
+	p.input.Seek(p.toks[p.pos].GetTokenIndex())
+	p.SetParserRuleContext(nil)
+	p.SetState(-1)
+	return r.root, r.errors
+}
+
+// top is the context of the rule being parsed.
+func (r *PFXRecovery) top() antlr.ParserRuleContext { return r.ctxs[len(r.ctxs)-1] }
+
+// enter starts rule, called from state invoking: ANTLR's EnterRule, which
+// starts the rule's context at the current token and adds it to its
+// parent's children. A rule with one labeled alternative enters it at once.
+func (r *PFXRecovery) enter(rule, invoking int32) {
+	p := r.e.p
+	var parent antlr.ParserRuleContext
+	if len(r.ctxs) > 0 {
+		parent = r.top()
+	}
+	ctx := p.newContext(rule, parent, int(invoking))
+	ctx.SetStart(p.toks[p.pos])
+	if parent != nil {
+		parent.AddChild(ctx)
+	}
+	r.ctxs = append(r.ctxs, ctx)
+	if alt := PFXRuleAlt[rule]; alt != 0 {
+		r.enterOuterAlt(alt)
+	}
+}
+
+// enterOuterAlt makes the rule being parsed the labeled alternative alt:
+// ANTLR's EnterOuterAlt with the alternative's new context, which copies the
+// rule's context but none of its children and takes its place in its parent.
+func (r *PFXRecovery) enterOuterAlt(alt uint8) {
+	n := len(r.ctxs) - 1
+	old := r.ctxs[n]
+	ctx := r.e.p.newAltContext(int32(old.GetRuleIndex()), alt, old)
+	if parent, ok := old.GetParent().(antlr.ParserRuleContext); ok {
+		parent.RemoveLastChild()
+		parent.AddChild(ctx)
+	}
+	r.ctxs[n] = ctx
+}
+
+// exit ends the rule being parsed: ANTLR's ExitRule, which sets the
+// context's stop token, then the caller's label of the result, if any. It
+// returns the state the caller goes on at and -1, or for the entry rule -1
+// and 0 (its context is r.root).
+func (r *PFXRecovery) exit() (int32, int32) {
+	p := r.e.p
+	n := len(r.ctxs) - 1
+	ctx := r.ctxs[n]
+	r.ctxs = r.ctxs[:n]
+	if p.pos > 0 {
+		ctx.SetStop(p.toks[p.pos-1])
+	} else {
+		ctx.SetStop(nil)
+	}
+	if n == 0 {
+		r.root = ctx
+		return -1, 0
+	}
+	invoking := int32(ctx.GetInvokingState())
+	if l := PFXStateLabel[invoking]; l != 0 {
+		p.setLabel(r.top(), l, nil, ctx)
+	}
+	r.state = invoking
+	follow := p.stack[len(p.stack)-1]
+	p.stack = p.stack[:len(p.stack)-1]
+	return follow, -1
+}
+
+// label stores the token tok refers to (nil for -1) in the label of the
+// match at state s, if it has one, as ANTLR's generated code does.
+func (r *PFXRecovery) label(s int32, tok int32) {
+	if l := PFXStateLabel[s]; l != 0 {
+		r.e.p.setLabel(r.top(), l, r.token(tok), nil)
+	}
+}
+
+// token is the token ref refers to: one of the parser's, one single-token
+// insertion made up, or nil for -1.
+func (r *PFXRecovery) token(ref int32) antlr.Token {
+	p := r.e.p
+	switch {
+	case ref < 0:
+		return nil
+	case int(ref) < len(p.toks):
+		return p.toks[ref]
+	}
+	return r.conjured[int(ref)-len(p.toks)]
+}
+
+// take adds the current token to the rule being parsed, as an error node
+// when isErr (ANTLR's Consume in error recovery mode), and moves past it
+// (not past EOF); it returns the token.
+func (r *PFXRecovery) take(isErr bool) int32 {
+	p := r.e.p
+	i := p.pos
+	if isErr {
+		r.top().AddErrorNode(p.toks[i])
+	} else {
+		r.top().AddTokenNode(p.toks[i])
+	}
+	if p.types[i] != @EOF@ {
+		p.pos++
+	}
+	return int32(i)
+}
+
+// missing is the token ANTLR's GetMissingSymbol makes up, of the first type
+// in exp, from the parser's token factory: it is added to the rule being
+// parsed as an error node when add is set (ANTLR's Match adds it), and
+// returned either way (a set match stores it in its label).
+func (r *PFXRecovery) missing(exp *PFXExpected, add bool) int32 {
+	p := r.e.p
+	typ := exp.first()
+	var text string
+	switch {
+	case typ == @EOF@:
+		text = "<missing EOF>"
+	case typ > 0 && int(typ) < len(PFXLiteralNames):
+		text = "<missing " + PFXLiteralNames[typ] + ">"
+	default:
+		text = "<missing undefined>"
+	}
+	at := p.toks[p.pos]
+	if at.GetTokenType() == @EOF@ && p.pos > 0 {
+		at = p.toks[p.pos-1]
+	}
+	tok := p.GetTokenFactory().Create(at.GetSource(), int(typ), text, antlr.TokenDefaultChannel, -1, -1, at.GetLine(), at.GetColumn())
+	if add {
+		r.top().AddErrorNode(tok)
+	}
+	r.conjured = append(r.conjured, tok)
+	return int32(len(p.toks) + len(r.conjured) - 1)
+}
+
+// report reports err, an unwanted or a missing token, as ANTLR's
+// ReportUnwantedToken and ReportMissingToken do (see notify).
+func (r *PFXRecovery) report(err *PFXEmuError) { r.notify(err, nil) }
+
+// pend leaves err pending, as ANTLR's SetError does, with its exception made
+// now, as ANTLR makes it: an InputMisMatchException or a
+// NoViableAltException that records the parser's context, state and tokens
+// at this point, however much later the error is reported.
+func (r *PFXRecovery) pend(err *PFXEmuError) {
+	p := r.e.p
+	r.e.pending = err
+	r.syncParser()
+	if err.noViable {
+		r.exc = antlr.NewNoViableAltException(p, p.input, p.toks[err.start], p.toks[err.at], nil, r.top())
+	} else {
+		r.exc = antlr.NewInputMisMatchException(p)
+	}
+}
+
+// reportPending reports the pending error at a rule's error exit as ANTLR's
+// generated code does: the rule's context gets the error's exception, which
+// ReportError then reports.
+func (r *PFXRecovery) reportPending(err *PFXEmuError) {
+	r.top().SetException(r.exc)
+	r.notify(err, r.exc)
+}
+
+// notify passes err and its exception to the parser's error listeners, as
+// ANTLR's NotifyErrorListeners does but with the galop parser as the
+// recognizer (see GetExpectedTokens), unless the parser is in error recovery
+// mode; and enters that mode.
+func (r *PFXRecovery) notify(err *PFXEmuError, exc antlr.RecognitionException) {
+	if r.recovering {
+		return
+	}
+	r.recovering = true
+	r.errors++
+	r.syncParser()
+	p := r.e.p
+	p.syntaxErrors++
+	p.expected = p.expectedSet(r.e.expected(r.state).types())
+	tok := p.toks[err.at]
+	p.GetErrorListenerDispatch().SyntaxError(p, tok, tok.GetLine(), tok.GetColumn(), err.msg, exc)
+}
+
+// syncParser sets the embedded parser's state, context and current token to
+// ANTLR's at this point of its parse, for error listeners and exceptions.
+// The state is galop's number for it: galop's state machine numbers its
+// states differently from ANTLR's.
+func (r *PFXRecovery) syncParser() {
+	p := r.e.p
+	p.SetState(int(r.state))
+	p.SetParserRuleContext(r.top())
+	p.input.Seek(p.toks[p.pos].GetTokenIndex())
+}
+
+// expectedSet is types as an ANTLR IntervalSet. ANTLR's runtime exports no
+// way to fill one, so it is what ANTLR's own analysis finds can follow a
+// state with one transition per type.
+func (p *PARSER) expectedSet(types []int32) *antlr.IntervalSet {
+	s := antlr.NewBasicState()
+	end := antlr.NewBasicState()
+	for _, t := range types {
+		s.AddTransition(antlr.NewAtomTransition(end, int(t)), -1)
+	}
+	return p.GetATN().NextTokensInContext(s, nil)
+}
+
+// GetExpectedTokens is, while an error listener runs, ANTLR's
+// GetExpectedTokens at that error: the tokens that can follow the parser's
+// state through the rules being parsed. galop answers it from its own state
+// machine (ANTLR's would need ANTLR's state numbers); outside an error
+// report it is the last error's set, or empty.
+func (p *PARSER) GetExpectedTokens() *antlr.IntervalSet {
+	if p.expected == nil {
+		return antlr.NewIntervalSet()
+	}
+	return p.expected
+}
+
+// GetNumberOfSyntaxErrors is the number of syntax errors the parser reported
+// to its error listeners, as ANTLR's.
+func (p *PARSER) GetNumberOfSyntaxErrors() int { return p.syntaxErrors }
+`
+
+// antlrRecoveryCode is the antlr flavor's error recovery for e's parser: the
+// recovery tables, the shared walk, antlrRecoverySource and the functions
+// that make and label its contexts.
+func antlrRecoveryCode(e env) string =
+    recoveryTables(e, false) + fill(antlrRecoverySource + recoveryWalkSource,
+        "@EOF@", "antlr.TokenEOF", "@LABELMAX@", s"$maxRuleLabels", "PARSER", e.parserType, "PFX", e.pfx,
+        "ANTLRP", e.names.ParserType()) + "\n" + contextMakers(e) + "\n" + labelSetter(e)
+
+// contextMakers emits newContext, which makes a rule's context as ANTLR's
+// generated rule function does, and newAltContext, which makes a labeled
+// alternative's from it.
+func contextMakers(e env) string {
+    val p = e.names.ParserType()
+    val rules = e.rules.Map((r) => s"\tcase ${r.Index}:\n\t\treturn New${e.names.Context(r.Name)}(p.$p, parent, invoking)")
+    val alts = e.rules.FlatMap((r) => altLabelsOf(r).ZipWithIndex().Map((li) =>
+        s"\tcase ${r.Index << 8 | (li.V2 + 1)}:\n\t\treturn New${e.names.Context(li.V1)}(p.$p, ctx)"
+    ))
+    val altSwitch = if (alts.IsEmpty()) "" else s"\tswitch rule<<8 | int32(alt) {\n${alts.MkString("\n")}\n\t}\n"
+    ArrayOf(
+        "// newContext makes the context of rule (its index), as ANTLR's generated",
+        "// rule function does.",
+        s"func (p *${e.parserType}) newContext(rule int32, parent antlr.ParserRuleContext, invoking int) antlr.ParserRuleContext {",
+        "\tswitch rule {",
+        rules.MkString("\n"),
+        "\t}",
+        "\tpanic(\"no rule with this index\")",
+        "}",
+        "",
+        "// newAltContext makes the context of labeled alternative alt (numbered",
+        "// from 1, in order of first appearance) of rule from the rule's ctx, as",
+        "// ANTLR's generated code does before EnterOuterAlt.",
+        s"func (p *${e.parserType}) newAltContext(rule int32, alt uint8, ctx antlr.ParserRuleContext) antlr.ParserRuleContext {",
+        altSwitch + "\tpanic(\"no labeled alternative with this number\")",
+        "}",
+    ).MkString("\n") + "\n"
+}
+
+// contextLabels is a context type and the labels whose fields it has: a
+// labeled alternative's, or a rule's without labeled alternatives.
+struct contextLabels(CtxType string, Rule atn.RuleIR, Uses Array[labelUse])
+
+// labelSetter emits setLabel, which stores a token or a rule's context in the
+// label field of a context, as ANTLR's generated code does: label is
+// PFXStateLabel's encoding (the label's number in its rule, plus
+// PFXLabelList for a list label, which appends).
+func labelSetter(e env) string {
+    val kinds = e.rules.FlatMap((r) => altLabelsOf(r) match {
+        case Array() => ArrayOf(contextLabels(e.names.Context(r.Name), r, r.Alts.FlatMap((a) => labelUses(a.Steps))))
+        case names => names.Map((l) => contextLabels(e.names.Context(l), r, r.Alts.Filter(_.Label == Some(l)).FlatMap((a) => labelUses(a.Steps))))
+    }).Filter(_.Uses.NonEmpty())
+    val cases = kinds.Map((k) => {
+        val numbered = ruleLabels(k.Rule)
+        val stores = k.Uses.Distinct().Map((u) => {
+            val code = numbered.IndexOf(u.Name) + 1 + (if (u.Append) maxRuleLabels + 1 else 0)
+            val field = s"c.${e.names.LabelField(u.Name)}"
+            val value = u.Rule match {
+                case Some(rule) => s"child.(${e.names.ContextInterface(e.ruleName(rule))})"
+                case None() => "tok"
+            }
+            val store = if (u.Append) s"$field = append($field, $value)" else s"$field = $value"
+            s"\t\tcase $code:\n\t\t\t$store"
+        })
+        s"\tcase *${k.CtxType}:\n\t\tswitch label {\n${stores.MkString("\n")}\n\t\t}"
+    })
+    val body = if (cases.IsEmpty()) "" else s"\tswitch c := ctx.(type) {\n${cases.MkString("\n")}\n\t}\n"
+    ArrayOf(
+        "// setLabel stores tok, or child's context, in ctx's field of label (the",
+        s"// encoding of ${e.pfx}StateLabel), as ANTLR's generated code does.",
+        s"func (p *${e.parserType}) setLabel(ctx antlr.ParserRuleContext, label uint16, tok antlr.Token, child antlr.ParserRuleContext) {",
+        body + "}",
+    ).MkString("\n") + "\n"
+}

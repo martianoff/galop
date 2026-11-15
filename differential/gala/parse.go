@@ -262,6 +262,9 @@ type ReportedError struct {
 	Ctx   antlr.ParserRuleContext
 	Kids  int
 	Token antlr.Token
+	// Expected are the token types the parser's GetExpectedTokens() gives
+	// then, ascending.
+	Expected []int32
 }
 
 // reportListener collects ReportedErrors.
@@ -271,9 +274,17 @@ type reportListener struct {
 }
 
 func (l *reportListener) SyntaxError(r antlr.Recognizer, offending any, line, column int, msg string, _ antlr.RecognitionException) {
-	ctx := r.(antlr.Parser).GetParserRuleContext()
+	p := r.(antlr.Parser)
+	ctx := p.GetParserRuleContext()
 	tok, _ := offending.(antlr.Token)
-	l.errs = append(l.errs, ReportedError{fmt.Sprintf("%d:%d: %s", line, column, hideNewlineTokens(msg)), ctx, ctx.GetChildCount(), tok})
+	var expected []int32
+	// An interval ends before its Stop.
+	for _, iv := range p.GetExpectedTokens().GetIntervals() {
+		for t := iv.Start; t < iv.Stop; t++ {
+			expected = append(expected, int32(t))
+		}
+	}
+	l.errs = append(l.errs, ReportedError{fmt.Sprintf("%d:%d: %s", line, column, hideNewlineTokens(msg)), ctx, ctx.GetChildCount(), tok, expected})
 }
 
 // ParseRecovered parses src the way the GALA compiler parses a file with a
@@ -287,6 +298,15 @@ func ParseRecovered(src string) (antlr.ParserRuleContext, *antlr.CommonTokenStre
 	errs := &reportListener{}
 	setUp(p.BaseParser, LL, errs, newDFA(p.GetATN()))
 	return p.SourceFile(), stream, errs.errs
+}
+
+// ParseRecoveredWith parses src as ParseRecovered does, reporting syntax
+// errors to l. It returns the error-recovered tree and its token stream.
+func ParseRecoveredWith(src string, l antlr.ErrorListener) (antlr.ParserRuleContext, *antlr.CommonTokenStream) {
+	stream := Tokens(src)
+	p := antlrgala.NewgalaParser(stream)
+	setUp(p.BaseParser, LL, l, newDFA(p.GetATN()))
+	return p.SourceFile(), stream
 }
 
 // AllErrors parses src as ANTLR does for the GALA compiler when src has an

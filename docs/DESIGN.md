@@ -619,7 +619,47 @@ Each error also records what the GALA compiler's error hints read of ANTLR's
 parser when the error is reported: the offending token, the node of the rule
 being parsed (`GetParserRuleContext()`) and how many children that node had
 then. Where ANTLR replaced the rule's context to enter a labeled alternative,
-the node is the replacement's.
+the node is the replacement's. It also records the tokens an error listener's
+`GetExpectedTokens()` gives then (`Expected`): the replay's expected set at the
+walk's state (the generated code's last `SetState`), through the rules on the
+stack, as in ANTLR's `ATN.getExpectedTokens`.
+
+#### Recovering into ANTLR's contexts
+
+The antlr flavor's rule methods run the same walk; only the tree differs. The
+walk builds through a few methods each flavor defines (`enter`,
+`enterOuterAlt`, `exit`, `take`, `missing`, `label`, `pend`, `report`,
+`reportPending`), and the antlr flavor's build ANTLR's contexts as ANTLR's
+parser builds them, while it parses:
+
+| ANTLR | The antlr flavor's walk |
+|---|---|
+| `EnterRule`: the rule's context starts at the current token and joins its parent's children | the same, with the context ANTLR's generated code makes (`newContext`) |
+| `EnterOuterAlt` with a labeled alternative's context: it copies the rule's (none of its children) and takes its place in the parent | the same (`newAltContext`) |
+| `Consume`: a token node, or an error node in error recovery mode | the same |
+| `GetMissingSymbol`: a token from the parser's token factory, added as an error node by `Match` | the same; a set match stores it in its label without adding it |
+| label assignments after each match and rule call | the same, through `setLabel`, generated per context type |
+| `SetError` makes the exception when the error arises; `errorExit` sets it on the rule's context and reports it | the same: `pend` makes the exception, so it records the token, context and state of that moment |
+| `NotifyErrorListeners` | the error listeners are called with the galop parser as the recognizer, its context and current token set to ANTLR's |
+
+The galop parser embeds an instance of ANTLR's generated parser, which never
+parses: it holds the error listeners, the token factory and the parser API a
+listener calls (`GetParserRuleContext`, `GetRuleInvocationStack`, the token and
+rule names). The galop parser passes it to the contexts it makes, as ANTLR's
+code passes itself. Two answers come from galop instead. galop's ATN numbers
+its states differently from ANTLR's (it has more of them; only the rule start
+and stop states agree), so ANTLR's `GetExpectedTokens`, which reads ANTLR's ATN
+at the parser's state, cannot answer: the galop parser's `GetExpectedTokens`
+gives the replay's expected set, turned into an `antlr.IntervalSet` by ANTLR's
+own `NextTokens` over a throwaway state (the runtime exports no other way to
+fill one). And `GetNumberOfSyntaxErrors` counts the errors it reported.
+`GetState()` and a context's invoking state are galop's state numbers.
+
+The differential tests compare the two parsers through an error listener and
+the trees: every call with its message, position, offending token, exception
+and the expected tokens, rule stack and context it reads; and every node of the
+tree, with context types, start and stop tokens, exceptions, error nodes and
+made-up tokens, and the label fields through the converter.
 
 **Lexical errors among syntax errors.** ANTLR's lexer runs as its token
 stream is read, so a token recognition error is reported when the parser first
@@ -758,17 +798,21 @@ tool rejects any other with error 508 before generating. The Go target has two
   into the same Go package as ANTLR's own output for the grammar. The parser
   constructs ANTLR's generated context types (`NewXxxContext`, labeled-alternative
   subtypes, label setters) and consumes an `antlr.TokenStream`; the lexer produces
-  `antlr.CommonToken`s. Code that walks ANTLR trees keeps working unchanged, and
-  ANTLR's parser remains available as a fallback (for example for error recovery).
+  `antlr.CommonToken`s. Code that walks ANTLR trees keeps working unchanged. The
+  parser embeds ANTLR's generated parser for its error listeners and the rest of
+  ANTLR's parser API, so it is a drop-in for it: only the constructors change
+  (see [Recovering into ANTLR's contexts](#recovering-into-antlrs-contexts)).
 
 Both flavors run the same decision functions and runtime predictor (SLL first,
 LL from the start on a syntax error), so they choose the same alternatives.
-A parse stops at the first syntax error and reports the same first error as
-ANTLR in a fresh process, with its message, line and column (see
+`Parse<Rule>` stops at the first syntax error and reports the same first error
+as ANTLR in a fresh process, with its message, line and column (see
 [Reporting syntax errors as ANTLR does](#reporting-syntax-errors-as-antlr-does)).
 The replay reads the tokens alone, so bracket abstraction does not change the
-error. The native flavor can also recover from errors as ANTLR does (see
-[Recovering from syntax errors as ANTLR does](#recovering-from-syntax-errors-as-antlr-does)).
+error. Both flavors can also recover from errors as ANTLR does (see
+[Recovering from syntax errors as ANTLR does](#recovering-from-syntax-errors-as-antlr-does)):
+the native flavor's `Parse<Rule>WithRecovery`, and the antlr flavor's rule
+methods, which do as ANTLR's do.
 
 ### The native tree
 

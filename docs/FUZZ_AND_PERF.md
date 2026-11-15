@@ -208,11 +208,12 @@ ratios measured in the same job:
 
 The ratios on 32 goroutines are only reported. The CI runner has four cores, and two
 runs of the same code differed by up to a third there. Ratios on one goroutine moved
-by up to 25%, so they are judged within 30%. A whole measurement can still run in a
-slow stretch of the runner: a change to BUILD files alone once moved a warm ratio by
-46%. So an input with a ratio worse than the baseline is timed a second time, and each
-of its ratios is judged on the better of the two (the report lists it as
-`<input>/timed-again`). A regression is worse both times; a slow stretch rarely is.
+by up to 25%, and first-pass ratios by up to a third, so they are judged within
+40%. A whole measurement can still run in a slow stretch of the runner: a change to
+BUILD files alone once moved a warm ratio by 46%. So an input with a ratio worse than
+the baseline is timed a second time, and each of its ratios is judged on the better of
+the two (the report lists it as `<input>/timed-again`). A regression is worse both
+times; a slow stretch rarely is.
 
 To keep the ratios stable on a shared runner:
 
@@ -275,7 +276,9 @@ bazel run //differential/cmd/perfgate -- -update=differential/perf/baseline.json
   pushes to main for a re-baseline, or the PR's own runs for a change that moves the
   numbers. The fleet also changes under the baseline. Ratios taken from one run on
   October 27 failed 16 of the 57 runs that followed, although the same code measured
-  the same on one runner.
+  the same on one runner. Leave out the ratios of an input a run timed twice (it
+  reports `<input>/timed-again`): they are the better of two measurements, and taking
+  them would drift the baseline low and the gate stricter.
 - `-update` keeps the baseline's rules. With `-times=false` it measures counters only
   and keeps the baseline's ratios.
 
@@ -291,11 +294,11 @@ How each number is judged is policy, kept in the baseline file rather than in co
   {"pattern": "*/*/accepted", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/allocs-per-pass", "tolerance": 0.01},
   {"pattern": "*/w32/*/*", "tolerance": 0, "report_only": true},
-  {"pattern": "*/*/*/*", "tolerance": 0.3}
+  {"pattern": "*/*/*/*", "tolerance": 0.4}
 ]
 ```
 
-- A number may exceed its baseline by `tolerance` (0.3 allows 30%) before it is
+- A number may exceed its baseline by `tolerance` (0.4 allows 40%) before it is
   `worse`.
 - A `report_only` number is shown and never fails the gate. `files` and `accepted`
   are report-only because the parity tests already fail on any difference from ANTLR

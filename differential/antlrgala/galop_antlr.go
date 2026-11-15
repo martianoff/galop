@@ -5,7 +5,7 @@ import "github.com/antlr4-go/antlr/v4"
 // galop's generated parser in its antlr flavor joins the harness as "galop".
 func init() {
 	SameTypes["galop"] = func(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
-		tree, err := NewgalaGalopParser(stream).SourceFile()
+		tree, err := NewgalaGalopParser(stream).ParseSourceFile()
 		if err != nil {
 			return nil, err
 		}
@@ -16,7 +16,7 @@ func init() {
 // ParseGalopTokens parses stream with galop's antlr flavor generated with
 // -Xno-brackets: prediction reads tokens only.
 func ParseGalopTokens(stream antlr.TokenStream) (antlr.ParserRuleContext, error) {
-	return NewgalaGalopTokParser(stream).SourceFile()
+	return NewgalaGalopTokParser(stream).ParseSourceFile()
 }
 
 // ParseGalopByRerun parses stream with galop's antlr flavor, rerunning the
