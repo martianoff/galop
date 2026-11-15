@@ -208,7 +208,11 @@ ratios measured in the same job:
 
 The ratios on 32 goroutines are only reported. The CI runner has four cores, and two
 runs of the same code differed by up to a third there. Ratios on one goroutine moved
-by up to 25%, so they are judged within 30%.
+by up to 25%, so they are judged within 30%. A whole measurement can still run in a
+slow stretch of the runner: a change to BUILD files alone once moved a warm ratio by
+46%. So an input with a ratio worse than the baseline is timed a second time, and each
+of its ratios is judged on the better of the two (the report lists it as
+`<input>/timed-again`). A regression is worse both times; a slow stretch rarely is.
 
 To keep the ratios stable on a shared runner:
 

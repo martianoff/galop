@@ -121,8 +121,45 @@ func run() int {
 			measureTimes(r, inputs[in], in, files[in])
 			measureConversion(r, inputs[in], in)
 		}
+		confirm(r, inputs, files)
 	}
 	return report(r)
+}
+
+// confirm times again each input with a ratio worse than the baseline, and
+// keeps for each of that input's ratios the better of the two measurements.
+// On a shared runner a whole measurement can run in a slow stretch: a change
+// to BUILD files alone once moved a warm ratio by 46%. A regression is worse
+// both times; a slow stretch rarely is.
+func confirm(r perf.Report, inputs map[string][]string, files map[string]string) {
+	again := map[string]bool{}
+	for _, f := range perf.Judge(perf.Report{Ratios: r.Ratios}, loadBaseline()) {
+		if f.Kind == "ratio" && f.Verdict == "worse" {
+			again[strings.SplitN(f.Name, "/", 2)[0]] = true
+		}
+	}
+	for _, in := range inputNames {
+		if !again[in] {
+			continue
+		}
+		second := perf.Report{Ratios: map[string]float64{}, Info: map[string]float64{}}
+		measureTimes(second, inputs[in], in, files[in])
+		for name, v := range second.Ratios {
+			r.Ratios[name] = min(r.Ratios[name], v)
+		}
+		r.Info[in+"/timed-again"] = 1
+	}
+}
+
+// loadBaseline is the baseline numbers are judged against: -baseline, or
+// just the default rules.
+func loadBaseline() perf.Baseline {
+	if *baseline == "" {
+		return perf.Baseline{Rules: defaultRules}
+	}
+	b, err := perf.ReadBaseline(corpus.Locate(*baseline))
+	check(err)
+	return b
 }
 
 // measureCounters runs the counter children, each in its own fresh process,
@@ -202,12 +239,7 @@ func medianRatio(a, b []float64) float64 {
 // report judges r, prints it (and adds it to the GitHub job summary),
 // writes the baseline with -update, and returns the exit code.
 func report(r perf.Report) int {
-	b := perf.Baseline{Rules: defaultRules}
-	if *baseline != "" {
-		var err error
-		b, err = perf.ReadBaseline(corpus.Locate(*baseline))
-		check(err)
-	}
+	b := loadBaseline()
 	judged := b
 	if !*times {
 		// A counters-only run has no ratios: it doesn't judge them, and
