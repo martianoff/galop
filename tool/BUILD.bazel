@@ -14,14 +14,18 @@ gala_library(
     deps = [
         "//analysis",
         "//atn",
+        "//brackets",
         "//codegen",
         "//diag",
         "//g4",
         "//leftrec",
         "//repair",
         "@gala//collection_immutable",
+        "@gala//collection_mutable",
         "@gala//concurrent",
         "@gala//fs",
+        "@gala//go_interop",
+        "@gala//stream",
     ],
 )
 
@@ -40,13 +44,17 @@ gala_test(
     deps = [
         "//analysis",
         "//atn",
+        "//brackets",
         "//codegen",
         "//diag",
         "//g4",
         "//leftrec",
         "//repair",
         "@gala//collection_immutable",
+        "@gala//collection_mutable",
         "@gala//concurrent",
         "@gala//fs",
+        "@gala//go_interop",
+        "@gala//stream",
     ],
 )

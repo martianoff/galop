@@ -254,6 +254,11 @@ func (c *LPFXToNative) tokens(all []antlr.Token, src string) *galopnative.@N@Tok
 			ts.Hidden = append(ts.Hidden, galopnative.@N@HiddenToken{@N@Token: nt, Channel: int32(t.GetChannel()), Next: int32(len(ts.Tokens))})
 		}
 	}
+	if len(c.offset) > 0 {
+		// The source is not ASCII: give the tokens ANTLR's text if it is not
+		// valid UTF-8 either.
+		ts.ReadTexts()
+	}
 	return ts
 }
 
