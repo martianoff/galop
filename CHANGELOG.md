@@ -21,6 +21,12 @@ lists every merged pull request.
   `Expected`, the token types ANTLR's `GetExpectedTokens()` gives an error
   listener at that error, so code that builds "expecting one of ..." messages
   from ANTLR's listener can move to the native flavor.
+- **Fixed:** code generation and `-report` no longer run without end on a
+  directly left-recursive rule with more than one left-recursive alternative
+  (`e : e '*' e | e '+' e | INT`); they report error 500 at the rule, as for
+  other constructs galop does not support yet.
+- **Fixed:** a lexer mode (`mode M;`) is reported as not supported yet (error
+  500), not as a syntax error.
 
 ## 0.3.3
 

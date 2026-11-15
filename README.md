@@ -12,7 +12,7 @@ and finishing the parse proves the guess, so it picks exactly what ANTLR would
 pick while its first pass predicts nothing at runtime. ANTLR's prediction
 algorithm, compiled into the generated file, runs only to recover from a guess
 that replaying cannot settle and to report a syntax error; grammars with
-actions, predicates or left recursion do not guess and predict as before. It
+embedded actions do not guess and predict as before. It
 needs no grammar file at runtime and no deserialization.
 
 **Every decision of the first pass is made at generation time: no warm-up.
@@ -23,7 +23,7 @@ report a syntax error.**
 > GALA compiler's grammar that produce exactly ANTLR's tokens and trees on the
 > whole GALA source corpus (722 of 722 files ANTLR accepts) and on code it was
 > not tuned on, in two flavors: its own compact tree (the default, 11× to 290×
-> faster than ANTLR) or ANTLR's tree types (3× to 50×).
+> faster than ANTLR) or ANTLR's tree types (3× to 54×).
 > Other grammars work as far as their features are supported (see below); see the
 > [roadmap](docs/ROADMAP.md).
 
@@ -347,11 +347,12 @@ sources for a `go_library`.
 Not supported yet, and reported as errors rather than ignored: rule arguments,
 `returns`/`locals`, rule-level options and actions, element options
 (`<assoc=right>`), lexer modes, grammar imports, the `tokenVocab` and
-`caseInsensitive` options, and in the Go target, directly left-recursive rules
-(`e : e '+' e | INT`, which ANTLR rewrites into a loop) and semantic
-predicates. Mutually left-recursive rules are an error, as in ANTLR (error 119);
-`-check` does not report ANTLR's errors for left recursion its rewrite cannot
-handle (148, 169); the Go target rejects those rules as left-recursive.
+`caseInsensitive` options, and in the Go target, semantic predicates.
+Directly left-recursive rules (`e : e '+' e | INT`, which ANTLR rewrites into a
+loop) pass `-check`, as in ANTLR, but code generation and `-report` reject them.
+Mutually left-recursive rules are an error, as in ANTLR (error 119); `-check`
+does not report ANTLR's errors for left recursion its rewrite cannot handle
+(148, 169).
 
 ## Development
 

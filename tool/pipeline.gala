@@ -134,9 +134,13 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
                 case Some(d) => done(problemsOnly(ArrayOf(d)))
                 case None() => stage.Action match {
                     case Validate(roundTrip) => done(validated(path, g, roundTrip))
-                    case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
                     // -depend only needs the file names, which come from the compiled grammar.
                     case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
+                    // The rest analyzes the grammar, which needs ANTLR's
+                    // rewrite of direct left recursion first.
+                    case _ if !plan.LeftRecursion.Direct.IsEmpty() =>
+                        done(problemsOnly(ArrayOf(directLeftRecursionProblem(plan.LeftRecursion, g, c))))
+                    case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
                     case _ => {
                         val plans = c.Parser.Map((p) => analysis.Analyze(p, plan, stage.NoBrackets))
                         FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
@@ -161,6 +165,20 @@ func leftRecursionProblem(lr leftrec.LeftRecursion, c atn.Compiled, path string)
             Some(leftrec.LeftRecursionCycles.New(sets.MkString(" and ")).In(path))
         }
     }
+
+// directLeftRecursionProblem reports the rules that call themselves first
+// (`e : e '+' e | INT`), at the first of them. ANTLR rewrites them into
+// precedence loops; galop does not yet, and analyzing them as written may not
+// finish.
+func directLeftRecursionProblem(lr leftrec.LeftRecursion, g g4.Grammar, c atn.Compiled) diag.Diagnostic {
+    val names = lr.Direct.Map((i) => c.Rules.Get(i).Name)
+    val noun = if (names.Size() == 1) "rule" else "rules"
+    val d = diag.Unsupported.New(s"left-recursive $noun ${names.MkString(", ")}")
+    names.HeadOption().FlatMap((first) => g.Rules.Find((r) => r.Name == first)) match {
+        case Some(r) => d.At(r.Pos.Line, r.Pos.Col)
+        case None() => d
+    }
+}
 
 // nameProblems checks, as ANTLR does, that `grammar X;` is in a file called X.g4.
 func nameProblems(path string, g g4.Grammar) Array[diag.Diagnostic] =
