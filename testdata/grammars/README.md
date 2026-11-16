@@ -4,6 +4,17 @@ Verbatim copies of upstream grammars. `galop check --roundtrip` must pass on eve
 here (CI runs it). Do not edit these files to make a check pass; update them only by
 copying again from upstream, and record the new source below.
 
-| File | Source | Revision |
-|------|--------|----------|
-| `gala.g4` | [martianoff/gala](https://github.com/martianoff/gala) `internal/parser/grammar/gala.g4` | `master` at `911cc059` (GALA 0.92.1) |
+| File | Source | Revision | License |
+|------|--------|----------|---------|
+| `gala.g4` | [martianoff/gala](https://github.com/martianoff/gala) `internal/parser/grammar/gala.g4` | `master` at `911cc059` (GALA 0.92.1) | Apache-2.0 |
+| `CEL.g4` | [cel-expr/cel-go](https://github.com/cel-expr/cel-go) `parser/gen/CEL.g4` | `master` at `0ef120e6` | Apache-2.0 |
+| `HavingExpression.g4` | [SigNoz/signoz](https://github.com/SigNoz/signoz) `grammar/HavingExpression.g4` | `main` at `f7220ae7` | MIT |
+| `Plan.g4` | [milvus-io/milvus](https://github.com/milvus-io/milvus) `internal/parser/planparserv2/Plan.g4` | `master` at `301f3bf5` | Apache-2.0 |
+| `grulev3.g4` | [hyperjumptech/grule-rule-engine](https://github.com/hyperjumptech/grule-rule-engine) `antlr/grulev3.g4` | `master` at `f23b4a27` | Apache-2.0 |
+
+`.gitattributes` stores every grammar with LF line endings; `grulev3.g4` has CRLF
+upstream.
+
+`CEL.g4`, `HavingExpression.g4`, `Plan.g4` and `grulev3.g4` have left-recursive rules.
+`//differential/convert` builds both flavors of each with `-Xleft-recursion` and checks
+them against ANTLR on generated sentences and mutants.

@@ -644,7 +644,7 @@ func (m *PFXSLLFailure) note(d, pos int, prec int32) {
 
 // closure is the predictor's closure with ANTLR's flags; depth is as there.
 func (m *PFXSLLFailure) closure(c PFXFlagConfig, out *PFXFlagSet, depth int32) {
-	if _, isNew := m.busy.put(m.busyKey(c), 0); !isNew {
+	if _, isNew := m.busy.put(m.busyKey(c, depth), 0); !isNew {
 		return
 	}
 	cp := &m.pool
@@ -688,7 +688,7 @@ func (m *PFXSLLFailure) closure(c PFXFlagConfig, out *PFXFlagSet, depth int32) {
 
 // loopEntry is the predictor's loopEntry with ANTLR's flags.
 func (m *PFXSLLFailure) loopEntry(c PFXFlagConfig, out *PFXFlagSet, depth int32) {
-	if _, isNew := m.busy.put(m.busyKey(c)|1<<62, 0); !isNew {
+	if _, isNew := m.busy.put(m.busyKey(c, depth)|1<<62, 0); !isNew {
 		return
 	}
 	for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
@@ -700,11 +700,15 @@ func (m *PFXSLLFailure) loopEntry(c PFXFlagConfig, out *PFXFlagSet, depth int32)
 }
 
 // busyKey and added are the predictor's, for flagged configurations.
-func (m *PFXSLLFailure) busyKey(c PFXFlagConfig) uint64 {
+func (m *PFXSLLFailure) busyKey(c PFXFlagConfig, depth int32) uint64 {
+	key := c.key()
 	if m.suppress {
-		return c.key() | 1<<63
+		key |= 1 << 63
 	}
-	return c.key()
+	if m.collect && depth == 0 {
+		key |= 1 << 61
+	}
+	return key
 }
 
 func (m *PFXSLLFailure) added(out *PFXFlagSet, c PFXFlagConfig) {
@@ -739,7 +743,7 @@ func (m *PFXSLLFailure) follow(c PFXFlagConfig, out *PFXFlagSet, depth int32) {
 		if suppress {
 			m.suppress = true
 		}
-		if _, seen := m.busy.get(m.busyKey(f)); !seen {
+		if _, seen := m.busy.get(m.busyKey(f, depth)); !seen {
 			out.dips = true
 		}
 		m.closure(f, out, depth)

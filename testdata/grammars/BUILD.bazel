@@ -1,4 +1,4 @@
-exports_files(["gala.g4"])
+exports_files(glob(["*.g4"]))
 
 filegroup(
     name = "grammars",

@@ -4,7 +4,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 _PREFIX = "github.com/martianoff/galop/differential/convert/"
 
-def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = []):
+def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = [], galop_flags = "", entry = None):
     """Generates and tests one grammar's parsers and converter.
 
     It generates ANTLR 4.13.1's Go parser and galop's antlr flavor with the
@@ -19,9 +19,12 @@ def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = 
       start: the entry rule the sentences start from.
       sample_flags: galop-sample's flags (count, seed, nesting, length).
       extra_srcs: more test files for this grammar, in the same package.
+      galop_flags: more flags for galop, for both flavors.
+      entry: the entry rule's method name, when it is not start capitalized
+        (ANTLR and galop name a rule `start` `Start_`).
     """
     lower = grammar_name.lower()
-    entry = start[0].upper() + start[1:]
+    entry = entry or start[0].upper() + start[1:]
     antlr_dir = name + "/antlr"
     native_dir = name + "/native"
 
@@ -45,7 +48,8 @@ def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = 
         name = name + "_galop_go",
         srcs = ["//cmd/galop", grammar],
         outs = [antlr_dir + "/" + lower + f for f in ["_galop_lexer.go", "_galop_native.go", "_galop_parser.go"]],
-        cmd = "$(location //cmd/galop) -Dlanguage=Go -Dflavor=antlr -DnativePackage={native} -package antlr -Xexact-output-dir -o $(RULEDIR)/{dir} $(location {grammar})".format(
+        cmd = "$(location //cmd/galop) {flags} -Dlanguage=Go -Dflavor=antlr -DnativePackage={native} -package antlr -Xexact-output-dir -o $(RULEDIR)/{dir} $(location {grammar})".format(
+            flags = galop_flags,
             native = _PREFIX + native_dir,
             dir = antlr_dir,
             grammar = grammar,
@@ -56,7 +60,8 @@ def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = 
         name = name + "_native_go",
         srcs = ["//cmd/galop", grammar],
         outs = [native_dir + "/" + lower + f for f in ["_lexer.go", "_parser.go"]],
-        cmd = "$(location //cmd/galop) -visitor -package native -Xexact-output-dir -o $(RULEDIR)/{dir} $(location {grammar})".format(
+        cmd = "$(location //cmd/galop) {flags} -visitor -package native -Xexact-output-dir -o $(RULEDIR)/{dir} $(location {grammar})".format(
+            flags = galop_flags,
             dir = native_dir,
             grammar = grammar,
         ),
@@ -93,8 +98,9 @@ def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = 
         name = name + "_test_go",
         srcs = ["convert_test.go.tmpl"],
         outs = [name + "_test.go"],
-        cmd = "sed -e 's|@G@|{g}|g' -e 's|@START@|{entry}|g' -e 's|@ANTLRPKG@|{a}|g' -e 's|@NATIVEPKG@|{n}|g' $< > $@".format(
+        cmd = "sed -e 's|@G@|{g}|g' -e 's|@N@|{exported}|g' -e 's|@START@|{entry}|g' -e 's|@ANTLRPKG@|{a}|g' -e 's|@NATIVEPKG@|{n}|g' $< > $@".format(
             g = grammar_name,
+            exported = grammar_name[0].upper() + grammar_name[1:],
             entry = entry,
             a = _PREFIX + antlr_dir,
             n = _PREFIX + native_dir,
