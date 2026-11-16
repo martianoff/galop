@@ -348,7 +348,11 @@ type PARSER struct {
 	types []int32
 	pos   int
 	kids  []int32
-	tree  *@X@TreeLABSPREDICTOR
+	tree  *@X@Tree
+	// nodeBuf and kidBuf are the arrays a pooled parser builds its trees in
+	// (see PFXRun); nil on a parser of its own.
+	nodeBuf []@X@NodeData
+	kidBuf  []int32LABSPREDICTOR
 }
 
 // PFXParse parses the tokens of ts as the rule with index rule (an @X@RULE_
@@ -380,9 +384,13 @@ func (p *PARSER) init(ts *@X@Tokens, types []int32) {
 	for i := range ts.Tokens {
 		p.types[i] = ts.Tokens[i].Type
 	}
-	// Grammars like GALA's have about four nodes and five child references
-	// per token; sizing for that saves growing the arrays.
-	p.tree = &@X@Tree{@X@Tokens: ts, Nodes: make([]@X@NodeData, 0, 4*n+4), Kids: make([]int32, 0, 5*n+4), Read: -1}
+	nodes, kids := p.nodeBuf[:0], p.kidBuf[:0]
+	if nodes == nil {
+		// Grammars like GALA's have about four nodes and five child
+		// references per token; sizing for that saves growing the arrays.
+		nodes, kids = make([]@X@NodeData, 0, 4*n+4), make([]int32, 0, 5*n+4)
+	}
+	p.tree = &@X@Tree{@X@Tokens: ts, Nodes: nodes, Kids: kids, Read: -1}
 }
 
 // PFXParsers keeps parsers between parses: a parser's prediction scratch
@@ -391,7 +399,12 @@ func (p *PARSER) init(ts *@X@Tokens, types []int32) {
 var PFXParsers sync.Pool
 
 // PFXRun parses the tokens of ts as run does, on a pooled parser. The tree
-// it returns shares nothing with the parser.
+// it returns shares nothing with the parser: the parser builds it in arrays it
+// keeps for the next parse, and the tree gets copies of exactly its size. A
+// tree sized up front for the densest grammars was most of what a parse of a
+// short input allocated (Milvus's filter expressions: 1.8 KB, 70% of it the
+// tree), and on many goroutines the garbage collector, not the parse, set the
+// pace.
 func PFXRun(ts *@X@Tokens, rule func(*PARSER) int32, start int32, repair bool) (*@X@Tree, int32, error) {
 	p, _ := PFXParsers.Get().(*PARSER)
 	if p == nil {
@@ -400,6 +413,10 @@ func PFXRun(ts *@X@Tokens, rule func(*PARSER) int32, start int32, repair bool) (
 		p.reuse(ts)
 	}
 	t, root, err := p.run(rule, start, repair)
+	p.nodeBuf, p.kidBuf = p.tree.Nodes[:0], p.tree.Kids[:0]
+	if t != nil {
+		t.Nodes, t.Kids = slices.Clone(t.Nodes), slices.Clone(t.Kids)
+	}
 	p.ts, p.tree = nil, nil
 	PFXParsers.Put(p)
 	return t, root, err
@@ -408,8 +425,8 @@ func PFXRun(ts *@X@Tokens, rule func(*PARSER) int32, start int32, repair bool) (
 // reuse prepares p, which parsed before, for a parse of the tokens of ts as
 // newPARSER does, keeping the capacity of its scratch.
 func (p *PARSER) reuse(ts *@X@Tokens) {
-	types, kids, stack, pred := p.types, p.kids[:0], p.stack[:0], p.pred
-	*p = PARSER{kids: kids, stack: stack, pred: pred}
+	types, kids, stack, pred, nodes, treeKids := p.types, p.kids[:0], p.stack[:0], p.pred, p.nodeBuf, p.kidBuf
+	*p = PARSER{kids: kids, stack: stack, pred: pred, nodeBuf: nodes, kidBuf: treeKids}
 	p.init(ts, types)
 }
 

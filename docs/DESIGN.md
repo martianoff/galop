@@ -293,6 +293,12 @@ machine (the ANTLR numbers vary by about 20% between sessions):
 | one goroutine, warm | 22.0 µs | 15.1 µs | 1.6 µs |
 | allocations per expression | 308 (24 KB) | 187 (15 KB) | 9 (1.8 KB) |
 
+Since then the native flavor copies trees and token lists out at exactly their
+size (see `PFXRun`): a parse allocates 840 bytes, 8 allocations, and on 32
+goroutines it parses 2.67M expressions/s, against 105k for Milvus's driver in
+the same session. On 32 goroutines the garbage collector had set the pace: with
+1.8 KB of garbage per expression, most of the time went to the heap's lock.
+
 On these inputs 8% of the expressions send ANTLR's prediction to full context,
 each time over a real ambiguity (19% of ten times longer ones, about 4 times
 each). So the precedence decisions are settled at generation time wherever the

@@ -3,6 +3,17 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
+## Unreleased
+
+- **Changed:** the native flavor's lexer and `Parse` functions collect token lists
+  and build trees in arrays they keep between calls, and return copies of exactly
+  their size. Trees were sized for about four nodes per token and token lists for
+  a token per four bytes, so a short input allocated several times what it kept:
+  on Milvus's filter expressions a parse now allocates 840 bytes instead of 1,772,
+  and on 32 goroutines, where the garbage collector had set the pace, throughput
+  went from about 1.6M to 2.7M expressions/s on one 32-thread machine. Token
+  lists from the lexer now have no spare capacity.
+
 ## 0.4.0
 
 - **Added (experimental):** directly left-recursive rules
