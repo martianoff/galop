@@ -49,7 +49,7 @@
     "native/corpus/sll-resets": 0,
     "native/corpus/sll-states": 55,
     "native/generated/accepted": 600,
-    "native/generated/allocs-per-pass": 12310,
+    "native/generated/allocs-per-pass": 12119,
     "native/generated/files": 600,
     "native/generated/full-context": 0,
     "native/generated/full-context-states": 0,
@@ -73,7 +73,7 @@
     "native/mutants/sll-resets": 0,
     "native/mutants/sll-states": 1088
   },
-  "note": "counters: perfgate on main 64f905f (the same on any machine), the generated input's measured again once tail calls returned to block ends as in ANTLR's network, which changed galop-sample's sentences; ratios: the median of each ratio over 39 pushes to main on the CI runner (ubuntu-latest, GOMAXPROCS=4), runs 40856536346 to 43649699833",
+  "note": "counters: perfgate on main 64f905f (the same on any machine), the generated input's measured again once tail calls returned to block ends as in ANTLR's network, which changed galop-sample's sentences; ratios: the median of each ratio over 39 pushes to main on the CI runner (ubuntu-latest, GOMAXPROCS=4), runs 40856536346 to 43649699833; native/generated/allocs-per-pass tightened when trees and token lists were copied out at exact size",
   "ratios": {
     "corpus/w1/first/galop-vs-antlr": 0.019135287253223394,
     "corpus/w1/first/galop-vs-lexer": 2.9571755919545106,
