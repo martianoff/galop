@@ -145,10 +145,13 @@ runtime prediction and the speed ratios from regressing (see
 
 ### Left-recursive rules (in progress)
 
-Status: being built in phases (below). `-report` analyzes a directly
-left-recursive rule; both flavors generate one, with error recovery and the
-converter, behind the experimental `-Xleft-recursion` option (phases 1 to 5);
-without it, code generation rejects such a rule (error 500).
+Status: experimental, being finished in phases (below). `-report` analyzes a
+directly left-recursive rule; both flavors generate one, with error recovery and
+the converter, behind the experimental `-Xleft-recursion` option (phases 1 to 5,
+released in galop 0.4.0); without it, code generation rejects such a rule (error
+500). Of phase 6, the four corpus grammars are in and checked against ANTLR by
+`//differential/convert`; the per-shape test grammars and the benchmarks in the
+performance gate remain, and then the option goes away.
 
 ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
 (`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse
@@ -295,8 +298,7 @@ each). So the precedence decisions are settled at generation time wherever the
 analysis can prove ANTLR's answer: the next token and a comparison with the
 current precedence, no runtime prediction. The runtime port above is the exact
 fallback for the rest, which should be rare. The benchmark joins the performance
-gate with the 10× ratio as its bar once the native flavor generates these
-parsers (phase 3).
+gate with the 10× ratio as its bar in phase 6.
 
 ## Analysis (`analysis`)
 

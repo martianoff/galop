@@ -21,6 +21,11 @@ at build time, never checked in. `go.mod` here exists for Bazel's `go_deps`.
 | `gala/` | `Tokens`, `ParseANTLR`, the `Parser` type and the parser registry |
 | `corpus/` | Loading input: the Bazel corpus manifest, a directory, files, or `galop-sample` output |
 | `diff/` | Parallel tree comparison; the corpus tests (both flavors) and `testing.B` benchmarks |
+| `nativetokens/` | The native flavor for `gala.g4` generated with `-Xno-brackets`; the mutation tests require it to agree with `nativegala/` |
+| `mutate/` | The token-level mutants the tests and the fuzz runs use |
+| `measure/` | Timing helpers shared by `cmd/bench` and `cmd/perfgate` |
+| `errors/`, `repair/` | Test grammars (`Errors.g4`, `Repair.g4`) with both flavors and ANTLR's parser, checked against ANTLR (below) |
+| `convert/` | For each test grammar and each corpus grammar with left-recursive rules: ANTLR's parser, both flavors and the converter, checked against each other (see [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md)) |
 | `lexdiff/` | galop's generated lexers (both flavors) against ANTLR's, token by token over the corpus; lexer benchmarks |
 | `cmd/treedump` | Print each file's tree (ANTLR's `ToStringTree`) |
 | `cmd/difftest` | Compare two parsers over a corpus; exit 1 on any mismatch |
@@ -121,6 +126,11 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
 - `//differential/errors:errors_test` checks both flavors' syntax errors against
   ANTLR's on mutations of programs in [`errors/Errors.g4`](errors/Errors.g4), a
   grammar galop decides without runtime prediction.
+- `//differential/convert` checks, for the test grammars and for Milvus's, CEL's,
+  SigNoz's and Grule's grammars (left-recursive rules, generated with
+  `-Xleft-recursion`), that ANTLR's tree converted to the native tree is native
+  parsing's tree, and that native error recovery reports ANTLR's errors; see
+  [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md).
 
 ## Plugging in a parser
 
