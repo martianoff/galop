@@ -71,12 +71,14 @@ def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = 
         name = name + "_native",
         srcs = [":" + name + "_native_go"],
         importpath = _PREFIX + native_dir,
+        visibility = ["//differential:__subpackages__"],
     )
 
     go_library(
         name = name + "_antlr",
         srcs = [":" + name + "_antlr_go", ":" + name + "_galop_go"],
         importpath = _PREFIX + antlr_dir,
+        visibility = ["//differential:__subpackages__"],
         deps = [
             ":" + name + "_native",
             "@com_github_antlr4_go_antlr_v4//:antlr",

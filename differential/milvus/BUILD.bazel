@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# Milvus's filter expressions: galop's native flavor of Milvus's Plan.g4
+# against ANTLR's parser, used out of the box and as Milvus drives it. The
+# performance gate times them (//differential/cmd/perfgate); the test checks
+# that galop gives ANTLR's tree for each.
+exports_files(["exprs.json"])
+
+go_library(
+    name = "milvus",
+    srcs = ["milvus.go"],
+    importpath = "github.com/martianoff/galop/differential/milvus",
+    visibility = ["//differential:__subpackages__"],
+    deps = [
+        "//differential/convert:plan_antlr",
+        "//differential/convert:plan_native",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)
+
+go_test(
+    name = "milvus_test",
+    size = "small",
+    srcs = ["milvus_test.go"],
+    args = ["-exprs=$(rlocationpath :exprs.json)"],
+    data = [":exprs.json"],
+    embed = [":milvus"],
+    deps = [
+        "//differential/convert:plan_antlr",
+        "//differential/convert:plan_native",
+        "//differential/corpus",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)

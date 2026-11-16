@@ -60,6 +60,7 @@
     "native/generated/sll-peak-states": 0,
     "native/generated/sll-resets": 0,
     "native/generated/sll-states": 0,
+    "native/milvus/allocs-per-pass": 11806,
     "native/mutants/accepted": 37,
     "native/mutants/allocs-per-pass": 18554,
     "native/mutants/files": 100,
@@ -73,7 +74,7 @@
     "native/mutants/sll-resets": 0,
     "native/mutants/sll-states": 1088
   },
-  "note": "counters: perfgate on main 64f905f (the same on any machine), the generated input's measured again once tail calls returned to block ends as in ANTLR's network, which changed galop-sample's sentences; ratios: the median of each ratio over 39 pushes to main on the CI runner (ubuntu-latest, GOMAXPROCS=4), runs 40856536346 to 43649699833; native/generated/allocs-per-pass tightened and native/corpus/allocs-per-pass raised to the highest of two runs (7,898 and 7,919) when trees and token lists were copied out at exact size: the corpus count now varies by a few dozen between runs",
+  "note": "counters: perfgate on main 64f905f (the same on any machine), the generated input's measured again once tail calls returned to block ends as in ANTLR's network, which changed galop-sample's sentences; ratios: the median of each ratio over 39 pushes to main on the CI runner (ubuntu-latest, GOMAXPROCS=4), runs 40856536346 to 43649699833; native/milvus/allocs-per-pass added when the milvus input was (left recursion, phase 6), its ratios judged by the 10x bars until main has runs to take medians from; native/generated/allocs-per-pass tightened and native/corpus/allocs-per-pass raised to the highest of two runs (7,898 and 7,919) when trees and token lists were copied out at exact size: the corpus count now varies by a few dozen between runs",
   "ratios": {
     "corpus/w1/first/galop-vs-antlr": 0.019135287253223394,
     "corpus/w1/first/galop-vs-lexer": 2.9571755919545106,
@@ -114,6 +115,16 @@
     {
       "pattern": "*/*/allocs-per-pass",
       "tolerance": 0.01
+    },
+    {
+      "pattern": "milvus/w32/warm/galop-vs-antlr",
+      "tolerance": 0,
+      "max": 0.1
+    },
+    {
+      "pattern": "milvus/w32/warm/galop-vs-driver",
+      "tolerance": 0,
+      "max": 0.1
     },
     {
       "pattern": "*/w32/*/*",

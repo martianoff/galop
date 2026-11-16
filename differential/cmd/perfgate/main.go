@@ -1,9 +1,13 @@
-// Command perfgate measures galop's generated parsers for gala.g4 and judges
-// the numbers against a checked-in baseline (see docs/FUZZ_AND_PERF.md).
+// Command perfgate measures galop's generated parsers and judges the numbers
+// against a checked-in baseline (see docs/FUZZ_AND_PERF.md).
 //
-// It measures three inputs: a fixed subset of the GALA corpus, sentences
-// galop-sample generated (valid code no corpus has), and mutated corpus files
-// (mostly invalid code). For each it records
+// It measures four inputs. Three are for gala.g4: a fixed subset of the GALA
+// corpus, sentences galop-sample generated (valid code no corpus has), and
+// mutated corpus files (mostly invalid code). The fourth, milvus, is Milvus's
+// filter expressions with Milvus's Plan.g4, whose expression rule is
+// left-recursive (see //differential/milvus): its times have a third side,
+// Milvus's own driver around ANTLR's parser, and its counters are the native
+// flavor's allocations. For each input it records
 //
 //   - deterministic counters, each in a fresh process so the process-wide
 //     prediction caches start empty: runtime (adaptive) predictions,
@@ -43,6 +47,7 @@ import (
 	"github.com/martianoff/galop/differential/corpus"
 	"github.com/martianoff/galop/differential/gala"
 	"github.com/martianoff/galop/differential/measure"
+	"github.com/martianoff/galop/differential/milvus"
 	"github.com/martianoff/galop/differential/mutate"
 	"github.com/martianoff/galop/differential/nativegala"
 	"github.com/martianoff/galop/differential/perf"
@@ -60,12 +65,16 @@ var (
 	runs        = flag.Int("runs", 5, "fresh processes per first-pass time, one per round (the median is kept)")
 	passes      = flag.Int("passes", 5, "warm samples per time, one per round (the median is kept)")
 	times       = flag.Bool("times", true, "measure wall-clock times (false: counters only)")
-	child       = flag.String("child", "", "internal: run one measurement in this fresh process (counters:<flavor> or time:<phase>:<workers>)")
+	child       = flag.String("child", "", "internal: run one measurement in this fresh process (counters:<flavor>, counters:milvus or time:<input>:<phase>:<workers>)")
 	inputFile   = flag.String("input_file", "", "internal, with -child: the input to measure, in galop-sample's format")
+	milvusExprs = flag.String("milvus", "", "Milvus's filter expressions, a JSON array of strings, by runfiles location or path")
 )
 
+// galaInputs are the inputs parsed with gala.g4's parsers.
+var galaInputs = []string{"corpus", "generated", "mutants"}
+
 // inputNames are the measured inputs.
-var inputNames = []string{"corpus", "generated", "mutants"}
+var inputNames = append(slices.Clone(galaInputs), "milvus")
 
 // flavors are galop's two output flavors, as the counters name them.
 var flavors = []string{"native", "antlrflavor"}
@@ -119,6 +128,8 @@ func run() int {
 	if *times {
 		for _, in := range inputNames {
 			measureTimes(r, inputs[in], in, files[in])
+		}
+		for _, in := range galaInputs {
 			measureConversion(r, inputs[in], in)
 		}
 		confirm(r, inputs, files)
@@ -168,25 +179,37 @@ func measureCounters(files map[string]string) map[string]int64 {
 	counters := map[string]int64{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for _, in := range inputNames {
+	add := func(in, flavor, kind string) {
+		wg.Go(func() {
+			var c map[string]int64
+			check(measure.Child(&c, "-child=counters:"+kind, "-input_file="+files[in]))
+			mu.Lock()
+			defer mu.Unlock()
+			for k, v := range c {
+				counters[flavor+"/"+in+"/"+k] = v
+			}
+		})
+	}
+	for _, in := range galaInputs {
 		for _, flavor := range flavors {
-			wg.Go(func() {
-				var c map[string]int64
-				check(measure.Child(&c, "-child=counters:"+flavor, "-input_file="+files[in]))
-				mu.Lock()
-				defer mu.Unlock()
-				for k, v := range c {
-					counters[flavor+"/"+in+"/"+k] = v
-				}
-			})
+			add(in, flavor, flavor)
 		}
 	}
+	add("milvus", "native", "milvus")
 	wg.Wait()
 	return counters
 }
 
-// timedPhases are the phases measureTimes times, in the order of each round.
-var timedPhases = []string{"native", "antlr", "lexer"}
+// timedPhases are the phases measureTimes times on an input, in the order of
+// each round. Every phase but native and lexer is a reference galop's time is
+// compared with: ANTLR as the GALA compiler runs it on gala.g4's inputs, and
+// on Milvus's ANTLR's default LL parse and Milvus's driver.
+func timedPhases(input string) []string {
+	if input == "milvus" {
+		return []string{"native", "antlr", "driver", "lexer"}
+	}
+	return []string{"native", "antlr", "lexer"}
+}
 
 // measureTimes times srcs, the input called name (written to file for the
 // children), and adds the times and ratios to r. The phases are timed in
@@ -194,23 +217,24 @@ var timedPhases = []string{"native", "antlr", "lexer"}
 // over the rounds of that round's ratio, so a slow stretch of a shared machine
 // slows both sides alike.
 func measureTimes(r perf.Report, srcs []string, name, file string) {
+	timed, do := timedPhases(name), phasesOf(name)
 	for _, workers := range []int{1, 32} {
 		reps := map[string]int{}
-		for _, phase := range timedPhases {
-			reps[phase] = calibrate(srcs, phases[phase], workers)
+		for _, phase := range timed {
+			reps[phase] = calibrate(srcs, do[phase], workers)
 		}
 		warmMS, firstMS := map[string][]float64{}, map[string][]float64{}
 		for range *passes {
-			for _, phase := range timedPhases {
-				warmMS[phase] = append(warmMS[phase], warm(srcs, phases[phase], workers, reps[phase]))
+			for _, phase := range timed {
+				warmMS[phase] = append(warmMS[phase], warm(srcs, do[phase], workers, reps[phase]))
 			}
 		}
 		for range *runs {
-			for _, phase := range timedPhases {
-				firstMS[phase] = append(firstMS[phase], first(phase, workers, file))
+			for _, phase := range timed {
+				firstMS[phase] = append(firstMS[phase], first(name, phase, workers, file))
 			}
 		}
-		for _, phase := range timedPhases {
+		for _, phase := range timed {
 			w, f := median(warmMS[phase]), median(firstMS[phase])
 			key := fmt.Sprintf("%s/w%d/%s/", name, workers, phase)
 			r.Info[key+"warm-ms"], r.Info[key+"first-ms"], r.Info[key+"gap-ms"] = w, f, f-w
@@ -221,7 +245,11 @@ func measureTimes(r perf.Report, srcs []string, name, file string) {
 		lexer := median(warmMS["lexer"])
 		for when, ms := range map[string]map[string][]float64{"warm": warmMS, "first": firstMS} {
 			key := fmt.Sprintf("%s/w%d/%s/", name, workers, when)
-			r.Ratios[key+"galop-vs-antlr"] = medianRatio(ms["native"], ms["antlr"])
+			for _, ref := range timed {
+				if ref != "native" && ref != "lexer" {
+					r.Ratios[key+"galop-vs-"+ref] = medianRatio(ms["native"], ms[ref])
+				}
+			}
 			r.Ratios[key+"galop-vs-lexer"] = median(ms["native"]) / lexer
 		}
 	}
@@ -290,11 +318,21 @@ func report(r perf.Report) int {
 	return 0
 }
 
-// phases are the timed operations.
-var phases = map[string]func(string){
-	"native": func(src string) { nativegala.Parse(src) },
-	"antlr":  func(src string) { gala.Lenient(gala.Tokens(src)) },
-	"lexer":  func(src string) { nativegala.Tokens(src) },
+// phasesOf are the operations timed on an input.
+func phasesOf(input string) map[string]func(string) {
+	if input == "milvus" {
+		return map[string]func(string){
+			"native": func(q string) { milvus.Native(q) },
+			"antlr":  func(q string) { milvus.LL(q) },
+			"driver": func(q string) { milvus.Driver(q) },
+			"lexer":  milvus.Lex,
+		}
+	}
+	return map[string]func(string){
+		"native": func(src string) { nativegala.Parse(src) },
+		"antlr":  func(src string) { gala.Lenient(gala.Tokens(src)) },
+		"lexer":  func(src string) { nativegala.Tokens(src) },
+	}
 }
 
 // runChild runs one measurement in this fresh process and prints it as JSON.
@@ -302,12 +340,18 @@ func runChild(srcs []string) {
 	kind, rest, _ := strings.Cut(*child, ":")
 	switch kind {
 	case "counters":
+		if rest == "milvus" {
+			check(json.NewEncoder(os.Stdout).Encode(milvusCounters(srcs)))
+			return
+		}
 		check(json.NewEncoder(os.Stdout).Encode(counters(rest, srcs)))
 	case "time":
-		phase, w, _ := strings.Cut(rest, ":")
+		parts := strings.Split(rest, ":")
+		input, phase := parts[0], parts[1]
 		var workers int
-		fmt.Sscan(w, &workers)
-		elapsed := measure.Once(func() { measure.Pass(srcs, phases[phase], workers) }).Elapsed
+		fmt.Sscan(parts[2], &workers)
+		do := phasesOf(input)[phase]
+		elapsed := measure.Once(func() { measure.Pass(srcs, do, workers) }).Elapsed
 		check(json.NewEncoder(os.Stdout).Encode(ms(elapsed)))
 	}
 }
@@ -358,6 +402,24 @@ func counters(flavor string, srcs []string) map[string]int64 {
 	return c
 }
 
+// milvusCounters parses Milvus's expressions once with the native flavor, in
+// a fresh process, then counts the allocations of one more pass on the warm
+// caches.
+func milvusCounters(qs []string) map[string]int64 {
+	c := map[string]int64{"files": int64(len(qs))}
+	for _, q := range qs {
+		if milvus.Native(q) {
+			c["accepted"]++
+		}
+	}
+	c["allocs-per-pass"] = int64(measure.Once(func() {
+		for _, q := range qs {
+			milvus.Native(q)
+		}
+	}).Allocs)
+	return c
+}
+
 // minSample is the shortest warm sample: shorter ones are mostly timer and
 // scheduling noise.
 const minSample = 50 * time.Millisecond
@@ -372,24 +434,23 @@ func calibrate(srcs []string, do func(string), workers int) int {
 	return int((minSample + one - 1) / one)
 }
 
-// warm is one warm pass in ms: passes run in batches of reps until they have
-// lasted at least minSample, and their time is averaged.
+// warm is one warm pass in ms: passes run in batches of reps, each batch on
+// one set of goroutines (measure.Passes), until they have lasted at least
+// minSample, and their time is averaged.
 func warm(srcs []string, do func(string), workers, reps int) float64 {
 	start := time.Now()
 	n := 0
 	for n == 0 || time.Since(start) < minSample {
-		for range reps {
-			measure.Pass(srcs, do, workers)
-		}
+		measure.Passes(srcs, do, workers, reps)
 		n += reps
 	}
 	return ms(time.Since(start)) / float64(n)
 }
 
 // first is the first pass of a fresh process over the input in file, in ms.
-func first(phase string, workers int, file string) float64 {
+func first(input, phase string, workers int, file string) float64 {
 	var v float64
-	check(measure.Child(&v, fmt.Sprintf("-child=time:%s:%d", phase, workers), "-input_file="+file))
+	check(measure.Child(&v, fmt.Sprintf("-child=time:%s:%s:%d", input, phase, workers), "-input_file="+file))
 	return v
 }
 
@@ -401,7 +462,7 @@ func median(xs []float64) float64 {
 	return s[len(s)/2]
 }
 
-// loadInputs reads the three inputs. The corpus subset and the mutants are
+// loadInputs reads the four inputs. The corpus subset and the mutants are
 // fixed by -every, -mutants and the mutator's seed, so every run measures the
 // same text.
 func loadInputs() (map[string][]string, error) {
@@ -423,7 +484,11 @@ func loadInputs() (map[string][]string, error) {
 	for i, f := range gen {
 		generated[i] = f.Src
 	}
-	inputs := map[string][]string{"corpus": subset, "generated": generated, "mutants": mutants(subset, *mutantCount)}
+	exprs, err := milvus.Load(corpus.Locate(*milvusExprs))
+	if err != nil {
+		return nil, err
+	}
+	inputs := map[string][]string{"corpus": subset, "generated": generated, "mutants": mutants(subset, *mutantCount), "milvus": exprs}
 	for in, srcs := range inputs {
 		if len(srcs) == 0 {
 			return nil, fmt.Errorf("input %s is empty: check -every and -mutants", in)

@@ -25,6 +25,7 @@ at build time, never checked in. `go.mod` here exists for Bazel's `go_deps`.
 | `mutate/` | The token-level mutants the tests and the fuzz runs use |
 | `measure/` | Timing helpers shared by `cmd/bench` and `cmd/perfgate` |
 | `errors/`, `repair/` | Test grammars (`Errors.g4`, `Repair.g4`) with both flavors and ANTLR's parser, checked against ANTLR (below) |
+| `milvus/` | Milvus's filter expressions (`exprs.json`, below) parsed by galop's native flavor of Milvus's `Plan.g4`, by ANTLR out of the box and by ANTLR as Milvus drives it: the performance gate's `milvus` input, and a test that galop builds ANTLR's tree for each |
 | `convert/` | For each test grammar and each corpus grammar with left-recursive rules: ANTLR's parser, both flavors and the converter, checked against each other (see [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md)) |
 | `lexdiff/` | galop's generated lexers (both flavors) against ANTLR's, token by token over the corpus; lexer benchmarks |
 | `cmd/treedump` | Print each file's tree (ANTLR's `ToStringTree`) |
@@ -131,6 +132,16 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
   `-Xleft-recursion`), that ANTLR's tree converted to the native tree is native
   parsing's tree, and that native error recovery reports ANTLR's errors; see
   [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md).
+
+## Milvus's filter expressions
+
+[`milvus/exprs.json`](milvus/exprs.json) holds 1,613 filter expressions taken from
+the string literals of Milvus's plan parser tests
+([milvus-io/milvus](https://github.com/milvus-io/milvus)
+`internal/parser/planparserv2/*_test.go` at `efb4bc44`, Apache-2.0): every literal
+that looks like an expression and that ANTLR's LL parse of Milvus's `Plan.g4`
+accepts, sorted and without duplicates. They are test data, not edited by hand; to
+refresh them, extract them again from a newer Milvus.
 
 ## Plugging in a parser
 
