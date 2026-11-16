@@ -155,7 +155,7 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
             val lr = an.Repair.LeftRecursion
             val allowed = opts.LeftRecursion && lr.Cycles.IsEmpty() && (f match {
                 case NativeFlavor(_) => true
-                case ANTLRFlavor() => false
+                case ANTLRFlavor() => true
             })
             if !lr.IsEmpty() && !allowed {
                 val names = lr.Direct.AppendAll(lr.Cycles.FlatMap((c) => c)).Distinct()

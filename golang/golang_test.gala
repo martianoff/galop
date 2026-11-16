@@ -567,3 +567,25 @@ func TestANTLRFlavorPassesEachCallsOwnState(t T) T {
     val t1 = IsTrue(t, stateA != "")
     IsTrue(t1, stateA != stateB)
 }
+
+func TestANTLRFlavorBuildsRecursionContexts(t T) T {
+    val code = parserOf(generate(
+        "grammar A;\ns : e EOF ;\ne : l=e '*' e # Mul | '-' e # Neg | X # Atom ;\nX : 'x' ;\n",
+        antlrDefines,
+        leftRecursion = true,
+    ))
+    val expected = ArrayOf(
+        // The rule takes its precedence; the entry calls it with 0.
+        "func (p *AGalopParser) ruleE(parent antlr.ParserRuleContext, invokingState int, _p int32) antlr.ParserRuleContext {",
+        "return p.ruleE(parent, invokingState, 0)",
+        // A labeled primary alternative replaces the rule's context.
+        "localctx = NewNegContext(p.AParser, localctx)",
+        // An op alternative's new context gets the context so far as its
+        // left operand and first child.
+        "localctx = NewMulContext(p.AParser, NewEContext(p.AParser, parent, invokingState))",
+        "localctx.(*MulContext).l = prev.(IEContext)",
+        "prev.SetParent(localctx)",
+        "localctx.AddChild(prev)",
+    )
+    expected.FoldLeft(t, (acc, s) => IsTrue(acc, strings.Contains(code, s)))
+}

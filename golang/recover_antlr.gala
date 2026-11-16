@@ -83,7 +83,9 @@ func (r *PFXRecovery) enter(rule, invoking int32) {
 	}
 	ctx := p.newContext(rule, parent, int(invoking))
 	ctx.SetStart(p.toks[p.pos])
-	if parent != nil {
+	// A left-recursive rule's context joins its parent when the rule ends
+	// (EnterRecursionRule, UnrollRecursionContexts).
+	if parent != nil && !PFXRuleRecursive[rule] {
 		parent.AddChild(ctx)
 	}
 	r.ctxs = append(r.ctxs, ctx)
@@ -92,11 +94,32 @@ func (r *PFXRecovery) enter(rule, invoking int32) {
 	}
 }
 
-// recursionStart is ANTLR's PushNewRecursionContext. The antlr flavor
-// rejects left-recursive rules until it generates them (DESIGN.md,
-// "Left-recursive rules"), so its recovering walk never starts one.
+// recursionStart starts an iteration of a left-recursive rule's loop with
+// op alternative alt (0 for an unlabeled one), as ANTLR's generated code
+// does: a new context of the rule, or of alt's label, made from the rule's
+// parent and invoking state, whose label left (if not 0) gets the rule's
+// context so far; then PushNewRecursionContext, which ends that context at
+// the last token read, makes it the new one's first child and starts the new
+// one where it started.
 func (r *PFXRecovery) recursionStart(alt uint8, left uint16) {
-	panic("galop: left-recursive rules are not generated in the antlr flavor yet")
+	p := r.e.p
+	n := len(r.ctxs) - 1
+	prev := r.ctxs[n]
+	rule := int32(prev.GetRuleIndex())
+	parent, _ := prev.GetParent().(antlr.ParserRuleContext)
+	ctx := p.newContext(rule, parent, prev.GetInvokingState())
+	if alt != 0 {
+		ctx = p.newAltContext(rule, alt, ctx)
+	}
+	if left != 0 {
+		p.setLabel(ctx, left, nil, prev)
+	}
+	prev.SetParent(ctx)
+	prev.SetInvokingState(int(PFXRuleStartState[rule]))
+	prev.SetStop(p.toks[p.pos-1])
+	ctx.SetStart(prev.GetStart())
+	ctx.AddChild(prev)
+	r.ctxs[n] = ctx
 }
 
 // enterOuterAlt makes the rule being parsed the labeled alternative alt:
@@ -106,7 +129,8 @@ func (r *PFXRecovery) enterOuterAlt(alt uint8) {
 	n := len(r.ctxs) - 1
 	old := r.ctxs[n]
 	ctx := r.e.p.newAltContext(int32(old.GetRuleIndex()), alt, old)
-	if parent, ok := old.GetParent().(antlr.ParserRuleContext); ok {
+	// A left-recursive rule's context is not among its parent's children yet.
+	if parent, ok := old.GetParent().(antlr.ParserRuleContext); ok && !PFXRuleRecursive[old.GetRuleIndex()] {
 		parent.RemoveLastChild()
 		parent.AddChild(ctx)
 	}
@@ -130,6 +154,9 @@ func (r *PFXRecovery) exit() (int32, int32) {
 	if n == 0 {
 		r.root = ctx
 		return -1, 0
+	}
+	if PFXRuleRecursive[ctx.GetRuleIndex()] {
+		r.top().AddChild(ctx)
 	}
 	invoking := int32(ctx.GetInvokingState())
 	if l := PFXStateLabel[invoking]; l != 0 {

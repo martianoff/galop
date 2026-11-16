@@ -307,7 +307,7 @@ func entryMethod(e env, r atn.RuleIR) string {
 // syntax error it reports each error ANTLR reports to the parser's error
 // listeners, and returns the context ANTLR's default error strategy builds.
 func (p *PARSER) METHOD() IFACE {
-	ctx, err := p.parse(p.RULEFUNC, START, REPAIR)
+	ctx, err := p.parse(RULEREF, START, REPAIR)
 	if err != nil {
 		ctx, _ = p.recoverParse(INDEX)
 	}
@@ -317,21 +317,29 @@ func (p *PARSER) METHOD() IFACE {
 // ParseMETHOD parses the input as RULE. On a syntax error it returns the first
 // error ANTLR reports and no tree, and reports nothing to the error listeners.
 func (p *PARSER) ParseMETHOD() (IFACE, error) {
-	ctx, err := p.parse(p.RULEFUNC, START, REPAIR)
+	ctx, err := p.parse(RULEREF, START, REPAIR)
 	if err != nil {
 		return nil, err
 	}
 	return ctx.(IFACE), nil
 }
-`, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "ANTLRPARSER", e.names.ParserType(), "RULEFUNC", e.ruleFunc(r.Index),
+`, "METHOD", method, "IFACE", iface, "PARSER", e.parserType, "ANTLRPARSER", e.names.ParserType(), "RULEREF", antlrRuleRef(e, r),
         "RULE", r.Name, "INDEX", s"${r.Index}", "REPAIR", s"${e.repairPlan.Repairs(r.Index)}", "START", s"${e.parser.RuleStart.Get(r.Index)}")
 }
 
-// emitRule emits the antlr flavor's function that parses one rule.
+// antlrRuleRef is rule r's function as an entry point calls it: a rewritten
+// left-recursive rule's with precedence 0, as ANTLR's entry method calls it.
+func antlrRuleRef(e env, r atn.RuleIR) string =
+    if (r.Rewrite.IsDefined()) s"func(parent antlr.ParserRuleContext, invokingState int) antlr.ParserRuleContext { return p.${e.ruleFunc(r.Index)}(parent, invokingState, 0) }"
+    else s"p.${e.ruleFunc(r.Index)}"
+
+// emitRule emits the antlr flavor's function that parses one rule. A
+// rewritten left-recursive rule's takes the precedence it is called with.
 func emitRule(e env, r atn.RuleIR) string {
     val ctxType = e.names.Context(r.Name)
+    val precedence = if (r.Rewrite.IsDefined()) ", _p int32" else ""
     val header = ArrayOf(
-        s"func (p *${e.parserType}) ${e.ruleFunc(r.Index)}(parent antlr.ParserRuleContext, invokingState int) antlr.ParserRuleContext {",
+        s"func (p *${e.parserType}) ${e.ruleFunc(r.Index)}(parent antlr.ParserRuleContext, invokingState int$precedence) antlr.ParserRuleContext {",
         s"\tvar localctx antlr.ParserRuleContext = New$ctxType(p.${e.names.ParserType()}, parent, invokingState)",
         "\tp.enter(localctx)",
     )
@@ -341,7 +349,7 @@ func emitRule(e env, r atn.RuleIR) string {
     val body = ruleBody(e, r, (alt, ind) => alt.Label match {
         case Some(l) => ArrayOf(s"${ind}localctx = New${e.names.Context(l)}(p.${e.names.ParserType()}, localctx)")
             .AppendAll(emitSteps(e, alt.Steps, ind, scope(CtxType = e.names.Context(l))))
-        case None() => emitSteps(e, alt.Steps, ind, scope(CtxType = ctxType))
+        case None() => emitSteps(e, alt.Steps, ind, scope(CtxType = ctxType, Rule = r.Index))
     })
     header.AppendAll(body).AppendAll(ArrayOf("\tp.exit(localctx)", "\treturn localctx", "}")).MkString("\n") + "\n"
 }
@@ -381,8 +389,19 @@ func (e env) decideCall(d int) string = if (e.precedenceDecision(d)) s"p.decide$
 // function takes the precedence it is called with.
 func (e env) recursive(index int) bool = e.rules.Get(index).Rewrite.IsDefined()
 
+// emitSteps emits steps in order. A step that changes a rewritten rule's
+// context changes the context type the steps after it store labels in.
 func emitSteps(e env, steps Array[atn.Step], ind string, sc scope) Array[string] =
-    steps.FlatMap((s) => emitStep(e, s, ind, sc))
+    steps.FoldLeft((EmptyArray[string](), sc), (acc, s) => (acc.V1.AppendAll(emitStep(e, s, ind, acc.V2)), stepScope(e, s, acc.V2))).V1
+
+// stepScope is the scope of the steps after s: a rewritten rule's labeled
+// primary alternative goes on in its label's context, an op alternative in
+// its label's or the rule's.
+func stepScope(e env, s atn.Step, sc scope) scope = s match {
+    case atn.ReplaceContext(label) => sc.Copy(CtxType = e.names.Context(label))
+    case atn.RecursionStart(label, _) => sc.Copy(CtxType = e.names.Context(label.GetOrElse(e.ruleName(sc.Rule))))
+    case _ => sc
+}
 
 // emitStep emits one step. The flavors differ only in how a token is matched
 // and how a rule's result is attached and labeled; the decisions are the same.
@@ -395,7 +414,7 @@ func emitStep(e env, s atn.Step, ind string, sc scope) Array[string] = s match {
         val push = if (e.adaptive) ArrayOf(s"$ind\tp.stack = append(p.stack, $follow)") else EmptyArray[string]()
         val pop = if (e.adaptive) ArrayOf(s"$ind\tp.stack = p.stack[:len(p.stack)-1]") else EmptyArray[string]()
         val (call, attach) = e.flavor match {
-            case ANTLRFlavor() => (s"p.${e.ruleFunc(rule)}(localctx, $from)", "localctx.AddChild(child)")
+            case ANTLRFlavor() => (s"p.${e.ruleFunc(rule)}(localctx, $from${if (e.recursive(rule)) s", $precedence" else ""})", "localctx.AddChild(child)")
             case NativeFlavor(_) => (s"p.${e.ruleFunc(rule)}(${if (e.recursive(rule)) s"$precedence" else ""})", "p.kids = append(p.kids, child)")
         }
         val store = label match {
@@ -423,20 +442,44 @@ func emitStep(e env, s atn.Step, ind string, sc scope) Array[string] = s match {
         .Append(s"$ind}")
     case atn.RunAction(body) => ArrayOf(ind + strings.TrimSpace(body))
     case atn.CheckPredicate(body) => ArrayOf(s"${ind}if !(${strings.TrimSpace(body)}) {", s"$ind\tp.noViableAlt(-1)", s"$ind}")
-    // A rewritten left-recursive rule's steps; the antlr flavor rejects such
-    // rules until its code generation for them lands (DESIGN.md).
-    case atn.CheckPrecedence(level) => e.flavor match {
-        case NativeFlavor(_) => ArrayOf(s"${ind}if $level < _p {", s"$ind\tp.noViableAlt(-1)", s"$ind}")
-        case ANTLRFlavor() => EmptyArray[string]()
-    }
+    // A rewritten left-recursive rule's steps.
+    case atn.CheckPrecedence(level) => ArrayOf(s"${ind}if $level < _p {", s"$ind\tp.noViableAlt(-1)", s"$ind}")
     case atn.RecursionStart(label, left) => e.flavor match {
         case NativeFlavor(_) => recursionStart(e, ind, sc, label, left)
-        case ANTLRFlavor() => EmptyArray[string]()
+        case ANTLRFlavor() => antlrRecursionStart(e, ind, sc, label, left)
     }
     case atn.ReplaceContext(label) => e.flavor match {
         case NativeFlavor(_) => ArrayOf(s"${ind}alt = ${sc.AltLabels.IndexOf(label) + 1}")
-        case ANTLRFlavor() => EmptyArray[string]()
+        // ANTLR's recRuleReplaceContext: the label's context copies the
+        // rule's, none of its children.
+        case ANTLRFlavor() => ArrayOf(s"${ind}localctx = New${e.names.Context(label)}(p.${e.names.ParserType()}, localctx)")
     }
+}
+
+// antlrRecursionStart starts an iteration of a rewritten rule's loop as
+// ANTLR's generated code does: a new context of the alternative's label (or
+// the rule's), whose left operand label gets the rule's context so far, then
+// PushNewRecursionContext, which ends that context at the last token read
+// and makes it the new one's first child, starting where it did.
+func antlrRecursionStart(e env, ind string, sc scope, label Option[string], left Option[atn.LabelRef]) Array[string] {
+    val ruleName = e.ruleName(sc.Rule)
+    val parser = s"p.${e.names.ParserType()}"
+    val fresh = s"New${e.names.Context(ruleName)}($parser, parent, invokingState)"
+    val ctx = label.Map((l) => s"New${e.names.Context(l)}($parser, $fresh)").GetOrElse(fresh)
+    val store = left.Map((l) => {
+        val field = s"localctx.(*${e.names.Context(label.GetOrElse(ruleName))}).${e.names.LabelField(l.Name)}"
+        val value = s"prev.(${e.names.ContextInterface(ruleName)})"
+        ArrayOf(s"$ind\t" + (if (l.Append) s"$field = append($field, $value)" else s"$field = $value"))
+    }).GetOrElse(EmptyArray[string]())
+    ArrayOf(s"$ind{", s"$ind\tprev := localctx", s"$ind\tp.exit(prev)", s"$ind\tlocalctx = $ctx")
+        .AppendAll(store)
+        .AppendAll(ArrayOf(
+            s"$ind\tprev.SetParent(localctx)",
+            s"$ind\tprev.SetInvokingState(${e.parser.RuleStart.Get(sc.Rule)})",
+            s"$ind\tlocalctx.SetStart(prev.GetStart())",
+            s"$ind\tlocalctx.AddChild(prev)",
+            s"$ind}",
+        ))
 }
 
 // recursionStart starts an iteration of a rewritten rule's loop in the native
