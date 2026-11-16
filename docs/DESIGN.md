@@ -143,16 +143,16 @@ runtime prediction and the speed ratios from regressing (see
   `TokensStart` with one alternative per token rule, `RuleTokenType` per rule.
   Lexer commands sit on `LexerActions` transitions at the end of an alternative.
 
-### Left-recursive rules (in progress)
+### Left-recursive rules
 
-Status: experimental, being finished in phases (below). `-report` analyzes a
-directly left-recursive rule; both flavors generate one, with error recovery and
-the converter, behind the experimental `-Xleft-recursion` option (phases 1 to 5,
-released in galop 0.4.0); without it, code generation rejects such a rule (error
-500). Of phase 6, a test grammar with each shape of alternative
-(`Shapes.g4`) and the four corpus grammars are in and checked against ANTLR by
-`//differential/convert`, and the performance gate holds Milvus's filter
-expressions to the 10× target below; what remains is to drop the option.
+Status: done. Both flavors generate directly left-recursive rules, with error
+recovery and the converter. `//differential/convert` checks them against ANTLR
+on a test grammar with each shape of alternative (`Shapes.g4`) and on four
+corpus grammars (Milvus's filter expressions, CEL, SigNoz's having expressions,
+Grule), and the performance gate holds Milvus's filter expressions to the 10×
+target below. They were built in the phases below; in galop 0.4.0 they were
+experimental, behind the `-Xleft-recursion` option, which is now accepted and
+has no effect.
 
 ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
 (`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse
@@ -284,7 +284,7 @@ machine with 32 hardware threads:
 | 32 goroutines | 68k expressions/s | 104k expressions/s | ≥ 1.04M expressions/s |
 | one goroutine, warm | 20.5 µs | 12.6 µs | reported |
 
-Measured with phase 3 (`-Xleft-recursion`), all in one session on the same
+Measured with phase 3, all in one session on the same
 machine (the ANTLR numbers vary by about 20% between sessions):
 
 | | ANTLR, default LL | ANTLR, Milvus's driver | galop, native |

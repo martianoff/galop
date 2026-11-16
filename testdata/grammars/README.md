@@ -16,5 +16,5 @@ copying again from upstream, and record the new source below.
 upstream.
 
 `CEL.g4`, `HavingExpression.g4`, `Plan.g4` and `grulev3.g4` have left-recursive rules.
-`//differential/convert` builds both flavors of each with `-Xleft-recursion` and checks
+`//differential/convert` builds both flavors of each and checks
 them against ANTLR on generated sentences and mutants.

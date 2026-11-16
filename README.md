@@ -173,7 +173,6 @@ galop options:
  -format             print each grammar in canonical form
  -report             print the decisions static lookahead cannot settle
  -Xno-brackets       predict over tokens only, never reading a bracketed group as one
- -Xleft-recursion    generate left-recursive rules (experimental)
  -version            print the galop version
  -help               print this help
 ```
@@ -349,13 +348,14 @@ Not supported yet, and reported as errors rather than ignored: rule arguments,
 `returns`/`locals`, rule-level options and actions, element options other than
 `<assoc=left|right>` on an alternative, lexer modes, grammar imports, the
 `tokenVocab` and `caseInsensitive` options, and in the Go target, semantic
-predicates. Directly left-recursive rules (`e : e '+' e | INT`) are rewritten into
-a precedence loop as ANTLR rewrites them, which `-report` shows. Code generation
-for them is experimental (see [design](docs/DESIGN.md#left-recursive-rules-in-progress)):
-with the `-Xleft-recursion` option both flavors generate them, error recovery and
-the converter included, checked against ANTLR on Milvus's, CEL's,
-SigNoz's and Grule's grammars; without it they are rejected (error 500).
-Mutually left-recursive rules are an error, as in
+predicates.
+
+Directly left-recursive rules (`e : e '+' e | INT`) are rewritten into a
+precedence loop as ANTLR rewrites them, which `-report` shows, and both flavors
+generate them, error recovery and the converter included (see
+[design](docs/DESIGN.md#left-recursive-rules)). They are checked against ANTLR on
+a grammar with each shape of alternative and on Milvus's, CEL's, SigNoz's and
+Grule's grammars. Mutually left-recursive rules are an error, as in
 ANTLR (error 119), and so is a left-recursive rule with no other alternative
 (147); `-check` does not report ANTLR's errors for left recursion its rewrite
 cannot handle (148, 169).

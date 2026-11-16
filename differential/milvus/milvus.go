@@ -3,8 +3,7 @@
 // left-recursive, and the input is exprs.json, the expressions of Milvus's plan
 // parser tests (see the differential README for its source).
 //
-// It parses them three ways: galop's native flavor (generated with
-// -Xleft-recursion), ANTLR's default LL parse, which galop reproduces, and
+// It parses them three ways: galop's native flavor, ANTLR's default LL parse, which galop reproduces, and
 // Milvus's own driver around ANTLR's parser.
 package milvus
 

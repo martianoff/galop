@@ -431,14 +431,22 @@ func TestMutualLeftRecursion(t T) T {
 }
 
 // directLeftRecursion has two left-recursive alternatives, which the analysis
-// cannot finish as written.
+// could not finish as written: it runs on the rule ANTLR's rewrite makes.
 val directLeftRecursion = "grammar L;\ns : e EOF ;\ne : e '*' e | e '+' e | X ;\nX : 'x' ;\n"
 
-func TestGenerateRejectsDirectLeftRecursion(t T) T {
+func TestGenerateDirectLeftRecursion(t T) T {
+    // The rewritten rule goes to the target like any other.
     val m = newMemory(("L.g4", directLeftRecursion))
-    val t1 = Eq(t, run(m, ArrayOf(fakeGo), "L.g4"),
-        Outcome("", "error(500): L.g4:3:0: galop does not support left-recursive rule e yet\n", 1))
-    Eq(t1, m.writes, EmptyArray[string]())
+    val t1 = Eq(t, run(m, ArrayOf(fakeGo), "L.g4"), Outcome("", "", 0))
+    Eq(t1, m.writes, ArrayOf("l_galop_lexer.go"))
+}
+
+func TestLeftRecursionFlagIsAccepted(t T) T {
+    // The option that turned left recursion on while it was experimental
+    // (galop 0.4.0) is accepted and changes nothing.
+    val m = newMemory(("L.g4", directLeftRecursion))
+    val t1 = Eq(t, run(m, ArrayOf(fakeGo), "-Xleft-recursion L.g4"), Outcome("", "", 0))
+    Eq(t1, ParseArgs(ArrayOf("-Xleft-recursion", "L.g4")).Config, ParseArgs(ArrayOf("L.g4")).Config)
 }
 
 func TestReportOnDirectLeftRecursion(t T) T {

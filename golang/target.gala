@@ -149,18 +149,14 @@ func flavorParserFile(in codegen.Input, opts codegen.Options, version string, f 
     }
     (compiled.Parser, in.Analysis) match {
         case (Some(parser), Some(an)) => {
-            // ANTLR rewrites directly left-recursive rules into precedence loops
-            // (the front end reports other left recursion as error 119); parsed
-            // as written, they would call themselves forever.
-            val lr = an.Repair.LeftRecursion
-            val allowed = opts.LeftRecursion && lr.Cycles.IsEmpty() && (f match {
-                case NativeFlavor(_) => true
-                case ANTLRFlavor() => true
-            })
-            if !lr.IsEmpty() && !allowed {
-                val names = lr.Direct.AppendAll(lr.Cycles.FlatMap((c) => c)).Distinct()
-                    .Map((i) => compiled.Rules.Get(i).Name).MkString(", ")
-                return Left(ArrayOf(s"Go target: left-recursive rules are not supported yet: $names"))
+            // Directly left-recursive rules arrive rewritten into precedence
+            // loops, as ANTLR rewrites them. Other left recursion is ANTLR's
+            // error 119, which the front end reports; parsed as written, such
+            // rules would call each other forever.
+            val cycles = an.Repair.LeftRecursion.Cycles
+            if cycles.NonEmpty() {
+                val names = cycles.FlatMap((c) => c).Distinct().Map((i) => compiled.Rules.Get(i).Name).MkString(", ")
+                return Left(ArrayOf(s"Go target: mutually left-recursive rules: $names"))
             }
             val grammar = in.Grammar.Name
             val base = baseName(in.Grammar)

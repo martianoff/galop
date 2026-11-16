@@ -115,9 +115,8 @@ both corpora and both generated sets:
 - **`//differential/convert`** builds every test grammar (Expr, Calc, Labels, Errors,
   Repair, Recovery, Shapes) and the corpus grammars with left-recursive rules
   (Milvus's Plan, CEL, SigNoz's HavingExpression, Grule) with ANTLR, the antlr flavor
-  with the converter and the native flavor with its listener and visitor; the
-  grammars with left-recursive rules are generated with `-Xleft-recursion`. It runs the two checks above on sentences `galop-sample`
-  generates and on mutants of them, and walks every tree with `Typed`, `Accept` and
+  with the converter and the native flavor with its listener and visitor. It runs
+  the two checks above on sentences `galop-sample` generates and on mutants of them, and walks every tree with `Typed`, `Accept` and
   `Walk`. Labels.g4 holds the labels ANTLR's fields keep only the last match of;
   Shapes.g4 holds each shape of left-recursive alternative ANTLR's rewrite tells apart
   (binary left- and right-associative, with a middle part or an operator rule;
@@ -175,7 +174,7 @@ bazel test //differential/diff:generated_large_1_test   # one of the four large 
 - **mutants:** 100 mutants of the corpus subset (seed 1);
 - **milvus:** the 1,613 filter expressions of Milvus's plan parser tests
   ([`differential/milvus`](../differential/milvus), about 33 bytes each), parsed
-  with Milvus's `Plan.g4` (generated with `-Xleft-recursion`).
+  with Milvus's `Plan.g4`.
   `//differential/milvus:milvus_test` checks that galop builds ANTLR's tree for each.
 
 ### Counters
@@ -229,7 +228,7 @@ ratios measured in the same job:
 
 **The 10× bar.** galop's target on left-recursive expression grammars is at least 10
 times ANTLR's throughput on 32 goroutines, against both of Milvus's baselines (see
-[DESIGN.md](DESIGN.md#left-recursive-rules-in-progress)). The baseline's rules hold
+[DESIGN.md](DESIGN.md#left-recursive-rules)). The baseline's rules hold
 `milvus/w32/warm/galop-vs-antlr` and `milvus/w32/warm/galop-vs-driver` to a fixed bar
 of 0.1, whatever their baseline. Limited to four cores as on the CI runner
 (`GOMAXPROCS=4` on a 32-thread machine), galop parsed 1.81M expressions/s against 30k and 44k, about 60 and 40
