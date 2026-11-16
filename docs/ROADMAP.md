@@ -169,6 +169,9 @@ Roughly by payoff, and not before M4 ships:
 - **A drop-in for existing `.g4` grammars in Go.** The public
   [grammars-v4](https://github.com/antlr/grammars-v4) collection is both the test corpus
   (differential against ANTLR) and the adoption path.
+  Directly left-recursive rules, which most expression grammars use (Milvus's filter
+  expressions, CEL, SigNoz, Grule), are experimental since galop 0.4.0
+  (`-Xleft-recursion`); see [DESIGN.md](DESIGN.md#left-recursive-rules-in-progress).
 - **The conflict report as a feature.** ANTLR hides ambiguity until it is slow in
   production; galop names it at build time.
 - **GALA as an output target**, for DSL parsers written in GALA.

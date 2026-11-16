@@ -3,15 +3,19 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
-## Unreleased
+## 0.4.0
 
-- **Added:** directly left-recursive rules (`e : e '*' e | e '+' e | INT`) are
-  rewritten into a precedence loop as ANTLR 4.13.1 rewrites them: the same
-  classification of alternatives (binary, prefix, suffix, other), precedences,
-  loop order, precedence arguments and labels. `-report` shows the rewritten
-  rule; code generation for such rules is being built and still rejects them
-  (error 500). A left-recursive rule with no other alternative is ANTLR's error
-  147.
+- **Added (experimental):** directly left-recursive rules
+  (`e : e '*' e | e '+' e | INT`) are rewritten into a precedence loop as
+  ANTLR 4.13.1 rewrites them: the same classification of alternatives (binary,
+  prefix, suffix, other), precedences, loop order, precedence arguments and
+  labels. `-report` shows the rewritten rule. With the experimental
+  `-Xleft-recursion` option, both flavors generate such rules, with ANTLR's
+  precedence predicates in prediction, error recovery and the converter; the
+  corpus now holds four grammars that use them (Milvus's filter expressions,
+  CEL, SigNoz's having expressions, Grule), checked against ANTLR. Without the
+  option, code generation still rejects them (error 500). A left-recursive rule
+  with no other alternative is ANTLR's error 147.
 - **Added:** `<assoc=left>` and `<assoc=right>` at the start of an alternative;
   another `assoc` value is ANTLR's warning 84.
 
@@ -31,6 +35,11 @@ lists every merged pull request.
   `Expected`, the token types ANTLR's `GetExpectedTokens()` gives an error
   listener at that error, so code that builds "expecting one of ..." messages
   from ANTLR's listener can move to the native flavor.
+- **Changed:** the native flavor's `Parse` functions reuse parsers from a pool,
+  keeping their buffers between parses (on Milvus's filter expressions, 10
+  allocations per parse instead of 16). Where the first-error replay finds only
+  the alternatives ANTLR's prediction falls back on, the answer is cached by
+  entry rule and token types (at most 4,096 inputs of at most 1,024 tokens).
 - **Fixed:** code generation and `-report` no longer run without end on a
   directly left-recursive rule with more than one left-recursive alternative
   (`e : e '*' e | e '+' e | INT`); they report error 500 at the rule, as for
