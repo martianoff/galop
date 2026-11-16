@@ -44,6 +44,10 @@ type Rule struct {
 	Tolerance float64 `json:"tolerance"`
 	// ReportOnly numbers are shown but never fail the gate.
 	ReportOnly bool `json:"report_only,omitempty"`
+	// Max, when set, is a fixed bar instead of the baseline: a matching number
+	// above it fails, one at or below it is ok, whatever the baseline says.
+	// The 10x target over ANTLR is such a bar (a ratio of at most 0.1).
+	Max float64 `json:"max,omitempty"`
 }
 
 // Baseline is the checked-in reference a run is judged against.
@@ -81,7 +85,8 @@ type Finding struct {
 }
 
 // Judge compares r with b: a number is worse when it exceeds its baseline by
-// more than its rule's tolerance, and missing when b has it and r does not.
+// more than its rule's tolerance, or its rule's bar, and missing when b has it
+// and r does not.
 func Judge(r Report, b Baseline) []Finding {
 	return append(judge(r.Counters, b.Counters, "counter", b), judge(r.Ratios, b.Ratios, "ratio", b)...)
 }
@@ -93,6 +98,10 @@ func judge[V int64 | float64](got, want map[string]V, kind string, b Baseline) [
 		f := Finding{Name: name, Got: float64(got[name]), Want: float64(w), Kind: kind}
 		rule := b.rule(name)
 		switch {
+		case rule.Max > 0 && f.Got > rule.Max:
+			f.Verdict = "worse"
+		case rule.Max > 0:
+			f.Verdict = "ok"
 		case rule.ReportOnly:
 			f.Verdict = "reported"
 		case !ok:

@@ -13,11 +13,13 @@ func TestJudge(t *testing.T) {
 			Ratios: map[string]float64{
 				"corpus/w1/warm/galop-vs-antlr":  0.10,
 				"corpus/w32/warm/galop-vs-lexer": 5,
+				"milvus/w32/warm/galop-vs-antlr": 0.02,
 			},
 		},
 		Rules: []Rule{
 			{Pattern: "*/*/allocs-per-pass", Tolerance: 0.01},
 			{Pattern: "*/w32/*/galop-vs-lexer", ReportOnly: true},
+			{Pattern: "milvus/w32/warm/galop-vs-antlr", Max: 0.1},
 			{Pattern: "*/*/*/*", Tolerance: 0.3},
 		},
 	}
@@ -35,6 +37,8 @@ func TestJudge(t *testing.T) {
 		{"a ratio within the tolerance", Report{Ratios: map[string]float64{"corpus/w1/warm/galop-vs-antlr": 0.129}}, "ok"},
 		{"a ratio past the tolerance", Report{Ratios: map[string]float64{"corpus/w1/warm/galop-vs-antlr": 0.131}}, "worse"},
 		{"a report-only ratio never fails", Report{Ratios: map[string]float64{"corpus/w32/warm/galop-vs-lexer": 50}}, "reported"},
+		{"a ratio under its bar is ok, though worse than the baseline", Report{Ratios: map[string]float64{"milvus/w32/warm/galop-vs-antlr": 0.09}}, "ok"},
+		{"a ratio over its bar fails", Report{Ratios: map[string]float64{"milvus/w32/warm/galop-vs-antlr": 0.11}}, "worse"},
 		{"a number the baseline lacks is new", Report{Counters: map[string]int64{"native/generated/predictions": 5}}, "new"},
 	}
 	t.Run("a number the run lacks is missing", func(t *testing.T) {

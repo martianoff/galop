@@ -6,8 +6,10 @@ Two harnesses guard the generated parsers.
 - **The performance gate** checks that a change does not make galop slower or
   make it predict more at runtime.
 
-Both run on `gala.g4` in the [differential harness](../differential/README.md).
-The input generator works for any grammar galop accepts.
+Both run on `gala.g4` in the [differential harness](../differential/README.md),
+and the performance gate also on Milvus's filter expressions (Milvus's `Plan.g4`,
+whose expression rule is left-recursive). The input generator works for any grammar
+galop accepts.
 
 ```mermaid
 flowchart LR
@@ -22,9 +24,11 @@ flowchart LR
   v --> q["perfgate"]
   i --> q
   c --> q
+  x["Milvus's filter expressions"] --> q
   q --> b{"vs baseline.json"}
   b -- "counters: exact" --> r["report / fail"]
   b -- "ratios: tolerance" --> r
+  b -- "Milvus on 32 goroutines: 10x bar" --> r
 ```
 
 ## Generated input: `galop-sample`
@@ -159,17 +163,22 @@ bazel test //differential/diff:generated_large_1_test   # one of the four large 
 
 ## The performance gate: `perfgate`
 
-`bazel run //differential/cmd/perfgate` measures three fixed inputs:
+`bazel run //differential/cmd/perfgate` measures four fixed inputs:
 
 - **corpus:** every third file of the GALA corpus (241 files);
 - **generated:** `//differential:samples`;
-- **mutants:** 100 mutants of the corpus subset (seed 1).
+- **mutants:** 100 mutants of the corpus subset (seed 1);
+- **milvus:** the 1,613 filter expressions of Milvus's plan parser tests
+  ([`differential/milvus`](../differential/milvus), about 33 bytes each), parsed
+  with Milvus's `Plan.g4` (generated with `-Xleft-recursion`).
+  `//differential/milvus:milvus_test` checks that galop builds ANTLR's tree for each.
 
 ### Counters
 
 Counters are deterministic, so they are gated exactly. Each is measured on one
 goroutine in a fresh process, so the process-wide caches start empty. They are taken
-for both flavors.
+for both flavors on gala.g4's inputs; on milvus, for the native flavor, only
+`allocs-per-pass`, `files` and `accepted`.
 
 | Counter | Meaning |
 |---|---|
@@ -198,16 +207,30 @@ Three operations are timed on 1 and on 32 goroutines:
 - ANTLR, running the GALA compiler's strategy;
 - the native lexer alone, which is the floor every parse pays.
 
+On milvus there is a fourth: ANTLR's parser as Milvus drives it (`driver`: a pooled
+lexer and parser, SLL prediction first, LL again only after an SLL error), next to
+ANTLR used out of the box (`antlr`: a fresh parser in its default LL mode, which is
+what galop reproduces).
+
 Each is timed both warm and as the first pass in a fresh process.
 
 Absolute times depend on the machine and are only reported, so the gate judges
 ratios measured in the same job:
 
 - **`…/galop-vs-antlr`:** galop's time over ANTLR's.
+- **`milvus/…/galop-vs-driver`:** galop's time over Milvus's driver's.
 - **`…/galop-vs-lexer`:** galop's time over the lexer's warm time. The lexer's first
   pass is too short to time well.
 
-The ratios on 32 goroutines are only reported. The CI runner has four cores, and two
+**The 10× bar.** galop's target on left-recursive expression grammars is at least 10
+times ANTLR's throughput on 32 goroutines, against both of Milvus's baselines (see
+[DESIGN.md](DESIGN.md#left-recursive-rules-in-progress)). The baseline's rules hold
+`milvus/w32/warm/galop-vs-antlr` and `milvus/w32/warm/galop-vs-driver` to a fixed bar
+of 0.1, whatever their baseline. Limited to four cores as on the CI runner
+(`GOMAXPROCS=4` on a 32-thread machine), galop parsed 1.81M expressions/s against 30k and 44k, about 60 and 40
+times, so the bar has a wide margin over the runner's noise.
+
+Apart from the 10× bar, the ratios on 32 goroutines are only reported. The CI runner has four cores, and two
 runs of the same code differed by up to a third there. Ratios on one goroutine moved
 by up to 25%, and first-pass ratios by up to a third, so they are judged within
 40%. A whole measurement can still run in a slow stretch of the runner: a change to
@@ -218,12 +241,16 @@ times; a slow stretch rarely is.
 
 To keep the ratios stable on a shared runner:
 
-- The three operations are timed in rounds, one sample of each per round. Each ratio
+- The operations are timed in rounds, one sample of each per round. Each ratio
   is the median over rounds of that round's ratio, so a slow stretch slows both sides
   alike.
 - Before timing, two untimed passes fill the caches. A warm pass is then timed to
   work out how many passes make a 50 ms sample (rounded up), and each sample runs
   passes until it has lasted at least 50 ms.
+- On 32 goroutines the goroutines of a warm sample share all its passes, taking
+  sources from one index, so none waits for the others between passes: on Milvus's
+  expressions a pass lasts about a millisecond, and starting and joining the
+  goroutines each pass would be timed as parsing.
 - A ratio fails only when it exceeds its baseline by more than its rule's tolerance.
 
 The gaps (first pass minus warm) are reported for galop and for the lexer. The
@@ -294,6 +321,8 @@ How each number is judged is policy, kept in the baseline file rather than in co
   {"pattern": "*/*/files", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/accepted", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/allocs-per-pass", "tolerance": 0.01},
+  {"pattern": "milvus/w32/warm/galop-vs-antlr", "tolerance": 0, "max": 0.1},
+  {"pattern": "milvus/w32/warm/galop-vs-driver", "tolerance": 0, "max": 0.1},
   {"pattern": "*/w32/*/*", "tolerance": 0, "report_only": true},
   {"pattern": "*/*/*/*", "tolerance": 0.4}
 ]
@@ -301,6 +330,8 @@ How each number is judged is policy, kept in the baseline file rather than in co
 
 - A number may exceed its baseline by `tolerance` (0.4 allows 40%) before it is
   `worse`.
+- A number whose rule has `max` is judged against that fixed bar instead of its
+  baseline: above it is `worse`, at or below it `ok`.
 - A `report_only` number is shown and never fails the gate. `files` and `accepted`
   are report-only because the parity tests already fail on any difference from ANTLR
   in what parses; fewer accepted files is a correctness failure there, not a speed-up.

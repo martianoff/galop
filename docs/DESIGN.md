@@ -150,8 +150,9 @@ directly left-recursive rule; both flavors generate one, with error recovery and
 the converter, behind the experimental `-Xleft-recursion` option (phases 1 to 5,
 released in galop 0.4.0); without it, code generation rejects such a rule (error
 500). Of phase 6, the four corpus grammars are in and checked against ANTLR by
-`//differential/convert`; the per-shape test grammars and the benchmarks in the
-performance gate remain, and then the option goes away.
+`//differential/convert`, and the performance gate holds Milvus's filter
+expressions to the 10× target below; the per-shape test grammars remain, and then
+the option goes away.
 
 ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
 (`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse
@@ -297,8 +298,10 @@ each time over a real ambiguity (19% of ten times longer ones, about 4 times
 each). So the precedence decisions are settled at generation time wherever the
 analysis can prove ANTLR's answer: the next token and a comparison with the
 current precedence, no runtime prediction. The runtime port above is the exact
-fallback for the rest, which should be rare. The benchmark joins the performance
-gate with the 10× ratio as its bar in phase 6.
+fallback for the rest, which should be rare. The performance gate times these
+expressions on every pull request, against both baselines, and fails when galop's
+warm throughput on 32 goroutines is under 10 times either one (see
+[FUZZ_AND_PERF.md](FUZZ_AND_PERF.md#the-performance-gate-perfgate)).
 
 ## Analysis (`analysis`)
 
