@@ -420,13 +420,23 @@ type PFXPredictor struct {
 	alt1       PFXMap
 }
 
-// busyKey is c's key in the closure's busy set: ANTLR's configurations
-// differ in their precedenceFilterSuppressed flag too.
-func (pr *PFXPredictor) busyKey(c PFXConfig) uint64 {
+// busyKey is c's key, met at depth, in the closure's busy set. ANTLR's
+// configurations differ in their precedenceFilterSuppressed flag too
+// (bit 63). And what c reaches depends on whether precedence predicates
+// apply to it (bit 61; see passes): ANTLR's closure marks no state busy on
+// an epsilon path, so a state a filtered path met in the decision's own
+// rule invocation is followed again when the closure returns to it from
+// outside, where the predicates are epsilon. Bit 62 marks loopEntry's keys;
+// context ids stay below 1<<29.
+func (pr *PFXPredictor) busyKey(c PFXConfig, depth int32) uint64 {
+	key := c.key()
 	if pr.suppress {
-		return c.key() | 1<<63
+		key |= 1 << 63
 	}
-	return c.key()
+	if pr.collect && depth == 0 {
+		key |= 1 << 61
+	}
+	return key
 }
 
 // added records, while a start state is filtered, that c was added with
@@ -481,7 +491,7 @@ func PFXInSet(set []int32, t int32) bool {
 // pr.prec, the precedence that invocation was called with, and the path
 // stops otherwise; anywhere else it is epsilon, as in ANTLR's prediction.
 func (pr *PFXPredictor) closure(c PFXConfig, out *PFXConfigSet, eofAsEpsilon bool, depth int32) {
-	if _, isNew := pr.busy.put(pr.busyKey(c), 0); !isNew {
+	if _, isNew := pr.busy.put(pr.busyKey(c, depth), 0); !isNew {
 		return
 	}
 	if PFXStateIsStop[c.state] {
@@ -517,7 +527,7 @@ func (pr *PFXPredictor) closure(c PFXConfig, out *PFXConfigSet, eofAsEpsilon boo
 // the loop and out of it, but not into the loop where canDrop says the
 // invocation returned to goes on in it the same way.
 func (pr *PFXPredictor) loopEntry(c PFXConfig, out *PFXConfigSet, depth int32) {
-	if _, isNew := pr.busy.put(pr.busyKey(c)|1<<62, 0); !isNew {
+	if _, isNew := pr.busy.put(pr.busyKey(c, depth)|1<<62, 0); !isNew {
 		return
 	}
 	for i := PFXTransStart[c.state]; i < PFXTransStart[c.state+1]; i++ {
