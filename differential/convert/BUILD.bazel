@@ -25,6 +25,8 @@ load(":defs.bzl", "convert_test")
     ("errors", "//differential/errors:Errors.g4", "Errors", "prog", "-n 300 -seed 1 -nesting 3 -tokens 300", ""),
     ("repair", "//differential/repair:Repair.g4", "Repair", "s3", "-n 300 -seed 1 -nesting 4 -tokens 200", ""),
     ("recovery", "grammars/Recovery.g4", "Recovery", "prog", "-n 300 -seed 1 -nesting 3 -tokens 200", ""),
+    # Each shape of left-recursive alternative ANTLR's rewrite tells apart.
+    ("shapes", "grammars/Shapes.g4", "Shapes", "prog", "-n 400 -seed 1 -nesting 4 -tokens 200", "-Xleft-recursion"),
 ] + [
     # The corpus grammars with left-recursive rules (testdata/grammars).
     (name, "//testdata/grammars:%s.g4" % grammar_name, grammar_name, start, flags, "-Xleft-recursion")

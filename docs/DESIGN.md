@@ -149,10 +149,10 @@ Status: experimental, being finished in phases (below). `-report` analyzes a
 directly left-recursive rule; both flavors generate one, with error recovery and
 the converter, behind the experimental `-Xleft-recursion` option (phases 1 to 5,
 released in galop 0.4.0); without it, code generation rejects such a rule (error
-500). Of phase 6, the four corpus grammars are in and checked against ANTLR by
+500). Of phase 6, a test grammar with each shape of alternative
+(`Shapes.g4`) and the four corpus grammars are in and checked against ANTLR by
 `//differential/convert`, and the performance gate holds Milvus's filter
-expressions to the 10× target below; the per-shape test grammars remain, and then
-the option goes away.
+expressions to the 10× target below; what remains is to drop the option.
 
 ANTLR 4.13.1 rewrites a directly left-recursive rule before building its ATN
 (`LeftRecursiveRuleAnalyzer`, `LeftRecursiveRules.stg`), and galop must parse

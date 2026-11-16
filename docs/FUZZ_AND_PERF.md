@@ -113,11 +113,16 @@ both corpora and both generated sets:
   child exactly once, real tokens in order and at most once, spans in bounds. It
   must also print as ANTLR prints the recovered tree.
 - **`//differential/convert`** builds every test grammar (Expr, Calc, Labels, Errors,
-  Repair, Recovery) and the corpus grammars with left-recursive rules (Milvus's Plan,
-  CEL, SigNoz's HavingExpression, Grule; generated with `-Xleft-recursion`) with ANTLR, the antlr flavor with the converter and the native flavor with
-  its listener and visitor. It runs the two checks above on sentences `galop-sample`
+  Repair, Recovery, Shapes) and the corpus grammars with left-recursive rules
+  (Milvus's Plan, CEL, SigNoz's HavingExpression, Grule) with ANTLR, the antlr flavor
+  with the converter and the native flavor with its listener and visitor; the
+  grammars with left-recursive rules are generated with `-Xleft-recursion`. It runs the two checks above on sentences `galop-sample`
   generates and on mutants of them, and walks every tree with `Typed`, `Accept` and
-  `Walk`. Labels.g4 holds the labels ANTLR's fields keep only the last match of.
+  `Walk`. Labels.g4 holds the labels ANTLR's fields keep only the last match of;
+  Shapes.g4 holds each shape of left-recursive alternative ANTLR's rewrite tells apart
+  (binary left- and right-associative, with a middle part or an operator rule;
+  prefix at high and low precedence; suffix; labeled and unlabeled; one such rule
+  called from another's primary).
 - **`TestTypedVisitorListener`** (`diff_test`) checks `Typed`, `GalaAccept` and
   `GalaWalk` on the corpus trees and on recovered trees. Each node must get its
   rule's or labeled alternative's handle, and the walk must report the order
