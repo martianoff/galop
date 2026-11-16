@@ -5,6 +5,7 @@ import (
 
     . "martianoff/gala/collection_immutable"
 
+    "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
 )
 
@@ -247,19 +248,7 @@ func (r *PFXRecovery) exit() (int32, int32) {
 	p := r.e.p
 	f := r.frames[len(r.frames)-1]
 	r.frames = r.frames[:len(r.frames)-1]
-	t := r.tree
-	off := len(t.Kids)
-	t.Kids = append(t.Kids, r.kids[f.kids:]...)
-	for _, k := range r.errPos[f.errs:] {
-		t.ErrorKids = append(t.ErrorKids, int32(off+k-f.kids))
-	}
-	r.errPos = r.errPos[:f.errs]
-	r.kids = r.kids[:f.kids]
-	t.Nodes = append(t.Nodes, @X@NodeData{Rule: uint16(f.rule), Alt: f.alt, Kids: int32(off), NKids: int32(len(t.Kids) - off), Start: int32(f.start), Stop: int32(p.pos - 1)})
-	id := int32(len(t.Nodes) - 1)
-	r.labelNode(f, id)
-	r.labs = r.labs[:f.labs]
-	r.nodeOf[f.serial] = id
+	id := r.finish(f)
 	if len(r.frames) == 0 {
 		return -1, id
 	}
@@ -271,6 +260,42 @@ func (r *PFXRecovery) exit() (int32, int32) {
 	follow := p.stack[len(p.stack)-1]
 	p.stack = p.stack[:len(p.stack)-1]
 	return follow, -1
+}
+
+// finish adds the node of frame f, which ends at the token before the
+// current one, with its children and labels.
+func (r *PFXRecovery) finish(f PFXRecFrame) int32 {
+	t := r.tree
+	off := len(t.Kids)
+	t.Kids = append(t.Kids, r.kids[f.kids:]...)
+	for _, k := range r.errPos[f.errs:] {
+		t.ErrorKids = append(t.ErrorKids, int32(off+k-f.kids))
+	}
+	r.errPos = r.errPos[:f.errs]
+	r.kids = r.kids[:f.kids]
+	t.Nodes = append(t.Nodes, @X@NodeData{Rule: uint16(f.rule), Alt: f.alt, Kids: int32(off), NKids: int32(len(t.Kids) - off), Start: int32(f.start), Stop: int32(r.e.p.pos - 1)})
+	id := int32(len(t.Nodes) - 1)
+	r.labelNode(f, id)
+	r.labs = r.labs[:f.labs]
+	r.nodeOf[f.serial] = id
+	return id
+}
+
+// recursionStart starts an iteration of a left-recursive rule's loop with
+// op alternative alt, as ANTLR's PushNewRecursionContext does: the rule's
+// node so far is finished and becomes the first child of a new one, which
+// starts where it did, has no exception, and stores it in label left (if
+// not 0).
+func (r *PFXRecovery) recursionStart(alt uint8, left uint16) {
+	f := &r.frames[len(r.frames)-1]
+	id := r.finish(*f)
+	r.kids = append(r.kids, id)
+	if left != 0 {
+		r.labs = append(r.labs, PFXRecLabel{left, id, -1})
+	}
+	f.serial = int32(len(r.nodeOf))
+	r.nodeOf = append(r.nodeOf, -1)
+	f.alt, f.exc, f.last = alt, false, r.last
 }
 
 // labelNode records the labels of node id, of frame f, as galop's converter
@@ -510,6 +535,7 @@ func (r *PFXRecovery) parse(rule int) int32 {
 	p := e.p
 	p.pos = 0
 	p.stack = p.stack[:0]
+	e.precs = e.precs[:0]
 	r.enter(int32(rule), -1)
 	s := PFXRuleStartState[rule]
 	// back says the walk just left a loop back, which synced already: a
@@ -573,6 +599,13 @@ func (r *PFXRecovery) parse(rule int) int32 {
 			}
 			continue
 		}
+		// An alternative of a left-recursive rule starts by changing the
+		// rule's context.
+		if len(PFXStateContext) > 0 {
+			if c, ok := PFXStateContext[s]; ok {
+				r.contextStep(c)
+			}
+		}
 		i := PFXTransStart[s]
 		t := PFXTransTarget[i]
 		switch PFXTransKind[i] {
@@ -580,7 +613,20 @@ func (r *PFXRecovery) parse(rule int) int32 {
 		case PFXKindRule:
 			r.state = s
 			p.stack = append(p.stack, PFXTransArg[i])
+			if PFXMaxPrec > 0 {
+				e.precs = append(e.precs, PFXStateCallPrec[s])
+			}
 			r.enter(PFXStateRule[t], s)
+		case PFXKindPrec:
+			// The generated code checks precpred and goes to its error exit.
+			if level := PFXTransArg[i]; level < e.prec() {
+				r.state = s
+				r.pend(e.failedPredicate(s, level))
+				if s, root = r.leave(); root >= 0 {
+					return root
+				}
+				continue
+			}
 		case PFXKindAtom:
 			r.state = s
 			r.matchToken(s, t, p.la(1) == PFXTransArg[i], true)
@@ -790,7 +836,24 @@ func (r *PFXRecovery) leave() (int32, int32) {
 	if r.e.pending != nil {
 		r.errorExit()
 	}
-	return r.exit()
+	follow, root := r.exit()
+	if PFXMaxPrec > 0 {
+		r.e.precs = r.e.precs[:len(r.e.p.stack)]
+	}
+	return follow, root
+}
+
+// contextStep is what an alternative of a left-recursive rule does to the
+// rule's context at its start (PFXStateContext's encoding): an op
+// alternative's PushNewRecursionContext, or a labeled primary one's new
+// context, which keeps none of the children the rule had, as enterOuterAlt.
+func (r *PFXRecovery) contextStep(c uint32) {
+	alt := uint8(c & PFXContextAlt)
+	if c&PFXContextPush == 0 {
+		r.enterOuterAlt(alt)
+		return
+	}
+	r.recursionStart(alt, uint16(c>>PFXContextLeftShift))
 }
 
 // errorExit reports the pending error and recovers as ANTLR's Recover does:
@@ -849,10 +912,7 @@ func recoveryTables(e env, align bool) string {
     val ax = alignPrefix(e)
     // Numbered as the native parser numbers them (see ruleLabels).
     val byRule = e.rules.Map(ruleLabels)
-    val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => {
-        val number = byRule.Get(s.Rule).IndexOf(l.Name) + 1
-        if (l.Append) number + maxRuleLabels + 1 else number
-    }).GetOrElse(0))
+    val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => labelCode(l, byRule.Get(s.Rule))).GetOrElse(0))
     // The alternatives of each labeled rule's top-level decision, as node Alts.
     val altLabels = e.rules.Map(altLabelsOf)
     val byDecision = decisionRules(e.rules)
@@ -860,8 +920,16 @@ func recoveryTables(e env, align bool) string {
         r.Alts.Map((alt) => altLabels.Get(r.Index).IndexOf(alt.Label.GetOrElse("")) + 1)
     ))
     val outerStarts = codegen.Offsets(outer.Map((o) => o.Map(_.Size()).GetOrElse(0)))
-    // A labeled rule with one alternative enters it at once.
-    val ruleAlt = e.rules.Map((r) => if (r.Decision.IsEmpty() && altLabels.Get(r.Index).NonEmpty()) 1 else 0)
+    // A labeled rule with one alternative enters it at once; a rewritten
+    // left-recursive rule's alternatives change its context themselves.
+    val ruleAlt = e.rules.Map((r) =>
+        if (r.Decision.IsEmpty() && r.Rewrite.IsEmpty() && altLabels.Get(r.Index).NonEmpty()) 1 else 0
+    )
+    // What each alternative of a rewritten rule does to its context, by its
+    // entry state (see contextStep).
+    val contexts = a.ContextSteps.ZipWithIndex().Collect({
+        case (Some(step), s) => (s, contextCode(step, altLabels.Get(a.State(s).Rule), byRule.Get(a.State(s).Rule)))
+    })
     val literals = e.vocab.Literals.Map((l) => l.Map((lit) => s"'$lit'").GetOrElse(""))
     val lastLiteral = literals.ZipWithIndex().Collect({ case (l, i) if l != "" => i }).LastOption().GetOrElse(0)
     // The automata of the kinds whose children the converter aligns (see aligns).
@@ -884,9 +952,39 @@ func recoveryTables(e env, align bool) string {
         })),
         goSlice(s"${x}OuterAlt", "uint8", outer.FlatMap((o) => o.GetOrElse(EmptyArray[int]())).Map((n) => s"$n")),
         goSlice(s"${x}RuleAlt", "uint8", ruleAlt.Map((n) => s"$n")),
+        s"// ${x}StateContext is, by entry state, what an alternative of a left-recursive",
+        s"// rule does to the rule's context: ${x}ContextPush (an op alternative's new",
+        s"// recursion context) or not (a labeled primary one's), the alternative's label",
+        s"// number (${x}ContextAlt), and the label of its left operand above",
+        s"// ${x}ContextLeftShift (${x}StateLabel's encoding).",
+        s"const (\n\t${x}ContextAlt = 0xff\n\t${x}ContextLeftShift = 8\n\t${x}ContextPush = 1 << 31\n)",
+        s"var ${x}StateContext = map[int32]uint32" + (contexts match {
+            case Array() => "{}\n"
+            case _ => "{\n" + contexts.Map((sc) => s"\t${sc.V1}: ${sc.V2},").MkString("\n") + "\n}\n"
+        }),
         goSlice(s"${x}LiteralNames", "string", literals.Take(lastLiteral + 1).Map((l) => strconv.Quote(l))),
     ).AppendAll(if (align) ArrayOf(
         s"// ${x}AlignKinds are the automata of the kinds whose children are aligned, by rule << 8 | alt.",
         alignKinds,
     ) else EmptyArray[string]()).MkString("\n") + "\n"
+}
+
+// contextCode is PFXStateContext's encoding of step, the context step of an
+// alternative of a rule whose labeled alternatives are altLabels and whose
+// labels are labels (numbered as ruleLabels numbers them).
+func contextCode(step atn.Step, altLabels Array[string], labels Array[string]) int = step match {
+    case atn.RecursionStart(label, left) => {
+        val alt = label.Map((l) => altLabels.IndexOf(l) + 1).GetOrElse(0)
+        val leftCode = left.Map((l) => labelCode(l, labels)).GetOrElse(0)
+        1 << 31 | leftCode << 8 | alt
+    }
+    case atn.ReplaceContext(label) => altLabels.IndexOf(label) + 1
+    case _ => 0
+}
+
+// labelCode is PFXStateLabel's encoding of label l in a rule whose labels are
+// labels: its number there, from 1, above maxRuleLabels for a list label.
+func labelCode(l atn.LabelRef, labels Array[string]) int {
+    val number = labels.IndexOf(l.Name) + 1
+    if (l.Append) number + maxRuleLabels + 1 else number
 }

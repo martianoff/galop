@@ -158,11 +158,13 @@ func recText(alts Array[RecAlt]) string =
 // element before any trailing actions and predicates.
 func (b Ptr[builder]) recAlt(rule int, a RecAlt, op bool) Piece {
     val entry = b.state(rule, BasicState())
+    val context = if (op) Some[Step](RecursionStart(a.Label, a.Left)) else a.Label.Map((l) => ReplaceContext(l))
+    b.contextSteps = b.contextSteps.Updated(entry, context)
     val lead = if (op) {
         val after = b.state(rule, BasicState())
         b.edge(entry, PrecedencePredicate(after, rule, a.Precedence))
         (after, ArrayOf[Step](CheckPrecedence(a.Precedence), RecursionStart(a.Label, a.Left)))
-    } else (entry, a.Label.Map((l) => ArrayOf[Step](ReplaceContext(l))).GetOrElse(EmptyArray[Step]()))
+    } else (entry, context.Map((c) => ArrayOf(c)).GetOrElse(EmptyArray[Step]()))
     val trailing = a.Elements.Reverse().TakeWhile(isEpsilonElement).Size()
     val withPrecedence = a.Next.Map((_) => a.Elements.Size() - 1 - trailing)
     val (exit, steps) = a.Elements.ZipWithIndex().FoldLeft(lead, (acc, ei) => {
@@ -233,7 +235,7 @@ func SourceAlts(r RuleIR) Array[AltIR] = r.Rewrite match {
             case _ => EmptyArray[Array[Step]]()
         }
         val rebuilt = rw.Primary.Zip(primary).Map((ap) => (ap.V1, withoutContextSteps(ap.V2)))
-            .AppendAll(rw.Ops.Zip(ops).Map((ap) => (ap.V1, ArrayOf[Step](CallRule(r.Index, -1, ap.V1.Left, 0)).AppendAll(withoutContextSteps(ap.V2)))))
+            .AppendAll(rw.Ops.Zip(ops).Map((ap) => (ap.V1, ArrayOf[Step](CallRule(r.Index, -1, ap.V1.Left, 0, -1)).AppendAll(withoutContextSteps(ap.V2)))))
         rebuilt.SortWith((x, y) => x.V1.Index < y.V1.Index).Map((as) => AltIR(as.V1.Label, as.V2))
     }
 }

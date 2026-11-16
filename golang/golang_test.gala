@@ -545,3 +545,25 @@ func TestPrecedenceDecisionsRecordTheirPrecedence(t T) T {
     val t1 = IsTrue(t, heads.Size() > 1)
     IsTrue(t1, heads.Drop(1).ForAll((h) => strings.HasPrefix(h, "\tp.prec = _p\n")))
 }
+
+func TestRecoveryStartsRecursionContexts(t T) T {
+    // The native flavor's recovery knows each op alternative's entry
+    // (e '*' e, e '!'); a grammar without left recursion has none.
+    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry](), leftRecursion = true))
+    val (_, after, _) = strings.Cut(code, "StateContext = map[int32]uint32{")
+    val (entries, _, _) = strings.Cut(after, "}")
+    val t1 = Eq(t, strings.Count(entries, ": 2147483648,"), 2)
+    IsTrue(t1, strings.Contains(parserOf(generate(exprGrammar, EmptyArray[g4.OptionEntry]())), "StateContext = map[int32]uint32{}"))
+}
+
+func TestANTLRFlavorPassesEachCallsOwnState(t T) T {
+    // a and b end r's alternatives, so they return to the same state; each
+    // is still invoked from its own state, ANTLR's invoking state.
+    val code = parserOf(generate("grammar R;\nr : a | b ;\na : 'a' ;\nb : 'b' ;\n", antlrDefines))
+    val (_, afterA, _) = strings.Cut(code, "p.ruleA(localctx, ")
+    val (_, afterB, _) = strings.Cut(code, "p.ruleB(localctx, ")
+    val (stateA, _, _) = strings.Cut(afterA, ")")
+    val (stateB, _, _) = strings.Cut(afterB, ")")
+    val t1 = IsTrue(t, stateA != "")
+    IsTrue(t1, stateA != stateB)
+}

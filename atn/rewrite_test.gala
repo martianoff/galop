@@ -112,7 +112,16 @@ func TestSourceAlternatives(t T) T {
     val mul = alts.Get(3).Steps
     val t2 = Eq(t1, mul.Map(stepShape), ArrayOf("call", "set", "call"))
     Eq(t2, mul.Head() match {
-        case CallRule(r, _, label, _) => s"$r ${label.Map(_.Name).GetOrElse("")}"
+        case CallRule(r, _, label, _, _) => s"$r ${label.Map(_.Name).GetOrElse("")}"
         case _ => ""
     }, "1 l")
+}
+
+func TestAlternativeEntriesRecordTheirContextSteps(t T) T {
+    val c = compiled(t, lrGrammar)
+    val net = c.Parser.Get()
+    // The op alternatives' entries start a recursion context, the labeled
+    // primary ones' replace the rule's context.
+    val steps = net.ContextSteps.Collect({ case Some(s) => stepShape(s) }).Sorted()
+    Eq(t, steps, ArrayOf("recursion(Cond,)", "recursion(Fact,)", "recursion(Mul,l)", "recursion(Pow,)", "replace(Int)", "replace(Neg)", "replace(Paren)"))
 }

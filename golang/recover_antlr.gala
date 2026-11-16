@@ -92,6 +92,13 @@ func (r *PFXRecovery) enter(rule, invoking int32) {
 	}
 }
 
+// recursionStart is ANTLR's PushNewRecursionContext. The antlr flavor
+// rejects left-recursive rules until it generates them (DESIGN.md,
+// "Left-recursive rules"), so its recovering walk never starts one.
+func (r *PFXRecovery) recursionStart(alt uint8, left uint16) {
+	panic("galop: left-recursive rules are not generated in the antlr flavor yet")
+}
+
 // enterOuterAlt makes the rule being parsed the labeled alternative alt:
 // ANTLR's EnterOuterAlt with the alternative's new context, which copies the
 // rule's context but none of its children and takes its place in its parent.
