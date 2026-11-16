@@ -41,9 +41,6 @@ struct Config(
     ExactOutputDir bool = false,
     // NoBrackets turns off bracket abstraction in runtime prediction.
     NoBrackets bool = false,
-    // LeftRecursion generates code for rewritten left-recursive rules, which
-    // is experimental (-Xleft-recursion; see codegen.Options).
-    LeftRecursion bool = false,
     MessageFormat diag.Format = diag.ANTLRFormat(),
     Werror bool = false,
     ATN bool = false,
@@ -144,7 +141,9 @@ func withFlag(r Reading, flag string) Reading = flag match {
     case "-Werror" => r.configured(r.Config.Copy(Werror = true))
     case "-Xexact-output-dir" => r.configured(r.Config.Copy(ExactOutputDir = true))
     case "-Xno-brackets" => r.configured(r.Config.Copy(NoBrackets = true))
-    case "-Xleft-recursion" => r.configured(r.Config.Copy(LeftRecursion = true))
+    // Left-recursive rules are always generated now; the option that turned
+    // them on while they were experimental (galop 0.4.0) is still accepted.
+    case "-Xleft-recursion" => r
     case "-roundtrip" => r.Copy(RoundTrip = true)
     case _ => r.Copy(Actions = r.Actions.Append(flag))
 }

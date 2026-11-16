@@ -19,10 +19,10 @@ b : '(' b ')' | Y ;
 X : 'x' ; Y : 'y' ;
 `
 
-func TestGoTargetRejectsLeftRecursion(t T) T =
+func TestGoTargetGeneratesLeftRecursion(t T) T =
     generate("grammar L;\ns : e EOF ;\ne : e '+' e | X ;\nX : 'x' ;\n", EmptyArray[g4.OptionEntry]()) match {
-        case Left(errs) => Eq(t, errs, ArrayOf("Go target: left-recursive rules are not supported yet: e"))
-        case Right(_) => t.Error("expected an error")
+        case Left(errs) => t.Error(s"the rewritten rule was rejected: ${errs.MkString(", ")}")
+        case Right(files) => IsTrue(t, files.Exists((f) => strings.Contains(f.Content, "func (p *LGalopParser) ruleE(_p int32) int32 {")))
     }
 
 func TestRepairInANTLRFlavor(t T) T {
@@ -75,7 +75,7 @@ func TestStaticGrammarHasNoRepair(t T) T {
 
 func TestGoTargetRejectsMutualLeftRecursion(t T) T =
     generate("grammar L;\ns : a EOF ;\na : b 'x' | 'y' ;\nb : a 'z' ;\n", EmptyArray[g4.OptionEntry]()) match {
-        case Left(errs) => Eq(t, errs, ArrayOf("Go target: left-recursive rules are not supported yet: a, b"))
+        case Left(errs) => Eq(t, errs, ArrayOf("Go target: mutually left-recursive rules: a, b"))
         case Right(_) => t.Error("expected an error")
     }
 

@@ -4,7 +4,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 _PREFIX = "github.com/martianoff/galop/differential/convert/"
 
-def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = [], galop_flags = "", entry = None):
+def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = [], entry = None):
     """Generates and tests one grammar's parsers and converter.
 
     It generates ANTLR 4.13.1's Go parser and galop's antlr flavor with the
@@ -19,7 +19,6 @@ def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = 
       start: the entry rule the sentences start from.
       sample_flags: galop-sample's flags (count, seed, nesting, length).
       extra_srcs: more test files for this grammar, in the same package.
-      galop_flags: more flags for galop, for both flavors.
       entry: the entry rule's method name, when it is not start capitalized
         (ANTLR and galop name a rule `start` `Start_`).
     """
@@ -48,8 +47,7 @@ def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = 
         name = name + "_galop_go",
         srcs = ["//cmd/galop", grammar],
         outs = [antlr_dir + "/" + lower + f for f in ["_galop_lexer.go", "_galop_native.go", "_galop_parser.go"]],
-        cmd = "$(location //cmd/galop) {flags} -Dlanguage=Go -Dflavor=antlr -DnativePackage={native} -package antlr -Xexact-output-dir -o $(RULEDIR)/{dir} $(location {grammar})".format(
-            flags = galop_flags,
+        cmd = "$(location //cmd/galop) -Dlanguage=Go -Dflavor=antlr -DnativePackage={native} -package antlr -Xexact-output-dir -o $(RULEDIR)/{dir} $(location {grammar})".format(
             native = _PREFIX + native_dir,
             dir = antlr_dir,
             grammar = grammar,
@@ -60,8 +58,7 @@ def convert_test(name, grammar, grammar_name, start, sample_flags, extra_srcs = 
         name = name + "_native_go",
         srcs = ["//cmd/galop", grammar],
         outs = [native_dir + "/" + lower + f for f in ["_lexer.go", "_parser.go"]],
-        cmd = "$(location //cmd/galop) {flags} -visitor -package native -Xexact-output-dir -o $(RULEDIR)/{dir} $(location {grammar})".format(
-            flags = galop_flags,
+        cmd = "$(location //cmd/galop) -visitor -package native -Xexact-output-dir -o $(RULEDIR)/{dir} $(location {grammar})".format(
             dir = native_dir,
             grammar = grammar,
         ),

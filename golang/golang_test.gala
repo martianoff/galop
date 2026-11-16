@@ -33,12 +33,11 @@ func generate(
     defines Array[g4.OptionEntry],
     listener bool = true,
     visitor bool = false,
-    leftRecursion bool = false,
 ) Either[Array[string], Array[codegen.OutputFile]] {
     val (g, c) = grammartest.Compile(src)
     Target("test").Generate(
         codegen.Input(g, c, c.Parser.Map((p) => analysis.Analyze(p, repair.PlanFor(g, c), false))),
-        codegen.Options(Package = "expr", Defines = defines, Listener = listener, Visitor = visitor, LeftRecursion = leftRecursion),
+        codegen.Options(Package = "expr", Defines = defines, Listener = listener, Visitor = visitor),
     )
 }
 
@@ -523,7 +522,7 @@ func table(code string, name string) string {
 }
 
 func TestLeftRecursivePredictionTables(t T) T {
-    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry](), leftRecursion = true))
+    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry]()))
     // The loop entry is ANTLR's precedence decision, and the calls of e that
     // end an operator or prefix alternative return straight to it.
     val t1 = IsTrue(t, strings.Contains(table(code, "DecisionLoopEntry"), "true"))
@@ -540,7 +539,7 @@ func TestPredictAtOnlyWithLeftRecursion(t T) T =
 // A precedence decision decided statically still meets ANTLR's fallbacks at
 // a dead end, which are kept per precedence.
 func TestPrecedenceDecisionsRecordTheirPrecedence(t T) T {
-    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry](), leftRecursion = true))
+    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry]()))
     val heads = ArrayFromSlice(strings.Split(code, "(_p int32) int {\n"))
     val t1 = IsTrue(t, heads.Size() > 1)
     IsTrue(t1, heads.Drop(1).ForAll((h) => strings.HasPrefix(h, "\tp.prec = _p\n")))
@@ -549,7 +548,7 @@ func TestPrecedenceDecisionsRecordTheirPrecedence(t T) T {
 func TestRecoveryStartsRecursionContexts(t T) T {
     // The native flavor's recovery knows each op alternative's entry
     // (e '*' e, e '!'); a grammar without left recursion has none.
-    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry](), leftRecursion = true))
+    val code = parserOf(generate(arithmetic, EmptyArray[g4.OptionEntry]()))
     val (_, after, _) = strings.Cut(code, "StateContext = map[int32]uint32{")
     val (entries, _, _) = strings.Cut(after, "}")
     val t1 = Eq(t, strings.Count(entries, ": 2147483648,"), 2)
@@ -572,7 +571,6 @@ func TestANTLRFlavorBuildsRecursionContexts(t T) T {
     val code = parserOf(generate(
         "grammar A;\ns : e EOF ;\ne : l=e '*' e # Mul | '-' e # Neg | X # Atom ;\nX : 'x' ;\n",
         antlrDefines,
-        leftRecursion = true,
     ))
     val expected = ArrayOf(
         // The rule takes its precedence; the entry calls it with 0.

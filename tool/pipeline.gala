@@ -35,7 +35,7 @@ struct FileResult(Diagnostics Array[diag.Diagnostic], Stdout string)
 struct Source(Path string, Text Option[string])
 
 // Stage is the part of the configuration the front end needs.
-struct Stage(Action Action, Werror bool, NoBrackets bool = false, LeftRecursion bool = false)
+struct Stage(Action Action, Werror bool, NoBrackets bool = false)
 
 // Analyzed is a grammar that passed the front end and is ready for a target.
 struct Analyzed(Grammar g4.Grammar, Compiled atn.Compiled, Analysis Option[analysis.Analysis])
@@ -67,7 +67,7 @@ func Run(args Array[string], kit Toolkit) Outcome {
             if diag.HasErrors(setup) || (cfg.Werror && setup.NonEmpty()) {
                 return finish(cfg, setup, "")
             }
-            val stage = Stage(cfg.Action, cfg.Werror, cfg.NoBrackets, cfg.LeftRecursion)
+            val stage = Stage(cfg.Action, cfg.Werror, cfg.NoBrackets)
             val sources = cfg.Files.Map((path) => Source(path, kit.Files.Read(path).ToOption()))
             val fronts = sources.Map((src) => Future(frontEnd(stage, src)))
             val results = sources.Zip(fronts).Map((pair) => {
@@ -137,10 +137,6 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
                     // -depend only needs the file names, which come from the compiled grammar.
                     case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
                     case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
-                    // Code generation for rewritten left-recursive rules lands in
-                    // phases (DESIGN.md, "Left-recursive rules").
-                    case _ if !plan.LeftRecursion.Direct.IsEmpty() && !stage.LeftRecursion =>
-                        done(problemsOnly(ArrayOf(directLeftRecursionProblem(plan.LeftRecursion, g, c))))
                     case _ => {
                         val plans = c.Parser.Map((p) => analysis.Analyze(p, plan, stage.NoBrackets))
                         FrontEnd(printed(""), Some(Analyzed(g, c, plans)))
@@ -156,7 +152,7 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
 // leftRecursionProblem is ANTLR's error 119 for the grammar's mutually
 // left-recursive rules, if any, with ANTLR's text and, like ANTLR's, no
 // position. A rule with an alternative that starts with a call of itself is
-// not one: ANTLR rewrites it (galop's Go target does not yet).
+// not one: ANTLR rewrites it into a precedence loop, and so does galop.
 func leftRecursionProblem(lr leftrec.LeftRecursion, c atn.Compiled, path string) Option[diag.Diagnostic] =
     lr.Cycles match {
         case Array() => None()
@@ -165,19 +161,6 @@ func leftRecursionProblem(lr leftrec.LeftRecursion, c atn.Compiled, path string)
             Some(leftrec.LeftRecursionCycles.New(sets.MkString(" and ")).In(path))
         }
     }
-
-// directLeftRecursionProblem reports the rules that call themselves first
-// (`e : e '+' e | INT`), at the first of them: galop rewrites them into
-// precedence loops as ANTLR does, but does not generate code for them yet.
-func directLeftRecursionProblem(lr leftrec.LeftRecursion, g g4.Grammar, c atn.Compiled) diag.Diagnostic {
-    val names = lr.Direct.Map((i) => c.Rules.Get(i).Name)
-    val noun = if (names.Size() == 1) "rule" else "rules"
-    val d = diag.Unsupported.New(s"left-recursive $noun ${names.MkString(", ")}")
-    names.HeadOption().FlatMap((first) => g.Rules.Find((r) => r.Name == first)) match {
-        case Some(r) => d.At(r.Pos.Line, r.Pos.Col)
-        case None() => d
-    }
-}
 
 // nameProblems checks, as ANTLR does, that `grammar X;` is in a file called X.g4.
 func nameProblems(path string, g g4.Grammar) Array[diag.Diagnostic] =
@@ -233,7 +216,6 @@ func backEnd(cfg Config, kit Toolkit, path string, a Analyzed) FileResult {
         Listener = cfg.Listener,
         Visitor = cfg.Visitor,
         Defines = mergedOptions(cfg, g),
-        LeftRecursion = cfg.LeftRecursion,
     )
     val language = opts.Define("language").GetOrElse(DefaultLanguage)
     val diagrams = if (cfg.ATN) ATNFiles(g, a.Compiled) else EmptyArray[codegen.OutputFile]()

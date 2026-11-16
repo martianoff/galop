@@ -128,8 +128,7 @@ Parsers, selected by name with `-a`, `-b` and `-parser`:
   ANTLR's on mutations of programs in [`errors/Errors.g4`](errors/Errors.g4), a
   grammar galop decides without runtime prediction.
 - `//differential/convert` checks, for the test grammars and for Milvus's, CEL's,
-  SigNoz's and Grule's grammars (left-recursive rules, generated with
-  `-Xleft-recursion`), that ANTLR's tree converted to the native tree is native
+  SigNoz's and Grule's grammars (left-recursive rules), that ANTLR's tree converted to the native tree is native
   parsing's tree, and that native error recovery reports ANTLR's errors; see
   [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md).
 
