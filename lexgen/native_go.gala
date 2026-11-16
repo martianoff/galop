@@ -265,7 +265,28 @@ func @X@Lex(src string) *@X@Tokens { return @X@LexAt(src, 1, 0) }
 // Matching runs a DFA computed when the code was generated (@STATS@).
 // Its tables are immutable, so lexing on many goroutines at once is safe.
 func @X@LexAt(src string, line, column int) *@X@Tokens {
-	ts := &@X@Tokens{Src: src, Tokens: make([]@X@Token, 0, len(src)/4+1)}
+	// The tokens are collected in an array kept for the next lexing and
+	// copied out at exactly their number: sized up front at a token per four
+	// bytes, a short input with short tokens outgrew the array and allocated
+	// several.
+	buf := @P@Scratch.Get().(*[]@X@Token)
+	if cap(*buf) < len(src)/4+1 {
+		*buf = make([]@X@Token, 0, len(src)/4+1)
+	}
+	ts := &@X@Tokens{Src: src, Tokens: (*buf)[:0]}
+	@P@Lex(ts, line, column)
+	*buf = ts.Tokens[:0]
+	ts.Tokens = slices.Clone(ts.Tokens)
+	@P@Scratch.Put(buf)
+	return ts
+}
+
+// @P@Scratch holds the arrays @X@LexAt collects tokens in.
+var @P@Scratch = sync.Pool{New: func() any { return new([]@X@Token) }}
+
+// @P@Lex lexes ts.Src into ts, as @X@LexAt describes.
+func @P@Lex(ts *@X@Tokens, line, column int) {
+	src := ts.Src
 	at := @P@Pos{line: line, colBase: -column}
 	var m @P@Result
 	// Every byte of src is read by some match, so the matches tell whether
@@ -292,7 +313,7 @@ func @X@LexAt(src string, line, column int) *@X@Tokens {
 				if invalid {
 					ts.fillTexts()
 				}
-				return ts
+				return
 			default:
 				ts.recognitionError(start, m.stop)
 				at = m.stop
@@ -316,7 +337,6 @@ func @X@LexAt(src string, line, column int) *@X@Tokens {
 	if invalid {
 		ts.fillTexts()
 	}
-	return ts
 }
 
 // recognitionError records that no token starts at start, having scanned to
