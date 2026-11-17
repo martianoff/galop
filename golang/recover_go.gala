@@ -131,6 +131,7 @@ func (p *PARSER) recoverParse(rule int) (*@X@Tree, int32, []@X@ParseError) {
 	}
 	root := r.parse(rule)
 	r.tree.Next = p.pos
+	r.tree.FindDropped()
 	r.tree.Read = r.read()
 	errs := make([]@X@ParseError, len(r.errs))
 	for i, x := range r.errs {

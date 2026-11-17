@@ -194,6 +194,9 @@ func LPFXConvert(root antlr.ParserRuleContext, stream *antlr.CommonTokenStream, 
 	} else {
 		t.Next = int(r.Stop) + 1
 	}
+	// A context does not say whether ANTLR's parse recovered, so every
+	// converted tree is checked for dropped tokens: one pass over Kids.
+	t.FindDropped()
 	return t
 }
 

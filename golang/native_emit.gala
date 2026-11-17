@@ -570,7 +570,10 @@ type @X@TokenLabel struct {
 // positions in Kids of the token children that are ANTLR error nodes: tokens
 // the recovery skipped or made up. Conjured are the made-up ones (ANTLR's
 // "<missing ')'>"), ConjuredText their texts: token len(Tokens)+k is
-// Conjured[k].
+// Conjured[k]. Dropped is set when a token the root spans is no node's child:
+// ANTLR's recovery can consume an error token into a context it then
+// discards (a left-recursive rule's), and its tree then has no node for the
+// token (see FindDropped).
 //
 // Read is how far ANTLR's parse reads (see @X@ParseError.Read): its token
 // stream never lexes past Read, so ANTLR reports the token recognition errors
@@ -588,6 +591,7 @@ type @X@Tree struct {
 	ErrorKids    []int32
 	Conjured     []@X@Token
 	ConjuredText []string
+	Dropped      bool
 	parents      []int32
 	parentsOnce  sync.Once
 	typed        []struct{ @X@NodeRef }
@@ -596,6 +600,23 @@ type @X@Tree struct {
 
 // Root is the tree's root node, the last one.
 func (t *@X@Tree) Root() @X@NodeRef { return @X@NodeRef{t, int32(len(t.Nodes)) - 1} }
+
+// FindDropped sets Dropped: whether some token the root spans is no node's
+// child. Whatever builds a recovered tree calls it once the tree is done.
+func (t *@X@Tree) FindDropped() {
+	t.Dropped = false
+	if len(t.Nodes) == 0 {
+		return
+	}
+	r := t.Nodes[len(t.Nodes)-1]
+	held := int32(0)
+	for _, k := range t.Kids {
+		if i := -k - 1; k < 0 && i >= r.Start && i <= r.Stop {
+			held++
+		}
+	}
+	t.Dropped = held < r.Stop-r.Start+1
+}
 
 // Node is the tree's i-th node.
 func (t *@X@Tree) Node(i int) @X@NodeRef { return @X@NodeRef{t, int32(i)} }
@@ -674,14 +695,15 @@ func (n @X@NodeRef) GetText() string {
 }
 
 // spanText is GetText without a copy, where that text is a slice of Src: the
-// tree has no conjured tokens or error nodes, Src is valid UTF-8 (so each
+// tree has no conjured tokens, error nodes or dropped tokens (every token
+// in n's span is then one of its children's), Src is valid UTF-8 (so each
 // token's text is its slice), each of n's tokens ends where the next starts
 // (no hidden or skipped text between them), and n has no EOF child, whose
 // text is "<EOF>". ok is false otherwise.
 func (n @X@NodeRef) spanText() (s string, ok bool) {
 	t := n.t
 	nd := t.Nodes[n.i]
-	if nd.Stop < nd.Start || len(t.Conjured) > 0 || len(t.ErrorKids) > 0 || t.Texts != nil {
+	if nd.Stop < nd.Start || len(t.Conjured) > 0 || len(t.ErrorKids) > 0 || t.Dropped || t.Texts != nil {
 		return "", false
 	}
 	toks := t.Tokens[nd.Start : nd.Stop+1]
