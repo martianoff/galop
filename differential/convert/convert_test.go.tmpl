@@ -246,6 +246,11 @@ func checkContexts(tree *gn.@N@Tree, ctxs []antlr.ParserRuleContext, root antlr.
 			return fmt.Sprintf("node %d's context is another node's too", i)
 		}
 		seen[c] = true
+		// GetText takes a slice of the source where it can (spanText);
+		// either way it is ANTLR's text, "<EOF>" and conjured tokens included.
+		if got, want := tree.Node(i).GetText(), c.GetText(); got != want {
+			return fmt.Sprintf("node %d's text is %q, its context's %q", i, got, want)
+		}
 		if n := tree.Nodes[i]; n.Stop >= n.Start {
 			if s, tok := tree.Tokens[n.Start], c.GetStart(); int(s.Line) != tok.GetLine() || int(s.Column) != tok.GetColumn() {
 				return fmt.Sprintf("node %d starts at %d:%d, its context at %d:%d", i, s.Line, s.Column, tok.GetLine(), tok.GetColumn())

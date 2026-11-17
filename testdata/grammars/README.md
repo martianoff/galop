@@ -11,10 +11,13 @@ copying again from upstream, and record the new source below.
 | `HavingExpression.g4` | [SigNoz/signoz](https://github.com/SigNoz/signoz) `grammar/HavingExpression.g4` | `main` at `f7220ae7` | MIT |
 | `Plan.g4` | [milvus-io/milvus](https://github.com/milvus-io/milvus) `internal/parser/planparserv2/Plan.g4` | `master` at `301f3bf5` | Apache-2.0 |
 | `grulev3.g4` | [hyperjumptech/grule-rule-engine](https://github.com/hyperjumptech/grule-rule-engine) `antlr/grulev3.g4` | `master` at `f23b4a27` | Apache-2.0 |
+| `fileseq.g4` | [justinfx/gofileseq](https://github.com/justinfx/gofileseq) `grammar/fileseq.g4` | `master` at `2014c3fe` | MIT |
 
 `.gitattributes` stores every grammar with LF line endings; `grulev3.g4` has CRLF
 upstream.
 
 `CEL.g4`, `HavingExpression.g4`, `Plan.g4` and `grulev3.g4` have left-recursive rules.
 `//differential/convert` builds both flavors of each and checks
-them against ANTLR on generated sentences and mutants.
+them against ANTLR on generated sentences and mutants. So it does `fileseq.g4`,
+whose whitespace is a token rather than skipped, so a node's tokens are
+contiguous in the source (which `GetText` uses).

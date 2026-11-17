@@ -27,12 +27,15 @@ load(":defs.bzl", "convert_test")
     # Each shape of left-recursive alternative ANTLR's rewrite tells apart.
     ("shapes", "grammars/Shapes.g4", "Shapes", "prog", "-n 400 -seed 1 -nesting 4 -tokens 200"),
 ] + [
-    # The corpus grammars with left-recursive rules (testdata/grammars).
+    # Corpus grammars from other projects (testdata/grammars); all but fileseq have
+    # left-recursive rules.
     (name, "//testdata/grammars:%s.g4" % grammar_name, grammar_name, start, flags)
     for name, grammar_name, start, flags in [
         ("plan", "Plan", "expr", "-n 400 -seed 1 -nesting 4 -tokens 200"),
         ("cel", "CEL", "start", "-n 400 -seed 1 -nesting 4 -tokens 200"),
         ("having", "HavingExpression", "query", "-n 400 -seed 1 -nesting 4 -tokens 200"),
         ("grule", "grulev3", "grl", "-n 300 -seed 1 -nesting 3 -tokens 300"),
+        # Whitespace is a token, so nodes' tokens are contiguous (GetText takes a slice).
+        ("fileseq", "fileseq", "input", "-n 400 -seed 1 -nesting 4 -tokens 60"),
     ]
 ]]

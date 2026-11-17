@@ -660,12 +660,56 @@ func (n @X@NodeRef) Stop() @X@Token {
 // it ("<EOF>" for an EOF child).
 func (n @X@NodeRef) GetText() string {
 	nd := n.t.Nodes[n.i]
+	if s, ok := n.spanText(); ok {
+		return s
+	}
 	var b strings.Builder
 	if nd.Stop >= nd.Start {
 		b.Grow(int(n.t.Tokens[nd.Stop].End - n.t.Tokens[nd.Start].Start))
 	}
 	n.writeText(&b)
 	return b.String()
+}
+
+// spanText is GetText without a copy, where that text is a slice of Src: the
+// tree has no conjured tokens or error nodes, Src is valid UTF-8 (so each
+// token's text is its slice), each of n's tokens ends where the next starts
+// (no hidden or skipped text between them), and n does not end with EOF,
+// whose text is "<EOF>". ok is false otherwise.
+func (n @X@NodeRef) spanText() (s string, ok bool) {
+	t := n.t
+	nd := t.Nodes[n.i]
+	if nd.Stop < nd.Start || len(t.Conjured) > 0 || len(t.ErrorKids) > 0 || t.Texts != nil {
+		return "", false
+	}
+	toks := t.Tokens[nd.Start : nd.Stop+1]
+	for i := 1; i < len(toks); i++ {
+		if toks[i].Start != toks[i-1].End {
+			return "", false
+		}
+	}
+	if int(nd.Stop)+1 < len(t.Tokens) && t.Tokens[nd.Stop+1].Type == @X@EOF && n.endsWithEOF() {
+		return "", false
+	}
+	return t.Src[toks[0].Start:toks[len(toks)-1].End], true
+}
+
+// endsWithEOF reports whether n's last token child, through its last
+// children, is EOF, which is outside n's span: a rule ending with EOF does
+// not move past it.
+func (n @X@NodeRef) endsWithEOF() bool {
+	for {
+		ks := n.kids()
+		if len(ks) == 0 {
+			return false
+		}
+		k := ks[len(ks)-1]
+		if k < 0 {
+			i := int(-k - 1)
+			return i < len(n.t.Tokens) && n.t.Tokens[i].Type == @X@EOF
+		}
+		n = @X@NodeRef{n.t, k}
+	}
 }
 
 // writeText writes the text of n's tokens, its EOF child included, as ANTLR
