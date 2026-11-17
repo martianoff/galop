@@ -3,6 +3,17 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
+## 0.5.2
+
+- **Changed (license):** the code galop generates is yours to use under any terms:
+  `LICENSE` now ends with an exception that frees the generated lexers, parsers,
+  listeners, visitors and converters (the runtime code from galop's templates
+  included) from the Apache License's conditions. galop itself stays under the
+  Apache License, Version 2.0.
+- **Fixed:** the corpus grammars copied from other projects now come with the
+  copyright and license notices their licenses require
+  (`testdata/grammars/NOTICE.md`).
+
 ## 0.5.1
 
 - **Changed:** in the native flavor, `GetText` returns a slice of the source, with no

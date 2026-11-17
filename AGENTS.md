@@ -34,6 +34,10 @@ AI-assisted contributions are welcome; the disclosure rules are in
 4. **Never edit corpus grammars to make a test pass.** Files under `testdata/grammars/`
    are verbatim copies of upstream grammars, with their source recorded in
    `testdata/grammars/README.md`. Update them only by re-copying from upstream.
+   Copy only files whose license allows it, and record what that license requires
+   (the copyright line and license text for MIT/BSD, the copyright lines for Apache)
+   in `testdata/grammars/NOTICE.md` in the same commit. The same holds for any other
+   third-party file brought into the repository.
 
 5. **Never hand-edit generated code.** BUILD files come from gazelle; generated parsers
    (once code generation exists) come from galop. Change the generator, then regenerate.

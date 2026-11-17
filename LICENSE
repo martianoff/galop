@@ -199,3 +199,14 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+
+---- Exception for code galop generates ----
+
+As an exception to the Apache License, Version 2.0 above, the files galop
+generates from a grammar (the lexers, parsers, listeners, visitors and
+converters it writes, including the runtime code its templates put in them)
+are not subject to that license's conditions. You may use, copy, modify,
+distribute and license such generated files under any terms you choose, with
+or without attribution. This exception does not apply to galop's own source
+code or binaries, which remain under the Apache License, Version 2.0.

@@ -375,4 +375,8 @@ bazel run //differential/cmd/perfgate            # the performance gate (docs/FU
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache 2.0](LICENSE), with an exception for the code galop generates: the lexers,
+parsers, listeners, visitors and converters it writes from your grammar are yours to
+use under any terms, with or without attribution (see the end of [LICENSE](LICENSE)).
+The corpus grammars in `testdata/grammars` are other projects' files under their own
+licenses; see [their notices](testdata/grammars/NOTICE.md).
