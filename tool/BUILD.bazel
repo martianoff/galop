@@ -6,6 +6,7 @@ gala_library(
         "args.gala",
         "atndot.gala",
         "files.gala",
+        "imports.gala",
         "pipeline.gala",
         "usage.gala",
     ],
@@ -31,7 +32,10 @@ gala_library(
 
 gala_test(
     name = "tool_test",
-    srcs = ["tool_test.gala"],
+    srcs = [
+        "imports_test.gala",
+        "tool_test.gala",
+    ],
     importpath = "github.com/martianoff/galop/tool",
     lib_srcs = [
         "args.gala",
@@ -39,6 +43,7 @@ gala_test(
         "files.gala",
         "pipeline.gala",
         "usage.gala",
+        "imports.gala",
     ],
     pkg = "tool",
     deps = [

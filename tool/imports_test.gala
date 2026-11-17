@@ -1,0 +1,120 @@
+package tool
+
+import (
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/g4"
+)
+
+// importCase is a set of grammar files and the galop command line to run on them.
+struct importCase(Files Array[Tuple[string, string]], Line string)
+
+// outputOf runs c's command line on c's files and gives what it printed,
+// stdout then stderr.
+func outputOf(c importCase) string {
+    val m = newMemory()
+    m.files = c.Files.FoldLeft(m.files, (acc, f) => acc.Put(f.V1, f.V2))
+    val out = run(m, ArrayOf(fakeGo), c.Line)
+    out.Stdout + out.Stderr
+}
+
+val lexL = ("L.g4", "lexer grammar L;\nA: 'x';\nB: 'b';\nWS: ' ' -> skip;\n")
+
+// The messages and positions are ANTLR 4.13.1's for the same files, except
+// that a diagnostic in an imported rule always names the imported file (see
+// docs/DESIGN.md, Grammar imports).
+func TestImports(t T) T = RunCases[importCase, string](t,
+    (sub, in, want) => Eq(sub, outputOf(in), want),
+    Case[importCase, string](
+        Name = "the root's rule wins over the imported one",
+        Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport L;\ns: A B EOF;\nA: 'a';\n"), lexL), "-check R.g4"),
+        Expected = "R.g4: ok (grammar R: 1 parser rules, 3 lexer rules)\n",
+    ),
+    Case[importCase, string](
+        Name = "found next to the importing grammar",
+        Input = importCase(ArrayOf(("g/R.g4", "grammar R;\nimport L;\ns: A EOF;\n"), ("g/L.g4", "lexer grammar L;\nA: 'a';\n")), "-check g/R.g4"),
+        Expected = "g/R.g4: ok (grammar R: 1 parser rules, 1 lexer rules)\n",
+    ),
+    Case[importCase, string](
+        Name = "found in the -lib directory",
+        Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport L;\ns: A EOF;\n"), ("lib/L.g4", "lexer grammar L;\nA: 'a';\n")), "-check -lib lib R.g4"),
+        Expected = "R.g4: ok (grammar R: 1 parser rules, 1 lexer rules)\n",
+    ),
+    Case[importCase, string](
+        Name = "an alias loads the named grammar",
+        Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport Short = L;\ns: A B EOF;\n"), lexL), "-check R.g4"),
+        Expected = "R.g4: ok (grammar R: 1 parser rules, 3 lexer rules)\n",
+    ),
+    // ANTLR prints R.g4:3:3 here: the root's file with Q.g4's position.
+    Case[importCase, string](
+        Name = "imports of imports, a circular one ignored",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport P;\ns: t EOF;\n"),
+            ("P.g4", "parser grammar P;\nimport Q;\nt: u;\n"),
+            ("Q.g4", "parser grammar Q;\nimport P;\nu: A;\n"),
+        ), "-check R.g4"),
+        Expected = "R.g4: ok (grammar R: 3 parser rules, 0 lexer rules)\n" +
+            "warning(125): Q.g4:3:3: implicit definition of token A in parser\n",
+    ),
+    Case[importCase, string](
+        Name = "missing",
+        Input = importCase(ArrayOf(("M.g4", "grammar M;\nimport Nope;\ns: A EOF;\nA: 'a';\n")), "-check M.g4"),
+        Expected = "error(110): M.g4:2:7: can't find or load grammar Nope\n",
+    ),
+    Case[importCase, string](
+        Name = "a lexer cannot import a parser",
+        Input = importCase(ArrayOf(("X.g4", "lexer grammar X;\nimport P;\nA: 'a';\n"), ("P.g4", "parser grammar P;\ns: A;\n")), "-check X.g4"),
+        Expected = "error(111): X.g4:2:7: lexer grammar X cannot import parser grammar P\n" +
+            "error(53): P.g4:2:0: parser rule s not allowed in lexer\n",
+    ),
+    Case[importCase, string](
+        Name = "importing the lexer the grammar generates",
+        Input = importCase(ArrayOf(("Q.g4", "grammar Q;\nimport QLexer;\ns: A EOF;\n"), ("QLexer.g4", "lexer grammar QLexer;\nA: 'a';\n")), "-check Q.g4"),
+        Expected = "error(113): Q.g4:2:7: combined grammar Q and imported lexer grammar QLexer both generate QLexer\n",
+    ),
+    Case[importCase, string](
+        Name = "options in an imported grammar",
+        Input = importCase(ArrayOf(("O.g4", "grammar O;\nimport OL;\ns: A EOF;\n"), ("OL.g4", "lexer grammar OL;\noptions { superClass = Base; }\nA: 'a';\n")), "-check O.g4"),
+        Expected = "O.g4: ok (grammar O: 1 parser rules, 1 lexer rules)\n" +
+            "warning(109): OL.g4:2:0: options ignored in imported grammar OL\n",
+    ),
+    Case[importCase, string](
+        Name = "a problem in an imported rule names its file",
+        Input = importCase(ArrayOf(("U.g4", "grammar U;\nimport UP;\nA: 'a';\n"), ("UP.g4", "parser grammar UP;\ns: t A;\n")), "-check U.g4"),
+        Expected = "error(56): UP.g4:2:3: reference to undefined rule: t\n",
+    ),
+    Case[importCase, string](
+        Name = "an imported grammar with a syntax error",
+        Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport L;\ns: A EOF;\n"), ("L.g4", "lexer grammar L;\nA 'a';\n")), "-check R.g4"),
+        Expected = "error(50): L.g4:2:2: syntax error: expected ':', found 'a'\n",
+    ),
+    Case[importCase, string](
+        // ANTLR's -depend never loads imported grammars, so it lists none.
+        Name = "-depend lists no imported files, as ANTLR's",
+        Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport L;\ns: A B EOF;\n"), lexL), "-depend R.g4"),
+        Expected = "r_galop_lexer.go : R.g4\n",
+    ),
+    Case[importCase, string](
+        Name = "-format prints the grammar as written",
+        Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport L;\ns: A B EOF;\n"), lexL), "-format R.g4"),
+        Expected = "grammar R;\n\nimport L;\n\ns: A B EOF;\n",
+    ),
+)
+
+// TestMergeImportsCombinesNamedActions checks ANTLR's merge of named actions:
+// the same action in the root and an imported grammar becomes one, the root's
+// text first.
+func TestMergeImportsCombinesNamedActions(t T) T {
+    val root = g4.Parse("grammar R;\n@members { a }\ns: A;\nA: 'a';\n")
+    val del = g4.Parse("parser grammar D;\n@parser::members { b }\n@header { h }\nt: A;\n")
+    (root, del) match {
+        case (Right(r), Right(d)) => {
+            val (merged, problems) = mergeImports(r, "R.g4", Imported(ArrayOf(Delegate("D.g4", d)), NoImports.Problems))
+            val t1 = Eq(t, problems.Size(), 0)
+            val t2 = Eq(t1, merged.Actions.Map((a) => a.Name + "=" + a.Body), ArrayOf("members= a \n b ", "header= h "))
+            Eq(t2, merged.Rules.Map(_.Name), ArrayOf("s", "A", "t"))
+        }
+        case _ => Fail(t, "the grammars did not parse")
+    }
+}

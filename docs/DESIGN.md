@@ -1263,7 +1263,7 @@ problems only galop has use codes from 500 up:
 
 | Code | Problem |
 |---|---|
-| 500 | a construct galop does not support yet (imports, `tokenVocab`, rule arguments, ...) |
+| 500 | a construct galop does not support yet (`tokenVocab`, rule arguments, ...) |
 | 501 | a parser rule references a fragment rule |
 | 502 | `-check -roundtrip`: the formatter does not preserve the grammar |
 | 503 | an element that cannot appear in this kind of rule (a `[set]` in a parser rule) |
@@ -1293,6 +1293,43 @@ registry. For each grammar file the front end (read, parse, check, compile,
 analyze) runs in its own `Future`; generation and writes then run in
 command-line order, so output and diagnostics are deterministic and an error
 in one grammar does not stop the others.
+
+### Grammar imports
+
+`import A, B = C;` works as in ANTLR 4.13.1 (`tool/imports.gala`). For each
+grammar on the command line, `tool.Run` reads the grammars it imports before
+the front end's `Future` starts, since a `Future` cannot use the file system;
+a grammar whose text does not contain `import` is not parsed for this. The
+front end then merges them into the grammar before the checks.
+
+- **Finding a grammar.** `import C` (or `B = C`) loads `C.g4`, then
+  `C.g`, each looked for in the working directory, the importing grammar's
+  directory and the `-lib` directory, in that order. Imported grammars are
+  loaded depth first, each grammar once; an import back to a grammar on the way
+  there is ignored, as ANTLR ignores it.
+- **Merging.** The root grammar's rules come first and win over an imported
+  rule of the same name. Each imported grammar, in that order, adds its other
+  rules, its channels and `tokens {}` names, and its named actions; an action
+  the grammar already has (`@members`, say) gets the imported text after its
+  own, on a new line.
+- **Diagnostics.** Errors 110 (cannot find the grammar), 11 (cannot read it),
+  111 (a kind of grammar that cannot import that kind) and 113 (a combined
+  grammar `G` importing `GLexer` or `GParser`), and warning 109 (the imported
+  grammar's options are ignored), with ANTLR's wording and positions. A syntax
+  error in an imported grammar stops that grammar, as in ANTLR.
+- **Printing.** `-format` and `-roundtrip` work on the grammar as written,
+  imports and all; `-check`'s rule counts are of the merged grammar.
+
+Where galop differs, and its tests (`tool/imports_test.gala`) say so:
+
+- A diagnostic about an imported rule names the imported grammar's file. ANTLR
+  does for some (error 56), but for others it names the root grammar's file
+  with the imported file's line and column (warning 125).
+- The import problems are reported with the rule checks. ANTLR stops after an
+  undefined or duplicate rule (errors 51, 56), before it checks which grammar
+  kinds may import which, so it reports 111 only on a grammar without them.
+- Like ANTLR's, `-depend` lists no imported grammar: ANTLR 4.13.1 does not load
+  imports for `-depend`, so its template's input line never prints.
 
 ## Bazel (`rules_gala`)
 

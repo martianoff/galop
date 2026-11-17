@@ -10,8 +10,7 @@ import (
 // It stops at the first error: a syntax error (diag.SyntaxError,
 // diag.UnterminatedStringLiteral) or a construct outside the supported subset
 // (rule arguments, `returns`, rule-level options, `catch`, element options,
-// lexer modes, grammar imports), reported as diag.Unsupported rather than
-// ignored. The diagnostic has a position but no file.
+// lexer modes), reported as diag.Unsupported rather than ignored. The diagnostic has a position but no file.
 func Parse(src string) Either[diag.Diagnostic, Grammar] =
     Lex(src).FlatMap((toks) => {
         val p = &parser{toks: toks, pos: 0, err: None[diag.Diagnostic](), nodePos: EmptyArray[Pos]()}
@@ -133,6 +132,8 @@ func (p Ptr[parser]) grammar() Grammar {
     var tokens = EmptyArray[string]()
     var channels = EmptyArray[string]()
     var actions = EmptyArray[NamedAction]()
+    var imports = EmptyArray[Import]()
+    var optionsPos = NoPos
     // A `break` inside a match arm would only leave the match, so the arms
     // report whether the prequel continues.
     var inPrequel = true
@@ -141,6 +142,9 @@ func (p Ptr[parser]) grammar() Grammar {
         val opensBlock = t.Kind.isTokId() && p.peekAt(1).IsPunct("{")
         inPrequel = t.Text match {
             case "options" if opensBlock => {
+                if !optionsPos.IsKnown() {
+                    optionsPos = posOf(t)
+                }
                 options = options.AppendAll(p.optionsBlock())
                 true
             }
@@ -153,8 +157,8 @@ func (p Ptr[parser]) grammar() Grammar {
                 true
             }
             case "import" if t.Kind.isTokId() => {
-                p.unsupported("grammar imports")
-                false
+                imports = imports.AppendAll(p.importStatement())
+                true
             }
             case "@" if t.Kind.isTokPunct() => {
                 actions = actions.Append(p.namedAction())
@@ -171,7 +175,28 @@ func (p Ptr[parser]) grammar() Grammar {
             rules = rules.Append(p.rule())
         }
     }
-    Grammar(kind, name, options, tokens, channels, actions, rules, posOf(nameTok))
+    Grammar(kind, name, options, tokens, channels, actions, rules, posOf(nameTok), Imports = imports, OptionsPos = optionsPos)
+}
+
+// importStatement reads `import A, B = C;`: each grammar, optionally with an
+// alias (`B = C` imports C).
+func (p Ptr[parser]) importStatement() Array[Import] {
+    p.advance()
+    var imports = EmptyArray[Import]()
+    for p.ok() {
+        val firstTok = p.peek()
+        val first = p.expectId("a grammar name")
+        val imp = if (p.acceptPunct("=")) {
+            val nameTok = p.peek()
+            Import(p.expectId("a grammar name"), Some(first), posOf(nameTok))
+        } else Import(first, None[string](), posOf(firstTok))
+        imports = imports.Append(imp)
+        if !p.acceptPunct(",") {
+            break
+        }
+    }
+    p.expectPunct(";")
+    imports
 }
 
 func (p Ptr[parser]) grammarKind() GrammarKind {

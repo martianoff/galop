@@ -43,7 +43,7 @@ func assocProblems(g Grammar) Array[diag.Diagnostic] = g.Rules.FlatMap((r) => r.
 ))
 
 // at places d at p.
-func at(d diag.Diagnostic, p Pos) diag.Diagnostic = d.At(p.Line, p.Col)
+func at(d diag.Diagnostic, p Pos) diag.Diagnostic = d.At(p.Line, p.Col).In(p.File)
 
 func ruleKindError(kind GrammarKind, r Rule) Option[diag.Diagnostic] = kind match {
     case LexerOnly() if !r.IsLexer() => Some(diag.ParserRulesNotAllowed.New(r.Name))

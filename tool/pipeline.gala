@@ -31,13 +31,15 @@ struct Outcome(Stdout string, Stderr string, ExitCode int)
 // FileResult is what one grammar file produced.
 struct FileResult(Diagnostics Array[diag.Diagnostic], Stdout string)
 
-// Source is a grammar file as read: its text, or None when it could not be read.
-struct Source(Path string, Text Option[string])
+// Source is a grammar file as read: its text, or None when it could not be
+// read, and the grammars it imports (see LoadImports).
+struct Source(Path string, Text Option[string], Imported Imported = NoImports)
 
 // Stage is the part of the configuration the front end needs.
 struct Stage(Action Action, Werror bool, NoBrackets bool = false)
 
-// Analyzed is a grammar that passed the front end and is ready for a target.
+// Analyzed is a grammar that passed the front end and is ready for a target,
+// with its imports merged in.
 struct Analyzed(Grammar g4.Grammar, Compiled atn.Compiled, Analysis Option[analysis.Analysis])
 
 // FrontEnd is the front end's result for one file: what to report, and the
@@ -68,7 +70,7 @@ func Run(args Array[string], kit Toolkit) Outcome {
                 return finish(cfg, setup, "")
             }
             val stage = Stage(cfg.Action, cfg.Werror, cfg.NoBrackets)
-            val sources = cfg.Files.Map((path) => Source(path, kit.Files.Read(path).ToOption()))
+            val sources = cfg.Files.Map((path) => source(path, cfg.LibDir, kit.Files))
             val fronts = sources.Map((src) => Future(frontEnd(stage, src)))
             val results = sources.Zip(fronts).Map((pair) => {
                 val path = pair.V1.Path
@@ -104,23 +106,50 @@ func checkDirectories(cfg Config, files Files) Array[diag.Diagnostic] {
     ArrayOf(out, lib).Collect((d) => d)
 }
 
+// source reads the grammar in path and the grammars it imports. Reading files
+// cannot happen in the front end's Futures (see Run), so imports are read
+// here; a grammar whose text does not mention `import` is not parsed twice.
+func source(path string, libDir Option[string], files Files) Source {
+    val text = files.Read(path).ToOption()
+    val imported = text.Filter((t) => strings.Contains(t, "import")) match {
+        case Some(t) => g4.Parse(t) match {
+            case Right(g) => LoadImports(g, path, libDir, files)
+            case Left(_) => NoImports
+        }
+        case None() => NoImports
+    }
+    Source(path, text, imported)
+}
+
 // frontEnd runs one grammar through the pure part of the pipeline: parse,
-// check, compile and analyze, or whatever less the action needs.
+// merge its imports, check, compile and analyze, or whatever less the action
+// needs. -format prints the grammar as written, without its imports merged.
 func frontEnd(stage Stage, src Source) FrontEnd = src.Text match {
     case None() => done(problemsOnly(ArrayOf(diag.CannotOpenFile.New(src.Path))))
     case Some(text) => g4.Parse(text) match {
         case Left(d) => done(problemsOnly(ArrayOf(located(d, src.Path))))
         case Right(g) => stage.Action match {
             case PrintFormatted() => done(printed(g4.Format(g)))
-            case _ => checked(stage, src.Path, g)
+            case _ => checked(stage, src.Path, g, src.Imported)
         }
     }
 }
 
-// checked runs the semantic checks and, if they pass, the rest of the front end.
-func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
+// checked merges root's imports, runs the semantic checks and, if they pass,
+// the rest of the front end. The checks and everything after see the merged
+// grammar; -roundtrip formats root alone, as written.
+func checked(stage Stage, path string, root g4.Grammar, imported Imported) FrontEnd {
+    if imported.Unreadable {
+        return done(problemsOnly(imported.Problems.Map((d) => located(d, path))))
+    }
+    val (g, importProblems) = mergeImports(root, path, imported)
+    val importFiles = imported.Delegates.Map(_.Path)
+    // As in ANTLR, the import problems come first; the checks' follow in
+    // source order, root's own file first, then each imported file's.
     val found = nameProblems(path, g).AppendAll(g4.Check(g)).AppendAll(optionProblems(g))
-    val problems = diag.InSourceOrder(found).Map((d) => located(d, path))
+    val rank = (d diag.Diagnostic) => importFiles.IndexOf(d.File) + 1
+    val ordered = found.SortWith((a, b) => rank(a) < rank(b) || (rank(a) == rank(b) && (a.Line < b.Line || (a.Line == b.Line && a.Col < b.Col))))
+    val problems = importProblems.AppendAll(ordered).Map((d) => located(d, path))
     val stop = diag.HasErrors(problems) || (stage.Werror && problems.NonEmpty())
     if stop {
         return done(problemsOnly(problems))
@@ -133,7 +162,7 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
             leftRecursionProblem(plan.LeftRecursion, c, path) match {
                 case Some(d) => done(problemsOnly(ArrayOf(d)))
                 case None() => stage.Action match {
-                    case Validate(roundTrip) => done(validated(path, g, roundTrip))
+                    case Validate(roundTrip) => done(validated(path, root, g, roundTrip))
                     // -depend only needs the file names, which come from the compiled grammar.
                     case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
                     case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
@@ -176,11 +205,12 @@ func optionProblems(g g4.Grammar) Array[diag.Diagnostic] = g.Options.Collect((o)
 })
 
 // validated is -check: everything up to compilation passed; with -roundtrip
-// the grammar must also survive the formatter.
-func validated(path string, g g4.Grammar, roundTrip bool) FileResult {
-    val trip = if (roundTrip) g4.RoundTrip(g) else None()
+// the grammar as written, root, must also survive the formatter. The counts
+// are of g, root with its imports merged.
+func validated(path string, root g4.Grammar, g g4.Grammar, roundTrip bool) FileResult {
+    val trip = if (roundTrip) g4.RoundTrip(root) else None()
     trip match {
-        case Some(msg) => problemsOnly(ArrayOf(diag.RoundTripFailed.New(msg).At(g.Pos.Line, g.Pos.Col)))
+        case Some(msg) => problemsOnly(ArrayOf(diag.RoundTripFailed.New(msg).At(root.Pos.Line, root.Pos.Col)))
         case None() => {
             val lexer = g.Rules.Count(_.IsLexer())
             printed(s"$path: ok (grammar ${g.Name}: ${g.Rules.Size() - lexer} parser rules, $lexer lexer rules)\n")
