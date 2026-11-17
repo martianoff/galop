@@ -103,10 +103,10 @@ func TestErrorReplayInBothFlavors(t T) T {
         "var AGalopDecisionLL1 = []bool{",
         "var AGalopTokenDisplay = []string{",
         "\"<INVALID>\", \"'('\", \"')'\", \"'x'\", \"'y'\",",
-        // gofmt aligns the field with its neighbours, differently in each flavor.
-        "\tllBad ",
     )
     val t1 = shared.FoldLeft(t, (acc, s) => IsTrue(IsTrue(acc, strings.Contains(native, s)), strings.Contains(antlr, s)))
-    val t2 = IsTrue(t1, strings.Contains(native, "return &ASyntaxError{Line: int(t.Line), Column: int(t.Column), Msg: msg}"))
-    IsTrue(t2, strings.Contains(antlr, "return p.input.GetTextFromTokens(p.toks[start], p.toks[stop])"))
+    // gofmt aligns the field with its neighbours, which differ between the flavors.
+    val t2 = IsTrue(IsTrue(t1, strings.Contains(native, "\tllBad   bool\n")), strings.Contains(antlr, "\tllBad bool\n"))
+    val t3 = IsTrue(t2, strings.Contains(native, "return &ASyntaxError{Line: int(t.Line), Column: int(t.Column), Msg: msg}"))
+    IsTrue(t3, strings.Contains(antlr, "return p.input.GetTextFromTokens(p.toks[start], p.toks[stop])"))
 }

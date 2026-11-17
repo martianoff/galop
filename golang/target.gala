@@ -2,6 +2,7 @@ package golang
 
 import (
     "go/format"
+    "strconv"
     "strings"
 
     . "martianoff/gala/collection_immutable"
@@ -58,12 +59,28 @@ func (t goTarget) Generate(in codegen.Input, opts codegen.Options) Either[Array[
 
 // gofmt formats each file as gofmt does, so generated code passes gofmt
 // checks whatever the spacing of the templates it comes from. A file that is
-// not valid Go is a galop bug: it is reported, not written.
+// not valid Go is a galop bug: it is reported, with the line the error points
+// at, not written.
 func gofmt(files Array[codegen.OutputFile]) Either[Array[string], Array[codegen.OutputFile]] {
     val formatted = files.Map((file) => (file, Try(format.Source(ToBytes(file.Content)))))
-    formatted.Collect({ case (file, Failure(e)) => s"Go target: generated ${file.Name} is not valid Go: ${e.Error()}" }) match {
+    formatted.Collect({
+        case (file, Failure(e)) => s"Go target: generated ${file.Name} is not valid Go: ${e.Error()}${offendingLine(file.Content, e.Error())}"
+    }) match {
         case Array() => Right(formatted.Collect({ case (file, Success(code)) => file.Copy(Content = ToString(code)) }))
         case broken => Left(broken)
+    }
+}
+
+// offendingLine is the line of content that a go/format error such as
+// "18234:5: expected ';'" points at, on a line of its own, or "" when the
+// error names no line of content.
+func offendingLine(content string, msg string) string {
+    val (num, _, _) = strings.Cut(msg, ":")
+    val line = Try(strconv.Atoi(num)).ToOption().Filter((n) => n >= 1)
+        .FlatMap((n) => ArrayFromSlice(strings.Split(content, "\n")).Drop(n - 1).HeadOption())
+    line match {
+        case Some(l) => "\n\t" + strings.TrimSpace(l)
+        case None() => ""
     }
 }
 
