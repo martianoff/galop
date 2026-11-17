@@ -1,10 +1,12 @@
 package golang
 
 import (
+    "go/format"
     "strings"
 
     . "martianoff/gala/collection_immutable"
     "martianoff/gala/go_builtins"
+    . "martianoff/gala/go_interop"
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/analysis"
@@ -208,7 +210,8 @@ func TestNativeTokenTypesAndRules(t T) T {
     val parser = files.Get("expr_parser.go").GetOrElse("")
     val expected = ArrayOf(
         // Token types, numbered as ANTLR numbers them; literals are commented.
-        // The const blocks are laid out as gofmt lays them out.
+        // The const blocks are laid out as gofmt lays them out (Generate
+        // formats every file).
         Tuple(lexer, "\tExprEOF  = -1\n"),
         Tuple(lexer, "\tExprT__0 = 1 // ';'\n"),
         Tuple(lexer, "\tExprID   = 7\n"),
@@ -391,7 +394,7 @@ func TestNativeTypedViewAndListener(t T) T {
     val expected = ArrayOf(
         "func (n ExprNodeRef) Typed() ExprHandle",
         // A labeled rule has its own kind, then one per labeled alternative.
-        "\tExprKIND_stat ExprKind = 1\n\tExprKIND_exprStat ExprKind = 2\n\tExprKIND_assign ExprKind = 3\n",
+        "\tExprKIND_stat     ExprKind = 1\n\tExprKIND_exprStat ExprKind = 2\n\tExprKIND_assign   ExprKind = 3\n",
         "var exprGalopKindBase = [...]ExprKind{0, 1, 4, 5}",
         "\tcase ExprKIND_assign:\n\t\treturn (*AssignNode)(h)",
         "\tcase ExprKIND_stat:\n\t\treturn (*StatNode)(h)",
@@ -411,6 +414,33 @@ func TestNativeVisitorAndNoListener(t T) T {
     val t1 = IsTrue(t, strings.Contains(parser, "\tVisitAssign(n AssignNode) R\n"))
     val t2 = IsTrue(t1, strings.Contains(parser, "func ExprAccept[R any](n ExprNodeRef, v ExprVisitor[R]) (r R)"))
     IsFalse(t2, strings.Contains(parser, "ExprListener"))
+}
+
+// TestGeneratedCodeIsGofmtClean checks that every generated file, in both
+// flavors, with the listener or the visitor and with the converter, is what
+// gofmt makes of it.
+func TestGeneratedCodeIsGofmtClean(t T) T = ArrayOf(
+    (EmptyArray[g4.OptionEntry](), false),
+    (EmptyArray[g4.OptionEntry](), true),
+    (antlrDefines, false),
+    (antlrDefines, true),
+    (converterDefines, false),
+).FoldLeft(t, (acc, c) => generate(exprGrammar, c.V1, visitor = c.V2) match {
+    case Right(files) => files.FoldLeft(acc, (a, file) => Try(format.Source(ToBytes(file.Content))) match {
+        case Success(code) if ToString(code) == file.Content => a
+        case Success(_) => a.Error(s"${file.Name} (visitor ${c.V2}) is not as gofmt formats it")
+        case Failure(e) => a.Error(s"${file.Name} (visitor ${c.V2}) is not valid Go: ${e.Error()}")
+    })
+    case Left(errs) => acc.Error(errs.MkString(", "))
+})
+
+// TestOffendingLine checks which line of a generated file that is not valid
+// Go the Go target quotes with the go/format error.
+func TestOffendingLine(t T) T {
+    val src = "package p\nfunc f( {\n}\n"
+    val t1 = Eq(t, offendingLine(src, "2:8: expected type"), "\n\tfunc f( {")
+    val t2 = Eq(t1, offendingLine(src, "9:1: expected"), "")
+    Eq(t2, offendingLine(src, "no position"), "")
 }
 
 // converterDefines select the antlr flavor with the converter to the native package.

@@ -56,26 +56,11 @@ func NativeTokenRuntime(vocab atn.Vocabulary, channels Array[string], exported s
 // trailing comment.
 struct ConstLine(Name string, Value string, Comment string)
 
-// GoConstBlock renders a const block laid out as gofmt lays it out: the names
-// padded to the longest, and the comments of each run of consecutive
-// commented lines in one column.
-func GoConstBlock(lines Array[ConstLine]) string {
-    val nameWidth = lines.FoldLeft(0, (w, l) => if (l.Name.Size() > w) l.Name.Size() else w)
-    // A run of commented lines ends at each line without a comment.
-    val runs = lines.FoldLeft(EmptyArray[int](), (acc, l) =>
-        acc.Append(if (acc.IsEmpty()) 0 else if (l.Comment == "") acc.Last() + 1 else acc.Last())
-    )
-    val valueWidth = (run int) => lines.ZipWithIndex().FoldLeft(0, (w, li) =>
-        if (runs.Get(li.V2) == run && li.V1.Comment != "" && li.V1.Value.Size() > w) li.V1.Value.Size() else w
-    )
-    val rendered = lines.ZipWithIndex().Map((li) => {
-        val l = li.V1
-        val head = "\t" + l.Name + gostrings.Repeat(" ", nameWidth - l.Name.Size()) + " = " + l.Value
-        if (l.Comment == "") head
-        else head + gostrings.Repeat(" ", valueWidth(runs.Get(li.V2)) - l.Value.Size()) + " // " + l.Comment
-    })
-    "const (\n" + rendered.MkString("\n") + "\n)\n"
-}
+// GoConstBlock renders a const block, one `name = value // comment` line per
+// constant. The Go target runs every file it generates through go/format,
+// which aligns the names and comments.
+func GoConstBlock(lines Array[ConstLine]) string =
+    "const (\n" + lines.Map((l) => s"\t${l.Name} = ${l.Value}" + (if (l.Comment == "") "" else " // " + l.Comment)).MkString("\n") + "\n)\n"
 
 // goTokenRuntimeTemplate is the token, token list and error types. @X@ is the
 // exported prefix.
