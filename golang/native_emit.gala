@@ -565,8 +565,8 @@ type @X@TokenLabel struct {
 // k < 0 is token -k-1 (see Token). Next is the index of the token after the
 // parsed input.
 //
-// A tree converted from ANTLR's error-recovered parse can also have error
-// tokens, which native parsing never makes. ErrorKids lists, in order, the
+// A tree from error recovery (ParseWithRecovery, or converted from ANTLR's
+// recovered parse) can also have error tokens. ErrorKids lists, in order, the
 // positions in Kids of the token children that are ANTLR error nodes: tokens
 // the recovery skipped or made up. Conjured are the made-up ones (ANTLR's
 // "<missing ')'>"), ConjuredText their texts: token len(Tokens)+k is
@@ -657,8 +657,13 @@ func (n @X@NodeRef) Stop() @X@Token {
 }
 
 // GetText is the text of n's tokens run together, as ANTLR's GetText gives
-// it ("<EOF>" for an EOF child).
+// it ("<EOF>" for an EOF child). Where that text is a stretch of the source
+// it is a substring of Src, sharing its memory as ANTLR's token texts share
+// their input's; copy it (strings.Clone) to keep it without the source.
 func (n @X@NodeRef) GetText() string {
+	if s, ok := n.spanText(); ok {
+		return s
+	}
 	nd := n.t.Nodes[n.i]
 	var b strings.Builder
 	if nd.Stop >= nd.Start {
@@ -666,6 +671,41 @@ func (n @X@NodeRef) GetText() string {
 	}
 	n.writeText(&b)
 	return b.String()
+}
+
+// spanText is GetText without a copy, where that text is a slice of Src: the
+// tree has no conjured tokens or error nodes, Src is valid UTF-8 (so each
+// token's text is its slice), each of n's tokens ends where the next starts
+// (no hidden or skipped text between them), and n has no EOF child, whose
+// text is "<EOF>". ok is false otherwise.
+func (n @X@NodeRef) spanText() (s string, ok bool) {
+	t := n.t
+	nd := t.Nodes[n.i]
+	if nd.Stop < nd.Start || len(t.Conjured) > 0 || len(t.ErrorKids) > 0 || t.Texts != nil {
+		return "", false
+	}
+	toks := t.Tokens[nd.Start : nd.Stop+1]
+	for i := 1; i < len(toks); i++ {
+		if toks[i].Start != toks[i-1].End {
+			return "", false
+		}
+	}
+	// A parse does not move past EOF, so a node with an EOF child ends just
+	// before it; only such a node needs its subtree searched for one.
+	if eof := int(nd.Stop) + 1; eof < len(t.Tokens) && t.Tokens[eof].Type == @X@EOF && n.hasToken(int32(eof)) {
+		return "", false
+	}
+	return t.Src[toks[0].Start:toks[len(toks)-1].End], true
+}
+
+// hasToken reports whether token i is a token child of n or of a node below it.
+func (n @X@NodeRef) hasToken(i int32) bool {
+	for _, k := range n.kids() {
+		if k == -i-1 || k >= 0 && (@X@NodeRef{n.t, k}).hasToken(i) {
+			return true
+		}
+	}
+	return false
 }
 
 // writeText writes the text of n's tokens, its EOF child included, as ANTLR

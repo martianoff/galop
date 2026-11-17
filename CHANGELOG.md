@@ -5,6 +5,14 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Changed:** in the native flavor, `GetText` returns a slice of the source, with no
+  copy, when a node's tokens are contiguous in it (no skipped or hidden text
+  between them, valid UTF-8, no tokens made up by error recovery); otherwise it
+  builds the text as before. On gofileseq's file-sequence grammar, whose
+  whitespace is a token, that is 3 to 5 fewer allocations per parsed path.
+- **Added:** gofileseq's `fileseq.g4` to the corpus, checked against ANTLR by
+  `//differential/convert`; the convert tests compare every node's `GetText`
+  with ANTLR's.
 - **Fixed:** generated Go files are formatted as gofmt formats them: the Go target
   runs them through `go/format`, so `gofmt -l` and editors no longer flag them
   (a few templates left fields and constants unaligned).

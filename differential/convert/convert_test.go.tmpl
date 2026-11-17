@@ -140,6 +140,8 @@ func TestConvertMatchesNative(t *testing.T) {
 		}
 		if d := sameTree(want, got); d != "" {
 			t.Errorf("sentence %d: converted ANTLR tree: %s\n%s", i, d, src)
+		} else if msg := textsMatch(want, ctxs); msg != "" {
+			t.Errorf("sentence %d: native parsing's tree: %s", i, msg)
 		}
 		fctx, fstream, ferr := parseFlavor(src)
 		if ferr != nil {
@@ -250,6 +252,18 @@ func checkContexts(tree *gn.@N@Tree, ctxs []antlr.ParserRuleContext, root antlr.
 			if s, tok := tree.Tokens[n.Start], c.GetStart(); int(s.Line) != tok.GetLine() || int(s.Column) != tok.GetColumn() {
 				return fmt.Sprintf("node %d starts at %d:%d, its context at %d:%d", i, s.Line, s.Column, tok.GetLine(), tok.GetColumn())
 			}
+		}
+	}
+	return textsMatch(tree, ctxs)
+}
+
+// textsMatch compares each node's GetText with its ANTLR context's: GetText
+// takes a slice of the source where it can (spanText), and either way it must
+// be ANTLR's text, "<EOF>" and made-up tokens included.
+func textsMatch(tree *gn.@N@Tree, ctxs []antlr.ParserRuleContext) string {
+	for i, c := range ctxs {
+		if got, want := tree.Node(i).GetText(), c.GetText(); got != want {
+			return fmt.Sprintf("node %d's text is %q, its context's %q", i, got, want)
 		}
 	}
 	return ""
@@ -480,6 +494,16 @@ func TestRecoveryMatchesANTLR(t *testing.T) {
 		}
 		gotErrs, gotExp, gotTree := recoverGalop(src)
 		d := sameRecoveredTree(wantTree, gotTree)
+		if d == "" {
+			// The same tree, so node i is node i: native recovery's texts are
+			// the converted ANTLR tree's, which textsMatch ties to ANTLR's.
+			for i := range gotTree.Nodes {
+				if g, w := gotTree.Node(i).GetText(), wantTree.Node(i).GetText(); g != w {
+					d = fmt.Sprintf("node %d's text is %q, ANTLR's %q", i, g, w)
+					break
+				}
+			}
+		}
 		if !slices.Equal(wantExp, gotExp) {
 			d += fmt.Sprintf("\n expected tokens %v, want %v", gotExp, wantExp)
 		}
