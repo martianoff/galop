@@ -112,16 +112,16 @@ func StripPositions(g Grammar) Grammar = g.Copy(
 // read from an imported file: its rules keep pointing at that file once
 // merged into the importing grammar.
 func InFile(g Grammar, file string) Grammar {
-    val at = (p Pos) => if (p.IsKnown()) p.Copy(File = file) else p
+    val inFile = (p Pos) => if (p.IsKnown()) p.Copy(File = file) else p
     g.Copy(
-        Pos = at(g.Pos),
-        OptionsPos = at(g.OptionsPos),
-        Options = g.Options.Map((o) => o.Copy(Pos = at(o.Pos))),
-        Imports = g.Imports.Map((i) => i.Copy(Pos = at(i.Pos))),
+        Pos = inFile(g.Pos),
+        OptionsPos = inFile(g.OptionsPos),
+        Options = g.Options.Map((o) => o.Copy(Pos = inFile(o.Pos))),
+        Imports = g.Imports.Map((i) => i.Copy(Pos = inFile(i.Pos))),
         Rules = g.Rules.Map((r) => r.Copy(
-            Pos = at(r.Pos),
-            NodePos = r.NodePos.Map(at),
-            Alts = r.Alts.Map((a) => a.Copy(Options = a.Options.Map((o) => o.Copy(Pos = at(o.Pos))))),
+            Pos = inFile(r.Pos),
+            NodePos = r.NodePos.Map(inFile),
+            Alts = r.Alts.Map((a) => a.Copy(Options = a.Options.Map((o) => o.Copy(Pos = inFile(o.Pos))))),
         )),
     )
 }

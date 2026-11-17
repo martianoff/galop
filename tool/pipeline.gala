@@ -33,7 +33,7 @@ struct FileResult(Diagnostics Array[diag.Diagnostic], Stdout string)
 
 // Source is a grammar file as read: its text, or None when it could not be
 // read, and the grammars it imports (see LoadImports).
-struct Source(Path string, Text Option[string], Imported Imported = NoImports)
+struct Source(Path string, Text Option[string], Imported Imported)
 
 // Stage is the part of the configuration the front end needs.
 struct Stage(Action Action, Werror bool, NoBrackets bool = false)
@@ -108,10 +108,11 @@ func checkDirectories(cfg Config, files Files) Array[diag.Diagnostic] {
 
 // source reads the grammar in path and the grammars it imports. Reading files
 // cannot happen in the front end's Futures (see Run), so imports are read
-// here; a grammar whose text does not mention `import` is not parsed twice.
+// here; only a grammar whose text may hold an `import` statement (mayImport)
+// is parsed for that, and so twice.
 func source(path string, libDir Option[string], files Files) Source {
     val text = files.Read(path).ToOption()
-    val imported = text.Filter((t) => strings.Contains(t, "import")) match {
+    val imported = text.Filter(mayImport) match {
         case Some(t) => g4.Parse(t) match {
             case Right(g) => LoadImports(g, path, libDir, files)
             case Left(_) => NoImports
@@ -142,13 +143,12 @@ func checked(stage Stage, path string, root g4.Grammar, imported Imported) Front
     if imported.Unreadable {
         return done(problemsOnly(imported.Problems.Map((d) => located(d, path))))
     }
-    val (g, importProblems) = mergeImports(root, path, imported)
-    val importFiles = imported.Delegates.Map(_.Path)
+    val (g, importProblems) = mergeImports(root, imported)
+    val importFiles = imported.Delegates.Map(_.Pos.File)
     // As in ANTLR, the import problems come first; the checks' follow in
     // source order, root's own file first, then each imported file's.
     val found = nameProblems(path, g).AppendAll(g4.Check(g)).AppendAll(optionProblems(g))
-    val rank = (d diag.Diagnostic) => importFiles.IndexOf(d.File) + 1
-    val ordered = found.SortWith((a, b) => rank(a) < rank(b) || (rank(a) == rank(b) && (a.Line < b.Line || (a.Line == b.Line && a.Col < b.Col))))
+    val ordered = diag.InFileOrder(found, (d) => importFiles.IndexOf(d.File) + 1)
     val problems = importProblems.AppendAll(ordered).Map((d) => located(d, path))
     val stop = diag.HasErrors(problems) || (stage.Werror && problems.NonEmpty())
     if stop {

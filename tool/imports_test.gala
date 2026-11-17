@@ -4,6 +4,7 @@ import (
     . "martianoff/gala/collection_immutable"
     . "martianoff/gala/test"
 
+    "github.com/martianoff/galop/diag"
     "github.com/martianoff/galop/g4"
 )
 
@@ -56,6 +57,12 @@ func TestImports(t T) T = RunCases[importCase, string](t,
         ), "-check R.g4"),
         Expected = "R.g4: ok (grammar R: 3 parser rules, 0 lexer rules)\n" +
             "warning(125): Q.g4:3:3: implicit definition of token A in parser\n",
+    ),
+    // ANTLR prints R.g4:3:0: the root's file with E.g4's position.
+    Case[importCase, string](
+        Name = "a compile error in an imported rule names its file",
+        Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport E;\ns: e EOF;\nA: 'a';\n"), ("E.g4", "parser grammar E;\n\ne: e '+' e;\n")), "-check R.g4"),
+        Expected = "error(147): E.g4:3:0: left recursive rule e must contain an alternative which is not left recursive\n",
     ),
     Case[importCase, string](
         Name = "missing",
@@ -110,7 +117,7 @@ func TestMergeImportsCombinesNamedActions(t T) T {
     val del = g4.Parse("parser grammar D;\n@parser::members { b }\n@header { h }\nt: A;\n")
     (root, del) match {
         case (Right(r), Right(d)) => {
-            val (merged, problems) = mergeImports(r, "R.g4", Imported(ArrayOf(Delegate("D.g4", d)), NoImports.Problems))
+            val (merged, problems) = mergeImports(r, Imported(ArrayOf(g4.InFile(d, "D.g4")), EmptyArray[diag.Diagnostic]()))
             val t1 = Eq(t, problems.Size(), 0)
             val t2 = Eq(t1, merged.Actions.Map((a) => a.Name + "=" + a.Body), ArrayOf("members= a \n b ", "header= h "))
             Eq(t2, merged.Rules.Map(_.Name), ArrayOf("s", "A", "t"))
@@ -118,3 +125,15 @@ func TestMergeImportsCombinesNamedActions(t T) T {
         case _ => Fail(t, "the grammars did not parse")
     }
 }
+
+// TestMayImport checks the text test that decides which grammars are parsed
+// before the front end to load their imports: an `import` statement passes,
+// the keyword as a literal (GALA's grammar has `'import'`) does not.
+func TestMayImport(t T) T = RunCases[string, bool](t,
+    (sub, in, want) => Eq(sub, mayImport(in), want),
+    Case[string, bool](Name = "a statement", Input = "grammar g;\nimport A, B = C;\na: b;", Expected = true),
+    Case[string, bool](Name = "on one line", Input = "grammar g; import A; a: b;", Expected = true),
+    Case[string, bool](Name = "with a comment", Input = "grammar g;\nimport /* lexer */ A;\n", Expected = true),
+    Case[string, bool](Name = "a literal", Input = "grammar g;\nIMPORT: 'import';\nimportDecl: IMPORT ID;\n", Expected = false),
+    Case[string, bool](Name = "none", Input = "grammar g;\na: b;", Expected = false),
+)

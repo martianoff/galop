@@ -17,18 +17,18 @@ import (
 // grammar built in code) and no file.
 func Check(g Grammar) Array[diag.Diagnostic] {
     val noRules = g.Rules match {
-        case Array() => ArrayOf(at(diag.NoRules.New(g.Name), g.Pos))
+        case Array() => ArrayOf(At(diag.NoRules.New(g.Name), g.Pos))
         case _ => EmptyArray[diag.Diagnostic]()
     }
     val redefinitions = g.Rules.ZipWithIndex().Collect((ri) => {
         val (r, i) = ri
         g.Rules.Take(i).Find(_.Name == r.Name).Map((prev) =>
-            at(diag.RuleRedefinition.New(r.Name, s"${prev.Pos.Line}"), r.Pos)
+            At(diag.RuleRedefinition.New(r.Name, s"${prev.Pos.Line}"), r.Pos)
         )
     })
-    val kindErrors = g.Rules.Collect((r) => ruleKindError(g.Kind, r).Map((d) => at(d, r.Pos)))
+    val kindErrors = g.Rules.Collect((r) => ruleKindError(g.Kind, r).Map((d) => At(d, r.Pos)))
     val refErrors = g.Rules.FlatMap((r) =>
-        r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => at(d, l.Pos)))
+        r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => At(d, l.Pos)))
     )
     val all = noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors).AppendAll(assocProblems(g))
     diag.InSourceOrder(all.AppendAll(implicitTokens(g)))
@@ -38,12 +38,13 @@ func Check(g Grammar) Array[diag.Diagnostic] {
 // neither left nor right (ANTLR then takes left), on a rule's alternatives.
 func assocProblems(g Grammar) Array[diag.Diagnostic] = g.Rules.FlatMap((r) => r.Alts.FlatMap((a) =>
     a.Options.Collect({
-        case o if o.Name == "assoc" && o.Value != "left" && o.Value != "right" => at(diag.IllegalOptionValue.New(o.Name, o.Value), o.Pos)
+        case o if o.Name == "assoc" && o.Value != "left" && o.Value != "right" => At(diag.IllegalOptionValue.New(o.Name, o.Value), o.Pos)
     })
 ))
 
-// at places d at p.
-func at(d diag.Diagnostic, p Pos) diag.Diagnostic = d.At(p.Line, p.Col).In(p.File)
+// At places d at p, in p's file when p has one (a position in an imported
+// grammar).
+func At(d diag.Diagnostic, p Pos) diag.Diagnostic = d.At(p.Line, p.Col).In(p.File)
 
 func ruleKindError(kind GrammarKind, r Rule) Option[diag.Diagnostic] = kind match {
     case LexerOnly() if !r.IsLexer() => Some(diag.ParserRulesNotAllowed.New(r.Name))
@@ -81,7 +82,7 @@ func implicitTokens(g Grammar) Array[diag.Diagnostic] {
     val firsts = uses.FoldLeft(EmptyArray[Tuple[string, Pos]](), (acc, first) =>
         if (acc.Exists(_.V1 == first.V1)) acc else acc.Append(first)
     )
-    firsts.Map((first) => at(diag.ImplicitTokenDefinition.New(first.V1), first.V2))
+    firsts.Map((first) => At(diag.ImplicitTokenDefinition.New(first.V1), first.V2))
 }
 
 func isDeclaredToken(g Grammar, name string) bool =

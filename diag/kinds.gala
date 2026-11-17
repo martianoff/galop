@@ -33,6 +33,9 @@ val WarningTreatedAsError = Kind(10, Error(), "warning treated as error")
 // InternalError: a bug in galop.
 val InternalError = Kind(20, Error(), "internal error: <arg>")
 
+// ErrorReadingImportedGrammar: an imported grammar's file could not be read.
+val ErrorReadingImportedGrammar = Kind(11, Error(), "error reading imported grammar <arg> referenced in <arg2>")
+
 // CannotCreateTargetGenerator: no code generator for the `language` option.
 val CannotCreateTargetGenerator = Kind(31, Error(), "galop cannot generate <arg> code as of version <arg2>")
 
@@ -61,6 +64,18 @@ val IllegalOptionValue = Kind(84, Warning(), "unsupported option value <arg>=<ar
 
 // NoRules: a grammar with no rules.
 val NoRules = Kind(99, Error(), "grammar <arg> has no rules")
+
+// OptionsInDelegate: an imported grammar sets options the root does not.
+val OptionsInDelegate = Kind(109, Warning(), "options ignored in imported grammar <arg>")
+
+// CannotFindImportedGrammar: no file holds an imported grammar.
+val CannotFindImportedGrammar = Kind(110, Error(), "can't find or load grammar <arg>")
+
+// InvalidImport: a kind of grammar that cannot import the other's kind.
+val InvalidImport = Kind(111, Error(), "<arg> grammar <arg2> cannot import <arg3> grammar <arg4>")
+
+// ImportNameClash: a combined grammar G imports GLexer or GParser.
+val ImportNameClash = Kind(113, Error(), "<arg> grammar <arg2> and imported <arg3> grammar <arg4> both generate <arg5>")
 
 // ImplicitTokenDefinition: a parser rule uses a token no rule or `tokens {}` defines.
 val ImplicitTokenDefinition = Kind(125, Warning(), "implicit definition of token <arg> in parser")

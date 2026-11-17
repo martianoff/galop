@@ -2,6 +2,7 @@ package tool
 
 import (
     "path/filepath"
+    "regexp"
 
     . "martianoff/gala/collection_immutable"
 
@@ -16,42 +17,33 @@ import (
 // Loading reads files, so it runs on the main goroutine before the front end
 // (see Run); it gives plain data, Imported, that the front end merges.
 
-// CannotFindImportedGrammar is ANTLR's error 110.
-val CannotFindImportedGrammar = diag.Kind(110, diag.Error(), "can't find or load grammar <arg>")
-
-// ErrorReadingImportedGrammar is ANTLR's error 11.
-val ErrorReadingImportedGrammar = diag.Kind(11, diag.Error(), "error reading imported grammar <arg> referenced in <arg2>")
-
-// OptionsInDelegate is ANTLR's warning 109.
-val OptionsInDelegate = diag.Kind(109, diag.Warning(), "options ignored in imported grammar <arg>")
-
-// InvalidImport is ANTLR's error 111.
-val InvalidImport = diag.Kind(111, diag.Error(), "<arg> grammar <arg2> cannot import <arg3> grammar <arg4>")
-
-// ImportNameClash is ANTLR's error 113.
-val ImportNameClash = diag.Kind(113, diag.Error(), "<arg> grammar <arg2> and imported <arg3> grammar <arg4> both generate <arg5>")
-
-// Delegate is an imported grammar as read: its file and its rules, with its
-// positions in that file (g4.InFile).
-struct Delegate(Path string, Grammar g4.Grammar)
-
 // Imported is what loading found for one root grammar: every grammar it
 // imports, directly or through another, in ANTLR's order
 // (getAllImportedGrammars: each direct import, then its own, first occurrence
-// of a file kept), and the problems found reading them. Unreadable is set
+// of a file kept), each with its positions in its own file (g4.InFile, so its
+// file is Pos.File), and the problems found reading them. Unreadable is set
 // when an imported grammar has a syntax error: ANTLR stops there, after
 // reporting it.
-struct Imported(Delegates Array[Delegate], Problems Array[diag.Diagnostic], Unreadable bool = false)
+struct Imported(Delegates Array[g4.Grammar], Problems Array[diag.Diagnostic], Unreadable bool = false)
 
 // NoImports is the result for a grammar without imports.
-val NoImports = Imported(EmptyArray[Delegate](), EmptyArray[diag.Diagnostic]())
+val NoImports = Imported(EmptyArray[g4.Grammar](), EmptyArray[diag.Diagnostic]())
+
+// importStatement finds text that may be an `import` statement: the keyword,
+// then no quote (the keyword as a literal, `'import'`, is not one) up to a
+// `;`. Only a grammar whose text has one is parsed before the front end, to
+// load its imports.
+val importStatement = regexp.MustCompile("\\bimport\\b[^;'\"]*;")
+
+// mayImport says whether text may hold an `import` statement.
+func mayImport(text string) bool = importStatement.MatchString(text)
 
 // loader holds what ANTLR's Tool keeps while loading: the grammars read so far,
 // by name, and the names of grammars whose imports were followed.
 type loader struct {
     files Files
     libDir Option[string]
-    var cache HashMap[string, Option[Delegate]]
+    var cache HashMap[string, Option[g4.Grammar]]
     var visited HashSet[string]
     var problems Array[diag.Diagnostic]
     var unreadable bool
@@ -62,27 +54,24 @@ func LoadImports(root g4.Grammar, path string, libDir Option[string], files File
     if root.Imports.IsEmpty() {
         return NoImports
     }
-    val l = &loader{files: files, libDir: libDir, cache: EmptyHashMap[string, Option[Delegate]](), visited: EmptyHashSet[string](), problems: EmptyArray[diag.Diagnostic](), unreadable: false}
+    val l = &loader{files: files, libDir: libDir, cache: EmptyHashMap[string, Option[g4.Grammar]](), visited: EmptyHashSet[string](), problems: EmptyArray[diag.Diagnostic](), unreadable: false}
     val all = l.load(root, path)
     // ANTLR keys the list by file, keeping each file's first place.
-    val unique = all.FoldLeft(EmptyArray[Delegate](), (acc, d) => if (acc.Exists((x) => x.Path == d.Path)) acc else acc.Append(d))
+    val unique = all.FoldLeft(EmptyArray[g4.Grammar](), (acc, d) => if (acc.Exists((x) => x.Pos.File == d.Pos.File)) acc else acc.Append(d))
     Imported(unique, l.problems, l.unreadable)
 }
 
 // load reads g's imports and theirs, in ANTLR's order: each direct import,
-// then the grammars it imports.
-func (l Ptr[loader]) load(g g4.Grammar, path string) Array[Delegate] {
-    if g.Imports.IsEmpty() {
-        return EmptyArray[Delegate]()
-    }
+// then the grammars it imports. path is g's file.
+func (l Ptr[loader]) load(g g4.Grammar, path string) Array[g4.Grammar] {
     l.visited = l.visited.Add(g.Name)
-    g.Imports.FoldLeft(EmptyArray[Delegate](), (acc, imp) => {
+    g.Imports.FoldLeft(EmptyArray[g4.Grammar](), (acc, imp) => {
         // A grammar already on the way here is a circular import: ignored.
         if l.visited.Contains(imp.Name) {
             return acc
         }
         l.delegate(imp, path, g.Name) match {
-            case Some(d) => acc.Append(d).AppendAll(l.load(d.Grammar, d.Path))
+            case Some(d) => acc.Append(d).AppendAll(l.load(d, d.Pos.File))
             case None() => acc
         }
     })
@@ -90,30 +79,32 @@ func (l Ptr[loader]) load(g g4.Grammar, path string) Array[Delegate] {
 
 // delegate is the grammar imp names, imported by the grammar importer in file
 // from: read once, then cached by name as ANTLR's Tool caches it.
-func (l Ptr[loader]) delegate(imp g4.Import, from string, importer string) Option[Delegate] = l.cache.Get(imp.Name) match {
+func (l Ptr[loader]) delegate(imp g4.Import, from string, importer string) Option[g4.Grammar] = l.cache.Get(imp.Name) match {
     case Some(found) => found
     case None() => l.read(imp, from, importer)
 }
 
 // read reads and parses the grammar imp names, or reports why it cannot.
-func (l Ptr[loader]) read(imp g4.Import, from string, importer string) Option[Delegate] {
+func (l Ptr[loader]) read(imp g4.Import, from string, importer string) Option[g4.Grammar] {
     val found = l.locate(imp.Name, from) match {
         case None() => {
-            l.problems = l.problems.Append(CannotFindImportedGrammar.New(imp.Name).At(imp.Pos.Line, imp.Pos.Col).In(from))
-            None[Delegate]()
+            l.problems = l.problems.Append(g4.At(diag.CannotFindImportedGrammar.New(imp.Name), imp.Pos))
+            None[g4.Grammar]()
         }
         case Some(file) => l.files.Read(file) match {
             case Failure(_) => {
-                l.problems = l.problems.Append(ErrorReadingImportedGrammar.New(imp.Name, importer).At(imp.Pos.Line, imp.Pos.Col).In(imp.Name))
-                None[Delegate]()
+                // ANTLR names the imported grammar where a file name goes.
+                val at = imp.Pos.Copy(File = imp.Name)
+                l.problems = l.problems.Append(g4.At(diag.ErrorReadingImportedGrammar.New(imp.Name, importer), at))
+                None[g4.Grammar]()
             }
             case Success(text) => g4.Parse(text) match {
                 case Left(d) => {
                     l.problems = l.problems.Append(d.In(file))
                     l.unreadable = true
-                    None[Delegate]()
+                    None[g4.Grammar]()
                 }
-                case Right(g) => Some(Delegate(file, g4.InFile(g, file)))
+                case Right(g) => Some(g4.InFile(g, file))
             }
         }
     }
@@ -125,7 +116,7 @@ func (l Ptr[loader]) read(imp g4.Import, from string, importer string) Option[De
 // does: name.g4 then name.g, each looked for in the working directory, then
 // the importing grammar's directory, then the -lib directory.
 func (l Ptr[loader]) locate(name string, from string) Option[string] {
-    val dirs = ArrayOf(".", filepath.Dir(from), l.libDir.GetOrElse("."))
+    val dirs = ArrayOf(".", dirOf(from), l.libDir.GetOrElse("."))
     ArrayOf(name + ".g4", name + ".g")
         .FlatMap((file) => dirs.Map((dir) => filepath.ToSlash(filepath.Join(dir, file))))
         .Find((p) => l.files.Kind(p) match {
@@ -138,23 +129,24 @@ func (l Ptr[loader]) locate(name string, from string) Option[string] {
 // integrateImportedGrammars merges it, and ANTLR's import diagnostics: root's
 // rules come first and win over a delegate's rule of the same name, and each
 // delegate adds its channels, tokens, named actions and remaining rules, in
-// order. path is root's file.
-func mergeImports(root g4.Grammar, path string, imported Imported) Tuple[g4.Grammar, Array[diag.Diagnostic]] {
+// order.
+func mergeImports(root g4.Grammar, imported Imported) Tuple[g4.Grammar, Array[diag.Diagnostic]] {
     if imported.Delegates.IsEmpty() {
         return (root, imported.Problems)
     }
-    val merged = imported.Delegates.FoldLeft(root, (g, d) => {
-        val del = d.Grammar
+    val scope = defaultActionScope(root)
+    val merged = imported.Delegates.FoldLeft(root, (g, del) => {
+        val names = g.Rules.FoldLeft(EmptyHashSet[string](), (acc, r) => acc.Add(r.Name))
         g.Copy(
             Channels = g.Channels.AppendAll(del.Channels.Filter((c) => !g.Channels.Contains(c))),
             Tokens = g.Tokens.AppendAll(del.Tokens),
-            Actions = mergeActions(g.Actions, del.Actions, defaultActionScope(root)),
-            Rules = del.Rules.FoldLeft(g.Rules, (rules, r) => if (rules.Exists((x) => x.Name == r.Name)) rules else rules.Append(r)),
+            Actions = mergeActions(g.Actions, del.Actions, scope),
+            Rules = g.Rules.AppendAll(del.Rules.Filter((r) => !names.Contains(r.Name))),
         )
     })
-    val checks = importChecks(root, path, imported.Delegates)
-        .AppendAll(imported.Delegates.Collect({ case d if optionsDiffer(root, d.Grammar) =>
-            OptionsInDelegate.New(d.Grammar.Name).At(d.Grammar.OptionsPos.Line, d.Grammar.OptionsPos.Col).In(d.Path)
+    val checks = importChecks(root, imported.Delegates)
+        .AppendAll(imported.Delegates.Collect({ case del if optionsDiffer(root, del) =>
+            g4.At(diag.OptionsInDelegate.New(del.Name), del.OptionsPos)
         }))
     (merged, imported.Problems.AppendAll(checks))
 }
@@ -185,16 +177,15 @@ func optionsDiffer(root g4.Grammar, del g4.Grammar) bool =
 // importChecks are ANTLR's checks of root's own imports (not of its
 // delegates' imports): which kinds of grammar may import which (error 111),
 // and a combined grammar importing the lexer or parser it generates (113).
-func importChecks(root g4.Grammar, path string, delegates Array[Delegate]) Array[diag.Diagnostic] =
-    root.Imports.FlatMap((imp) => delegates.Find((d) => d.Grammar.Name == imp.Name) match {
+func importChecks(root g4.Grammar, delegates Array[g4.Grammar]) Array[diag.Diagnostic] =
+    root.Imports.FlatMap((imp) => delegates.Find((d) => d.Name == imp.Name) match {
         case None() => EmptyArray[diag.Diagnostic]()
-        case Some(d) => {
-            val del = d.Grammar
+        case Some(del) => {
             val invalid = if (validImport(root.Kind, del.Kind)) EmptyArray[diag.Diagnostic]()
-                else ArrayOf(InvalidImport.New(kindName(root.Kind), root.Name, kindName(del.Kind), del.Name).At(imp.Pos.Line, imp.Pos.Col).In(path))
+                else ArrayOf(g4.At(diag.InvalidImport.New(kindName(root.Kind), root.Name, kindName(del.Kind), del.Name), imp.Pos))
             val clash = (root.Kind, del.Name) match {
                 case (g4.Combined(), n) if n == root.Name + "Lexer" || n == root.Name + "Parser" =>
-                    ArrayOf(ImportNameClash.New(kindName(root.Kind), root.Name, kindName(del.Kind), del.Name, recognizerName(d)).At(imp.Pos.Line, imp.Pos.Col).In(path))
+                    ArrayOf(g4.At(diag.ImportNameClash.New(kindName(root.Kind), root.Name, kindName(del.Kind), del.Name, recognizerName(del)), imp.Pos))
                 case _ => EmptyArray[diag.Diagnostic]()
             }
             invalid.AppendAll(clash)
@@ -222,16 +213,15 @@ func kindName(k g4.GrammarKind) string = k match {
 // error 113: its name, with Parser after a combined grammar's. (ANTLR means to
 // put the importing grammars' names first, but it asks the root grammar, which
 // has no importers, for them.)
-func recognizerName(d Delegate) string = d.Grammar.Kind match {
-    case g4.Combined() => d.Grammar.Name + "Parser"
-    case _ => d.Grammar.Name
+func recognizerName(del g4.Grammar) string = del.Kind match {
+    case g4.Combined() => del.Name + "Parser"
+    case _ => del.Name
 }
 
 // WithImports is g, the grammar in file path, with the grammars it imports
 // merged in as the front end merges them, or the errors found doing so. It
 // is for tools that read a grammar outside Run, such as galop-sample.
 func WithImports(g g4.Grammar, path string, libDir Option[string], files Files) Either[Array[diag.Diagnostic], g4.Grammar] {
-    val imported = LoadImports(g, path, libDir, files)
-    val (merged, problems) = mergeImports(g, path, imported)
-    if (imported.Unreadable || diag.HasErrors(problems)) Left(problems) else Right(merged)
+    val (merged, problems) = mergeImports(g, LoadImports(g, path, libDir, files))
+    if (diag.HasErrors(problems)) Left(problems) else Right(merged)
 }

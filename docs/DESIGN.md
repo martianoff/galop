@@ -1299,8 +1299,10 @@ in one grammar does not stop the others.
 `import A, B = C;` works as in ANTLR 4.13.1 (`tool/imports.gala`). For each
 grammar on the command line, `tool.Run` reads the grammars it imports before
 the front end's `Future` starts, since a `Future` cannot use the file system;
-a grammar whose text does not contain `import` is not parsed for this. The
-front end then merges them into the grammar before the checks.
+only a grammar whose text may hold an `import` statement (the keyword, then
+no quote up to a `;`) is parsed for this, so `'import'` as a literal does not
+cost GALA's grammar a second parse. The front end then merges them into the
+grammar before the checks.
 
 - **Finding a grammar.** `import C` (or `B = C`) loads `C.g4`, then
   `C.g`, each looked for in the working directory, the importing grammar's
@@ -1324,7 +1326,7 @@ Where galop differs, and its tests (`tool/imports_test.gala`) say so:
 
 - A diagnostic about an imported rule names the imported grammar's file. ANTLR
   does for some (error 56), but for others it names the root grammar's file
-  with the imported file's line and column (warning 125).
+  with the imported file's line and column (warning 125, error 147).
 - The import problems are reported with the rule checks. ANTLR stops after an
   undefined or duplicate rule (errors 51, 56), before it checks which grammar
   kinds may import which, so it reports 111 only on a grammar without them.
