@@ -3,7 +3,7 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
-## Unreleased
+## 0.5.1
 
 - **Changed:** in the native flavor, `GetText` returns a slice of the source, with no
   copy, when a node's tokens are contiguous in it (no skipped or hidden text
