@@ -18,6 +18,6 @@ upstream.
 
 `CEL.g4`, `HavingExpression.g4`, `Plan.g4` and `grulev3.g4` have left-recursive rules.
 `//differential/convert` builds both flavors of each and checks
-them against ANTLR on generated sentences and mutants. So it does `fileseq.g4`,
-whose whitespace is a token rather than skipped, so a node's tokens are
-contiguous in the source (which `GetText` uses).
+them against ANTLR on generated sentences and mutants. It also checks `fileseq.g4`,
+whose whitespace is a token rather than skipped: its nodes' tokens are
+contiguous in the source, the case where `GetText` returns a slice of it.
