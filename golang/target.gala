@@ -1,9 +1,11 @@
 package golang
 
 import (
+    "go/format"
     "strings"
 
     . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/go_interop"
 
     "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
@@ -49,10 +51,21 @@ func (t goTarget) Generate(in codegen.Input, opts codegen.Options) Either[Array[
     flavorOf(opts, in.Grammar) match {
         case Some(f) => nativePackageProblem(opts, f) match {
             case Some(problem) => Left(ArrayOf(problem))
-            case None() => generateFlavor(in, opts, t.Version, f)
+            case None() => generateFlavor(in, opts, t.Version, f).FlatMap(gofmt)
         }
         case None() => Left(ArrayOf(s"Go target: unknown flavor '${opts.Define("flavor").GetOrElse("")}' (supported: ${GoFlavors.MkString(", ")})"))
     }
+
+// gofmt formats each file as gofmt does, so generated code passes gofmt
+// checks whatever the spacing of the templates it comes from. A file that is
+// not valid Go is a galop bug: it is reported, not written.
+func gofmt(files Array[codegen.OutputFile]) Either[Array[string], Array[codegen.OutputFile]] {
+    val formatted = files.Map((file) => (file, Try(format.Source(ToBytes(file.Content)))))
+    formatted.Collect({ case (file, Failure(e)) => s"Go target: generated ${file.Name} is not valid Go: ${e.Error()}" }) match {
+        case Array() => Right(formatted.Collect({ case (file, Success(code)) => file.Copy(Content = ToString(code)) }))
+        case broken => Left(broken)
+    }
+}
 
 // baseName is the grammar name without the trailing `Parser` of a parser
 // grammar or `Lexer` of a lexer grammar, as ANTLR's Go target trims it.

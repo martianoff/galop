@@ -1,10 +1,12 @@
 package golang
 
 import (
+    "go/format"
     "strings"
 
     . "martianoff/gala/collection_immutable"
     "martianoff/gala/go_builtins"
+    . "martianoff/gala/go_interop"
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/analysis"
@@ -391,7 +393,7 @@ func TestNativeTypedViewAndListener(t T) T {
     val expected = ArrayOf(
         "func (n ExprNodeRef) Typed() ExprHandle",
         // A labeled rule has its own kind, then one per labeled alternative.
-        "\tExprKIND_stat ExprKind = 1\n\tExprKIND_exprStat ExprKind = 2\n\tExprKIND_assign ExprKind = 3\n",
+        "\tExprKIND_stat     ExprKind = 1\n\tExprKIND_exprStat ExprKind = 2\n\tExprKIND_assign   ExprKind = 3\n",
         "var exprGalopKindBase = [...]ExprKind{0, 1, 4, 5}",
         "\tcase ExprKIND_assign:\n\t\treturn (*AssignNode)(h)",
         "\tcase ExprKIND_stat:\n\t\treturn (*StatNode)(h)",
@@ -412,6 +414,17 @@ func TestNativeVisitorAndNoListener(t T) T {
     val t2 = IsTrue(t1, strings.Contains(parser, "func ExprAccept[R any](n ExprNodeRef, v ExprVisitor[R]) (r R)"))
     IsFalse(t2, strings.Contains(parser, "ExprListener"))
 }
+
+// TestGeneratedCodeIsGofmtClean checks that every generated file, in both
+// flavors and with the converter, is what gofmt makes of it.
+func TestGeneratedCodeIsGofmtClean(t T) T =
+    ArrayOf(EmptyArray[g4.OptionEntry](), antlrDefines, converterDefines).FoldLeft(t, (acc, defines) => generate(exprGrammar, defines) match {
+        case Right(files) => files.FoldLeft(acc, (a, file) => Try(format.Source(ToBytes(file.Content))) match {
+            case Success(code) => IsTrue(a, ToString(code) == file.Content)
+            case Failure(e) => a.Error(s"${file.Name} is not valid Go: ${e.Error()}")
+        })
+        case Left(errs) => acc.Error(errs.MkString(", "))
+    })
 
 // converterDefines select the antlr flavor with the converter to the native package.
 val converterDefines = ArrayOf(g4.OptionEntry("flavor", "antlr"), g4.OptionEntry("nativePackage", "example.com/expr/native"))
