@@ -659,10 +659,10 @@ func (n @X@NodeRef) Stop() @X@Token {
 // GetText is the text of n's tokens run together, as ANTLR's GetText gives
 // it ("<EOF>" for an EOF child).
 func (n @X@NodeRef) GetText() string {
-	nd := n.t.Nodes[n.i]
 	if s, ok := n.spanText(); ok {
 		return s
 	}
+	nd := n.t.Nodes[n.i]
 	var b strings.Builder
 	if nd.Stop >= nd.Start {
 		b.Grow(int(n.t.Tokens[nd.Stop].End - n.t.Tokens[nd.Start].Start))
@@ -691,7 +691,7 @@ func (n @X@NodeRef) spanText() (s string, ok bool) {
 	if int(nd.Stop)+1 < len(t.Tokens) && t.Tokens[nd.Stop+1].Type == @X@EOF && n.endsWithEOF() {
 		return "", false
 	}
-	return t.Src[toks[0].Start:toks[len(toks)-1].End], true
+	return n.SourceText(), true
 }
 
 // endsWithEOF reports whether n's last token child, through its last
