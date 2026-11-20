@@ -43,7 +43,39 @@ struct Grammar(
     // TokensPos holds where each name of Tokens is, in the same order; it is
     // empty for a grammar built in code.
     TokensPos Array[Pos] = EmptyArray[Pos](),
+    // Sections are the grammar's `options`, `import` and `tokens` sections in
+    // source order; empty for a grammar built in code. ANTLR reads only the
+    // first of each kind in places (see FirstSectionSize) and reports a second
+    // one (error 54).
+    Sections Array[Section] = EmptyArray[Section](),
 )
+
+// Section is one `options {}`, `import` or `tokens {}` section: its keyword,
+// where the keyword is, and how many entries (options, imported grammars,
+// token names) it holds.
+struct Section(Keyword string, Pos Pos, Count int)
+
+// FirstSectionSize is how many of g's entries of the given section keyword
+// come from its first section of that kind: all total of them for a grammar
+// with no recorded sections, 0 when it has none of that kind.
+func FirstSectionSize(g Grammar, keyword string, total int) int =
+    if (g.Sections.IsEmpty()) total
+    else g.Sections.Find(_.Keyword == keyword).Map(_.Count).GetOrElse(0)
+
+// LoadedImports are the imports ANTLR loads: those of g's first `import`
+// statement.
+func LoadedImports(g Grammar) Array[Import] = g.Imports.Take(FirstSectionSize(g, "import", g.Imports.Size()))
+
+// AsImported is g as ANTLR merges it into an importing grammar: only its first
+// `tokens {}` and `options {}` sections count.
+func AsImported(g Grammar) Grammar {
+    val tokens = FirstSectionSize(g, "tokens", g.Tokens.Size())
+    g.Copy(
+        Tokens = g.Tokens.Take(tokens),
+        TokensPos = TokenPositions(g).Take(tokens),
+        Options = g.Options.Take(FirstSectionSize(g, "options", g.Options.Size())),
+    )
+}
 
 // Import is one grammar in an `import` statement: `import Name;`, or
 // `import Alias = Name;`, which imports Name (ANTLR keeps the alias but loads
@@ -108,6 +140,8 @@ func StripPositions(g Grammar) Grammar = g.Copy(
     Pos = NoPos,
     OptionsPos = NoPos,
     TokensPos = EmptyArray[Pos](),
+    // Sections are layout too: the formatter prints one section of each kind.
+    Sections = EmptyArray[Section](),
     Actions = g.Actions.Map(_.Copy(Pos = NoPos)),
     Options = g.Options.Map(_.Copy(Pos = NoPos)),
     Imports = g.Imports.Map(_.Copy(Pos = NoPos)),
@@ -123,6 +157,7 @@ func InFile(g Grammar, file string) Grammar {
         Pos = inFile(g.Pos),
         OptionsPos = inFile(g.OptionsPos),
         TokensPos = g.TokensPos.Map(inFile),
+        Sections = g.Sections.Map((s) => s.Copy(Pos = inFile(s.Pos))),
         Actions = g.Actions.Map((a) => a.Copy(Pos = inFile(a.Pos))),
         Options = g.Options.Map((o) => o.Copy(Pos = inFile(o.Pos))),
         Imports = g.Imports.Map((i) => i.Copy(Pos = inFile(i.Pos))),

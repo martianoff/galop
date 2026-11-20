@@ -11,6 +11,10 @@ lists every merged pull request.
   quirks are kept: a combined grammar's repeated action is reported twice
   (ANTLR checks it in its lexer and in its parser), and an action without a
   scope takes the scope of the last action that has one.
+- **Added:** ANTLR's error 54, a second `options`, `import` or `tokens`
+  section. As in ANTLR, only a grammar's first `import` statement is loaded,
+  and an imported grammar contributes only its first `tokens {}` and
+  `options {}` sections; galop merged them all.
 - **Fixed:** a `tokens {}` name of an implicit literal token (`T__0`) is that
   token; the generated Go code declared its constant twice.
 

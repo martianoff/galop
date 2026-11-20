@@ -31,9 +31,15 @@ func Check(g Grammar) Array[diag.Diagnostic] {
         r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => At(d, l.Pos)))
     )
     val all = noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors).AppendAll(assocProblems(g))
-        .AppendAll(actionRedefinitions(g))
+        .AppendAll(repeatedSections(g)).AppendAll(actionRedefinitions(g))
     diag.InSourceOrder(all.AppendAll(tokenRedefinitions(g)).AppendAll(implicitTokens(g)))
 }
+
+// repeatedSections are ANTLR's error 54 at the second `options`, `import` or
+// `tokens` section of g, if it has one; a third is not reported, as in ANTLR.
+func repeatedSections(g Grammar) Array[diag.Diagnostic] =
+    ArrayOf("options", "import", "tokens").Collect((k) =>
+        g.Sections.Filter(_.Keyword == k).Drop(1).HeadOption().Map((s) => At(diag.RepeatedPrequel.New(), s.Pos)))
 
 // actionRedefinitions are ANTLR's error 94 for a named action defined twice
 // in one scope, found as ANTLR's SymbolChecks finds them. ANTLR checks a

@@ -209,6 +209,47 @@ func TestImports(t T) T = RunCases[importCase, string](t,
         ), "-check R.g4"),
         Expected = "error(94): D1.g4:2:1: redefinition of header action\n",
     ),
+    // ANTLR prints only the 54: it stops there.
+    Case[importCase, string](
+        Name = "a second import statement is not loaded",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport L1;\nimport L2;\ns: A B EOF;\n"),
+            ("L1.g4", "lexer grammar L1;\nA: 'a';\n"),
+            ("L2.g4", "lexer grammar L2;\nB: 'b';\n"),
+        ), "-check R.g4"),
+        Expected = "error(54): R.g4:3:0: repeated grammar prequel spec (options, tokens, or import); please merge\n" +
+            "warning(125): R.g4:4:5: implicit definition of token B in parser\n",
+    ),
+    // ANTLR reports no 54 in an imported grammar: it reads the first section
+    // of each kind. Here, F is not loaded.
+    Case[importCase, string](
+        Name = "an imported grammar's second import statement",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport D;\ns: t EOF;\nA: 'a';\n"),
+            ("D.g4", "parser grammar D;\nimport E;\nimport F;\nt: A u v;\n"),
+            ("E.g4", "parser grammar E;\nu: A;\n"),
+            ("F.g4", "parser grammar F;\nv: A;\n"),
+        ), "-check R.g4"),
+        Expected = "error(56): D.g4:4:7: reference to undefined rule: v\n",
+    ),
+    // ANTLR prints R.g4:4:7.
+    Case[importCase, string](
+        Name = "an imported grammar's second tokens section is ignored",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport D;\ns: t EOF;\nA: 'a';\n"),
+            ("D.g4", "parser grammar D;\ntokens { X }\ntokens { Y }\nt: A X Y;\n"),
+        ), "-check R.g4"),
+        Expected = "R.g4: ok (grammar R: 2 parser rules, 1 lexer rules)\n" +
+            "warning(125): D.g4:4:7: implicit definition of token Y in parser\n",
+    ),
+    Case[importCase, string](
+        Name = "an imported grammar's second options section is ignored",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport D;\ns: t EOF;\nA: 'a';\n"),
+            ("D.g4", "parser grammar D;\noptions { language = Java; }\noptions { superClass = B; }\nt: A;\n"),
+        ), "-check R.g4"),
+        Expected = "R.g4: ok (grammar R: 2 parser rules, 1 lexer rules)\n",
+    ),
     Case[importCase, string](
         Name = "-format prints the grammar as written",
         Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport L;\ns: A B EOF;\n"), lexL), "-format R.g4"),

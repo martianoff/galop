@@ -55,7 +55,8 @@ func LoadImports(root g4.Grammar, path string, libDir Option[string], files File
 // then the grammars it imports. path is g's file.
 func (l Ptr[loader]) load(g g4.Grammar, path string) Array[g4.Grammar] {
     l.visited = l.visited.Add(g.Name)
-    g.Imports.FoldLeft(EmptyArray[g4.Grammar](), (acc, imp) => {
+    // As ANTLR, only the first `import` statement is loaded.
+    g4.LoadedImports(g).FoldLeft(EmptyArray[g4.Grammar](), (acc, imp) => {
         // A grammar already on the way here is a circular import: ignored.
         if l.visited.Contains(imp.Name) {
             return acc
@@ -96,7 +97,8 @@ func (l Ptr[loader]) read(imp g4.Import, from string, importer string) Option[g4
                     l.unreadable = true
                     None[g4.Grammar]()
                 }
-                case Right(g) => Some(g4.InFile(g, file))
+                // Only its first tokens {} and options {} count, as in ANTLR.
+                case Right(g) => Some(g4.AsImported(g4.InFile(g, file)))
             }
         }
     }

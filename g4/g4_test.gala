@@ -103,7 +103,8 @@ func TestParsePrequelPositions(t T) T {
     val (t1, g) = parseOrFail(t, "grammar g;\ntokens { A,\n  B }\n@members { m }\n@lexer::header { h }\ntokens { C }\na: A;\n")
     val t2 = Eq(t1, g.Tokens, ArrayOf("A", "B", "C"))
     val t3 = Eq(t2, g.TokensPos, ArrayOf(Pos(2, 10), Pos(3, 3), Pos(6, 10)))
-    val t4 = Eq(t3, g.Actions.Map(_.Pos), ArrayOf(Pos(4, 2), Pos(5, 2)))
+    val t4a = Eq(t3, g.Actions.Map(_.Pos), ArrayOf(Pos(4, 2), Pos(5, 2)))
+    val t4 = Eq(t4a, g.Sections, ArrayOf(Section("tokens", Pos(2, 1), 2), Section("tokens", Pos(6, 1), 1)))
     Eq(t4, StripPositions(g).TokensPos.IsEmpty() && StripPositions(g).Actions.ForAll((a) => !a.Pos.IsKnown()), true)
 }
 
@@ -240,6 +241,15 @@ func TestCheck(t T) T = RunCases[string, string](t,
         Name = "repeated action with an undefined rule",
         Input = "grammar T;\n@members { a }\n@members { b }\ns: b EOF;\nA: 'a';",
         Expected = "94 3:2: redefinition of members action; 94 3:2: redefinition of members action; 56 4:4: reference to undefined rule: b",
+    ),
+    // ANTLR prints the 54s in the order options, import, tokens, and only
+    // them: it stops there (docs/DESIGN.md: galop runs every check).
+    Case[string, string](
+        Name = "repeated sections, the second of each kind",
+        Input = "grammar T;\noptions { a = b; }\ntokens { X }\nimport L;\ntokens { Y }\noptions { c = d; }\nimport M;\ntokens { Z }\ns: X Y Z EOF;",
+        Expected = "54 5:1: repeated grammar prequel spec (options, tokens, or import); please merge; " +
+            "54 6:1: repeated grammar prequel spec (options, tokens, or import); please merge; " +
+            "54 7:1: repeated grammar prequel spec (options, tokens, or import); please merge",
     ),
     Case[string, string](
         Name = "tokens already defined",

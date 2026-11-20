@@ -62,6 +62,9 @@ val IllegalOption = Kind(83, Warning(), "unsupported option <arg>")
 // IllegalOptionValue: a known option with a value galop does not accept.
 val IllegalOptionValue = Kind(84, Warning(), "unsupported option value <arg>=<arg2>")
 
+// RepeatedPrequel: a second `options`, `import` or `tokens` section.
+val RepeatedPrequel = Kind(54, Error(), "repeated grammar prequel spec (options, tokens, or import); please merge")
+
 // ActionRedefinition: a named action (`@members`) defined twice in one scope.
 val ActionRedefinition = Kind(94, Error(), "redefinition of <arg> action")
 

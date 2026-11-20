@@ -1297,6 +1297,15 @@ in the vocabulary as in ANTLR. ANTLR does not check a lexer grammar's
 `tokens {}`, and galop does not check a grammar whose `tokenVocab` supplies its
 tokens.
 
+**Repeated sections.** A second `options`, `import` or `tokens` section is
+error 54, at its keyword; a third is not reported. ANTLR reads only the first
+section of each kind in places, and so does galop. Only a grammar's first
+`import` statement is loaded, the root's included. An imported grammar
+contributes only its first `tokens {}` section, and its first `options {}`
+section is the one compared for warning 109. ANTLR reports no 54 in an
+imported grammar. `-format` prints one section of each kind, so formatting
+merges the repeated sections.
+
 ANTLR checks in stages and skips later checks after an error. After an
 undefined or repeated rule (errors 56, 51), for example, it does not check the
 actions in the parser or the `tokens {}` names. galop runs every check and

@@ -134,6 +134,7 @@ func (p Ptr[parser]) grammar() Grammar {
     var actions = EmptyArray[NamedAction]()
     var imports = EmptyArray[Import]()
     var optionsPos = NoPos
+    var sections = EmptyArray[Section]()
     // A `break` inside a match arm would only leave the match, so the arms
     // report whether the prequel continues.
     var inPrequel = true
@@ -145,11 +146,15 @@ func (p Ptr[parser]) grammar() Grammar {
                 if !optionsPos.IsKnown() {
                     optionsPos = posOf(t)
                 }
-                options = options.AppendAll(p.optionsBlock())
+                val entries = p.optionsBlock()
+                sections = sections.Append(Section("options", posOf(t), entries.Size()))
+                options = options.AppendAll(entries)
                 true
             }
             case "tokens" if opensBlock => {
-                tokens = tokens.AppendAll(p.nameList())
+                val names = p.nameList()
+                sections = sections.Append(Section("tokens", posOf(t), names.Size()))
+                tokens = tokens.AppendAll(names)
                 true
             }
             case "channels" if opensBlock => {
@@ -157,7 +162,9 @@ func (p Ptr[parser]) grammar() Grammar {
                 true
             }
             case "import" if t.Kind.isTokId() => {
-                imports = imports.AppendAll(p.importStatement())
+                val more = p.importStatement()
+                sections = sections.Append(Section("import", posOf(t), more.Size()))
+                imports = imports.AppendAll(more)
                 true
             }
             case "@" if t.Kind.isTokPunct() => {
@@ -176,7 +183,7 @@ func (p Ptr[parser]) grammar() Grammar {
         }
     }
     Grammar(kind, name, options, tokens.Map(_.V1), channels, actions, rules, posOf(nameTok),
-        Imports = imports, OptionsPos = optionsPos, TokensPos = tokens.Map(_.V2))
+        Imports = imports, OptionsPos = optionsPos, TokensPos = tokens.Map(_.V2), Sections = sections)
 }
 
 // importStatement reads `import A, B = C;`: each grammar, optionally with an
