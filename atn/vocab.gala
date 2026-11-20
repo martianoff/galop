@@ -53,25 +53,23 @@ func (v Vocabulary) Display(t int) string =
 
 // BuildVocabulary numbers the tokens of g the way ANTLR does.
 func BuildVocabulary(g g4.Grammar) Vocabulary {
-    val claimed = literalRules(g)
-    val aliases = claimed.Filter((p) => claimed.Count(_.V1 == p.V1) == 1)
-    val implicitLits = g.Rules.Filter((r) => !r.IsLexer())
-        .FlatMap(_.Nodes())
-        .Collect({ case g4.Literal(v) => v })
-        .Distinct()
-        .Filter((v) => !claimed.Exists(_.V1 == v))
+    val aliases = g4.LiteralAliases(g)
+    val implicitLits = g4.ImplicitLiterals(g)
     val implicitCount = implicitLits.Size()
+    val implicitNames = ArrayTabulate(implicitCount, g4.ImplicitTokenName)
     val lexerNames = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Map(_.Name)
-    // A name listed twice in `tokens {}` (or by the root and an imported grammar)
-    // is one token, as in ANTLR (which warns, 108).
-    val declared = lexerNames.AppendAll(g.Tokens.Distinct().Filter((t) => !lexerNames.Contains(t)))
+    // A name listed twice in `tokens {}` (or by the root and an imported
+    // grammar), or one that is already a token, is that one token, as in ANTLR
+    // (which warns, 108).
+    val known = implicitNames.AppendAll(lexerNames)
+    val declared = lexerNames.AppendAll(g.Tokens.Distinct().Filter((t) => !known.Contains(t)))
     val referenced = g.Rules.FlatMap(_.Nodes())
         .Collect({ case g4.TokenRef(n) if n != "EOF" => n })
         .Distinct()
-        .Filter((n) => !declared.Contains(n) && !g.Rules.Exists(_.Name == n))
+        .Filter((n) => !known.Contains(n) && !declared.Contains(n) && !g.Rules.Exists(_.Name == n))
     val named = declared.AppendAll(referenced)
     val names = ArrayOf("<INVALID>")
-        .AppendAll(ArrayTabulate(implicitCount, (k) => s"T__$k"))
+        .AppendAll(implicitNames)
         .AppendAll(named)
     val literals = ArrayOf(None[string]())
         .AppendAll(implicitLits.Map((v) => Some(v)))
@@ -79,17 +77,3 @@ func BuildVocabulary(g g4.Grammar) Vocabulary {
     val implicit = ArrayTabulate(names.Size(), (t) => t >= 1 && t <= implicitCount)
     Vocabulary(names, literals, implicit)
 }
-
-// literalRules pairs a literal with each lexer rule that is exactly that
-// literal (`VAL: 'val';`), as (literal, rule name). A literal one rule claims
-// is an alias: a parser-rule literal uses the rule's type instead of getting an
-// implicit token. As in ANTLR, a literal two rules claim is no alias and gets
-// no implicit token either, so a parser rule that uses it is error 126.
-func literalRules(g g4.Grammar) Array[Tuple[string, string]] =
-    g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Collect((r) => r.Alts match {
-        case Array(alt) => alt.Elements match {
-            case Array(g4.Literal(v)) => Some(Tuple(v, r.Name))
-            case _ => None[Tuple[string, string]]()
-        }
-        case _ => None[Tuple[string, string]]()
-    })

@@ -1279,8 +1279,33 @@ uses but nothing defines is warning 125 (ANTLR then defines it, and so does
 exit code is 1 when any error was reported; `-Werror` adds ANTLR's one-time
 error 10 after the first warning and stops that grammar before code generation.
 
+**Named actions and `tokens {}`.** A named action defined twice in one scope
+is error 94, found as ANTLR's `SymbolChecks` finds it, quirks included:
+
+- ANTLR checks a combined grammar's actions twice: in the lexer it extracts
+  (when the grammar has lexer rules or literals), which gets every action, and
+  in the parser, which keeps the actions not scoped to the lexer. A repeat both
+  see is reported twice.
+- An action written without a scope is in the scope of the last action written
+  with one, not always in the default scope. The lexer's default is `lexer`.
+  So, in a combined grammar, `@members` then `@lexer::members` is a repeat.
+
+A `tokens {}` name that is already a token is warning 108: EOF, a name listed
+before it, or, in a combined grammar, a token of its lexer (a non-fragment lexer
+rule or an implicit literal token, `T__0` ...). A repeated name is one token,
+in the vocabulary as in ANTLR. ANTLR does not check a lexer grammar's
+`tokens {}`, and galop does not check a grammar whose `tokenVocab` supplies its
+tokens.
+
+ANTLR checks in stages and skips later checks after an error. After an
+undefined or repeated rule (errors 56, 51), for example, it does not check the
+actions in the parser or the `tokens {}` names. galop runs every check and
+reports what it finds in source order. So, on a grammar with several errors,
+galop can report more than ANTLR, in a different order. On a grammar with no
+other error, the diagnostics are ANTLR's.
+
 **Positions.** The grammar model records where the grammar name, each option,
-each rule name and each element start (`Rule.Located`, in the pre-order of
+each `tokens {}` name, each named action, each rule name and each element start (`Rule.Located`, in the pre-order of
 `Rule.Nodes`). They place diagnostics; they do not change what a grammar means,
 so equality that matters (the formatter round trip) compares
 `g4.StripPositions` of both sides. `atn.Compile` places its errors at the
@@ -1313,8 +1338,11 @@ grammar is still parsed once, and files still run concurrently.
   order, adds its rules whose names were not taken before (by the root, an
   earlier imported grammar or itself), its channels and `tokens {}` names, and
   its named actions. An action the root grammar has (`@members`, say) gets the
-  imported text after its own, on a new line. Any other is added as it is. A
-  name in `tokens {}` twice is one token.
+  imported text after its own, on a new line. Any other is added before every
+  action merged so far, in ANTLR's order: grouped by scope, then reversed. That
+  order decides which of two imported grammars' `@members` the merged
+  grammar's check reports (error 94). A name in `tokens {}` twice is one token
+  (warning 108).
 - **Diagnostics.** ANTLR's wording and positions for:
   - error 110: the grammar cannot be found;
   - error 11: it cannot be read; like ANTLR, galop names the grammar where a
@@ -1323,7 +1351,9 @@ grammar is still parsed once, and files still run concurrently.
   - error 113: a combined grammar `G` imports `GLexer` or `GParser`;
   - warning 109: the imported grammar's options are ignored. Options are
     compared as ANTLR compares them: a `-D` option first, then the grammar's
-    value without quotes, then ANTLR's default (`language` is Java).
+    value without quotes, then ANTLR's default (`language` is Java);
+  - error 94 while merging: an imported grammar's action repeated in it, and
+    the root grammar's, which ANTLR reports once for each imported grammar.
 
   A syntax error in an imported grammar stops that grammar, as in ANTLR.
 - **Printing.** `-format` and `-roundtrip` work on the grammar as written,
@@ -1332,9 +1362,10 @@ grammar is still parsed once, and files still run concurrently.
 Where galop differs, and its tests (`tool/imports_test.gala`) say so:
 
 - **Which file a diagnostic names.** galop names the imported grammar's file
-  for a diagnostic about an imported rule. ANTLR does too for some (error
-  56). For others it names the root grammar's file with the imported file's
-  line and column (warning 125, error 147).
+  for a diagnostic about an imported rule, action or `tokens {}` name. ANTLR
+  does too for some (error 56, error 94 while merging). For others it names
+  the root grammar's file with the imported file's line and column (warning
+  125, error 147, warning 108, error 94 in the merged grammar).
 - **Order and stopping.** The import problems are reported with the rule
   checks. ANTLR stops after an undefined or duplicate rule (errors 51, 56),
   before it checks which grammar kinds may import which, so it reports 111
@@ -1343,9 +1374,6 @@ Where galop differs, and its tests (`tool/imports_test.gala`) say so:
   no imported grammar and reports no problem with one. galop does the same,
   but merges the imported grammars it finds, because its `-depend` checks the
   grammar.
-- **Errors not reported.** galop does not report error 94 (an action defined
-  twice, #87) or warning 108 (a token name defined again, #88). These checks
-  are missing with or without imports.
 
 ## Bazel (`rules_gala`)
 

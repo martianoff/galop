@@ -160,6 +160,55 @@ func TestImports(t T) T = RunCases[importCase, string](t,
         Input = importCase(ArrayOf(("M.g4", "grammar M;\nimport Nope;\ns: A EOF;\nA: [a];\n")), "-depend M.g4"),
         Expected = "m_galop_lexer.go : M.g4\n",
     ),
+    // ANTLR prints R.g4:2:1 twice: the root's file with D1.g4's position.
+    // ANTLR inserts D2's action before D1's and reports the later one, D1's,
+    // once in the lexer it extracts and once in the parser.
+    Case[importCase, string](
+        Name = "two imported grammars add the same action",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport D1, D2;\ns: A EOF;\nA: 'a';\n"),
+            ("D1.g4", "parser grammar D1;\n@members { d1 }\nt: A;\n"),
+            ("D2.g4", "parser grammar D2;\n\n@members { d2 }\nu: A;\n"),
+        ), "-check R.g4"),
+        Expected = "error(94): D1.g4:2:1: redefinition of members action\n" +
+            "error(94): D1.g4:2:1: redefinition of members action\n",
+    ),
+    // Once for each imported grammar as ANTLR merges it (an imported grammar
+    // with no actions too), then in the lexer and the parser.
+    Case[importCase, string](
+        Name = "the root's own repeated action",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport D;\n@members { a }\n@members { b }\ns: A EOF;\nA: 'a';\n"),
+            ("D.g4", "parser grammar D;\nt: A;\n"),
+        ), "-check R.g4"),
+        Expected = "error(94): R.g4:4:1: redefinition of members action\n" +
+            "error(94): R.g4:4:1: redefinition of members action\n" +
+            "error(94): R.g4:4:1: redefinition of members action\n",
+    ),
+    // ANTLR prints the 108s in R.g4, at D.g4's positions.
+    Case[importCase, string](
+        Name = "an imported grammar's repeated action and tokens",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport D;\ntokens { Y }\ns: A EOF;\nA: 'a';\n"),
+            ("D.g4", "parser grammar D;\ntokens {\n  Z, Y, A }\n@members { x }\n@header { h }\n@members { y }\nt: A;\n"),
+        ), "-check R.g4"),
+        Expected = "error(94): D.g4:6:1: redefinition of members action\n" +
+            "warning(108): D.g4:3:5: token name Y is already defined\n" +
+            "warning(108): D.g4:3:8: token name A is already defined\n",
+    ),
+    // ANTLR prints R.g4:2:1: the merged actions are D2's @header, then D1's
+    // @lexer::header, then R's. In the extracted lexer, whose default scope
+    // is lexer, D1's repeats D2's. (In the order written, D2's @header would
+    // take the lexer scope from D1's and be the repeat, at D2.g4:3:1.)
+    Case[importCase, string](
+        Name = "merged actions in ANTLR's order",
+        Input = importCase(ArrayOf(
+            ("R.g4", "grammar R;\nimport D1, D2;\n@members { a }\ns: A EOF;\nA: 'a';\n"),
+            ("D1.g4", "parser grammar D1;\n@lexer::header { x }\nt: A;\n"),
+            ("D2.g4", "parser grammar D2;\n\n@header { y }\nu: A;\n"),
+        ), "-check R.g4"),
+        Expected = "error(94): D1.g4:2:1: redefinition of header action\n",
+    ),
     Case[importCase, string](
         Name = "-format prints the grammar as written",
         Input = importCase(ArrayOf(("R.g4", "grammar R;\nimport L;\ns: A B EOF;\n"), lexL), "-format R.g4"),
@@ -177,7 +226,8 @@ func TestMergeImportsCombinesNamedActions(t T) T {
         case (Right(r), Right(d)) => {
             val (merged, problems) = mergeImports(r, Imported(ArrayOf(g4.InFile(d, "D.g4")), EmptyArray[diag.Diagnostic]()), EmptyArray[g4.OptionEntry]())
             val t1 = Eq(t, problems.Size(), 0)
-            val t2 = Eq(t1, merged.Actions.Map((a) => a.Name + "=" + a.Body), ArrayOf("members= a \n b ", "header= h "))
+            // The imported actions go first, where ANTLR inserts them.
+            val t2 = Eq(t1, merged.Actions.Map((a) => a.Name + "=" + a.Body), ArrayOf("header= h ", "members= a \n b "))
             Eq(t2, merged.Rules.Map(_.Name), ArrayOf("s", "A", "t"))
         }
         case _ => Fail(t, "the grammars did not parse")
@@ -187,8 +237,9 @@ func TestMergeImportsCombinesNamedActions(t T) T {
 
 // TestMergeImportsActionsOnlyJoinTheRoots checks that only an action the root
 // grammar has collects the imported ones' text: two imported grammars with the
-// same action the root lacks both keep theirs, as in ANTLR (which then reports
-// error 94).
+// same action the root lacks both keep theirs, the later one first, as in
+// ANTLR (whose checks of the merged grammar then report error 94 at the
+// earlier one; see TestImports).
 func TestMergeImportsActionsOnlyJoinTheRoots(t T) T {
     val grammars = ArrayOf(
         "grammar R;\n@header { r }\ns: A;\nA: 'a';\n",
@@ -198,7 +249,7 @@ func TestMergeImportsActionsOnlyJoinTheRoots(t T) T {
     grammars match {
         case Array(Right(r), Right(d1), Right(d2)) => {
             val (merged, _) = mergeImports(r, Imported(ArrayOf(d1, d2), EmptyArray[diag.Diagnostic]()), EmptyArray[g4.OptionEntry]())
-            Eq(t, merged.Actions.Map((a) => a.Name + "=" + a.Body), ArrayOf("header= r \n d1 \n d2 ", "members= a ", "members= b "))
+            Eq(t, merged.Actions.Map((a) => a.Name + "=" + a.Body), ArrayOf("members= b ", "members= a ", "header= r \n d1 \n d2 "))
         }
         case _ => Fail(t, "the grammars did not parse")
     }
