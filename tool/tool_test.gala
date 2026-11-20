@@ -153,10 +153,12 @@ type memory struct {
 func newMemory(files ...Tuple[string, string]) Ptr[memory] =
     &memory{files: HashMapOf(files...), writes: EmptyArray[string]()}
 
-// fs is the in-memory file system; writing under `locked/` fails, and `taken`
-// is a regular file; a path some file is under is a directory.
+// fs is the in-memory file system; writing under `locked/` fails, `taken`
+// is a regular file, a path some file is under is a directory, and a file
+// named `Unreadable.g4` exists but cannot be read.
 func (m Ptr[memory]) fs() Files = Files(
     Read = (path) => m.files.Get(path) match {
+        case Some(_) if filepath.Base(path) == "Unreadable.g4" => Failure[string](errors.New("permission denied"))
         case Some(text) => Success(text)
         case None() => Failure[string](errors.New("no such file"))
     },

@@ -62,7 +62,9 @@ func BuildVocabulary(g g4.Grammar) Vocabulary {
         .Filter((v) => !claimed.Exists(_.V1 == v))
     val implicitCount = implicitLits.Size()
     val lexerNames = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Map(_.Name)
-    val declared = lexerNames.AppendAll(g.Tokens.Filter((t) => !lexerNames.Contains(t)))
+    // A name listed twice in `tokens {}` (or by the root and an imported grammar)
+    // is one token, as in ANTLR (which warns, 108).
+    val declared = lexerNames.AppendAll(g.Tokens.Distinct().Filter((t) => !lexerNames.Contains(t)))
     val referenced = g.Rules.FlatMap(_.Nodes())
         .Collect({ case g4.TokenRef(n) if n != "EOF" => n })
         .Distinct()

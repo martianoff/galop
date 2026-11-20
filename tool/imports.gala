@@ -2,7 +2,6 @@ package tool
 
 import (
     "path/filepath"
-    "regexp"
 
     . "martianoff/gala/collection_immutable"
 
@@ -29,21 +28,12 @@ struct Imported(Delegates Array[g4.Grammar], Problems Array[diag.Diagnostic], Un
 // NoImports is the result for a grammar without imports.
 val NoImports = Imported(EmptyArray[g4.Grammar](), EmptyArray[diag.Diagnostic]())
 
-// importStatement finds text that may be an `import` statement: the keyword,
-// then no quote (the keyword as a literal, `'import'`, is not one) up to a
-// `;`. Only a grammar whose text has one is parsed before the front end, to
-// load its imports.
-val importStatement = regexp.MustCompile("\\bimport\\b[^;'\"]*;")
-
-// mayImport says whether text may hold an `import` statement.
-func mayImport(text string) bool = importStatement.MatchString(text)
-
 // loader holds what ANTLR's Tool keeps while loading: the grammars read so far,
 // by name, and the names of grammars whose imports were followed.
 type loader struct {
     files Files
     libDir Option[string]
-    var cache HashMap[string, Option[g4.Grammar]]
+    var cache HashMap[string, g4.Grammar]
     var visited HashSet[string]
     var problems Array[diag.Diagnostic]
     var unreadable bool
@@ -54,7 +44,7 @@ func LoadImports(root g4.Grammar, path string, libDir Option[string], files File
     if root.Imports.IsEmpty() {
         return NoImports
     }
-    val l = &loader{files: files, libDir: libDir, cache: EmptyHashMap[string, Option[g4.Grammar]](), visited: EmptyHashSet[string](), problems: EmptyArray[diag.Diagnostic](), unreadable: false}
+    val l = &loader{files: files, libDir: libDir, cache: EmptyHashMap[string, g4.Grammar](), visited: EmptyHashSet[string](), problems: EmptyArray[diag.Diagnostic](), unreadable: false}
     val all = l.load(root, path)
     // ANTLR keys the list by file, keeping each file's first place.
     val unique = all.FoldLeft(EmptyArray[g4.Grammar](), (acc, d) => if (acc.Exists((x) => x.Pos.File == d.Pos.File)) acc else acc.Append(d))
@@ -78,9 +68,11 @@ func (l Ptr[loader]) load(g g4.Grammar, path string) Array[g4.Grammar] {
 }
 
 // delegate is the grammar imp names, imported by the grammar importer in file
-// from: read once, then cached by name as ANTLR's Tool caches it.
+// from: read once, then cached by name as ANTLR's Tool caches it. As in
+// ANTLR, only a grammar that loaded is cached, so each import of a missing
+// one is reported.
 func (l Ptr[loader]) delegate(imp g4.Import, from string, importer string) Option[g4.Grammar] = l.cache.Get(imp.Name) match {
-    case Some(found) => found
+    case Some(found) => Some(found)
     case None() => l.read(imp, from, importer)
 }
 
@@ -108,7 +100,9 @@ func (l Ptr[loader]) read(imp g4.Import, from string, importer string) Option[g4
             }
         }
     }
-    l.cache = l.cache.Put(imp.Name, found)
+    found.ForEach((g) => {
+        l.cache = l.cache.Put(imp.Name, g)
+    })
     found
 }
 
@@ -129,23 +123,30 @@ func (l Ptr[loader]) locate(name string, from string) Option[string] {
 // integrateImportedGrammars merges it, and ANTLR's import diagnostics: root's
 // rules come first and win over a delegate's rule of the same name, and each
 // delegate adds its channels, tokens, named actions and remaining rules, in
-// order.
-func mergeImports(root g4.Grammar, imported Imported) Tuple[g4.Grammar, Array[diag.Diagnostic]] {
+// order. defines are the -D options.
+func mergeImports(root g4.Grammar, imported Imported, defines Array[g4.OptionEntry]) Tuple[g4.Grammar, Array[diag.Diagnostic]] {
     if imported.Delegates.IsEmpty() {
         return (root, imported.Problems)
     }
     val scope = defaultActionScope(root)
-    val merged = imported.Delegates.FoldLeft(root, (g, del) => {
-        val names = g.Rules.FoldLeft(EmptyHashSet[string](), (acc, r) => acc.Add(r.Name))
-        g.Copy(
+    val rootActions = root.Actions.Map((a) => actionKey(a, scope))
+    val start = (root, root.Rules.FoldLeft(EmptyHashSet[string](), (acc, r) => acc.Add(r.Name)))
+    val (merged, _) = imported.Delegates.FoldLeft(start, (acc, del) => {
+        val (g, names) = acc
+        // A rule is taken if no rule of its name was taken before, the
+        // delegate's own earlier rules included, as ANTLR's rootRuleNames.
+        val (rules, taken) = del.Rules.FoldLeft((g.Rules, names), (rn, r) =>
+            if (rn.V2.Contains(r.Name)) rn else (rn.V1.Append(r), rn.V2.Add(r.Name)))
+        val next = g.Copy(
             Channels = g.Channels.AppendAll(del.Channels.Filter((c) => !g.Channels.Contains(c))),
             Tokens = g.Tokens.AppendAll(del.Tokens),
-            Actions = mergeActions(g.Actions, del.Actions, scope),
-            Rules = g.Rules.AppendAll(del.Rules.Filter((r) => !names.Contains(r.Name))),
+            Actions = mergeActions(g.Actions, del.Actions, rootActions, scope),
+            Rules = rules,
         )
+        (next, taken)
     })
     val checks = importChecks(root, imported.Delegates)
-        .AppendAll(imported.Delegates.Collect({ case del if optionsDiffer(root, del) =>
+        .AppendAll(imported.Delegates.Collect({ case del if optionsDiffer(root, del, defines) =>
             g4.At(diag.OptionsInDelegate.New(del.Name), del.OptionsPos)
         }))
     (merged, imported.Problems.AppendAll(checks))
@@ -158,21 +159,34 @@ func defaultActionScope(g g4.Grammar) string = g.Kind match {
     case _ => "parser"
 }
 
-// mergeActions adds a delegate's named actions to the root's: one the root
-// (or an earlier delegate) also has gets the delegate's text after its own on
-// a new line, as ANTLR combines them; the others are added.
-func mergeActions(into Array[g4.NamedAction], from Array[g4.NamedAction], scope string) Array[g4.NamedAction] {
-    val key = (a g4.NamedAction) => a.Scope.GetOrElse(scope) + "::" + a.Name
-    from.FoldLeft(into, (acc, a) => acc.Find((x) => key(x) == key(a)) match {
-        case Some(_) => acc.Map((x) => if (key(x) == key(a)) x.Copy(Body = x.Body + "\n" + a.Body) else x)
-        case None() => acc.Append(a)
-    })
-}
+// actionKey is a named action's scope and name, with scope for an action
+// written without one.
+func actionKey(a g4.NamedAction, scope string) string = a.Scope.GetOrElse(scope) + "::" + a.Name
 
-// optionsDiffer says a delegate sets an option to a value the root does not:
-// ANTLR then warns that the delegate's options are ignored.
-func optionsDiffer(root g4.Grammar, del g4.Grammar) bool =
-    del.Options.Exists((o) => !root.Options.Exists((r) => r.Name == o.Name && r.Value == o.Value))
+// mergeActions adds a delegate's named actions to the merged grammar's, as
+// ANTLR's integrateImportedGrammars does: an action the root grammar itself
+// has (rootActions, its keys) gets the delegate's text after its own on a new
+// line; any other is added as it is, even when an earlier delegate has the
+// same one (ANTLR then reports error 94, which galop does not check yet).
+func mergeActions(into Array[g4.NamedAction], from Array[g4.NamedAction], rootActions Array[string], scope string) Array[g4.NamedAction] =
+    from.FoldLeft(into, (acc, a) => {
+        val k = actionKey(a, scope)
+        if rootActions.Contains(k) {
+            return acc.Map((x) => if (actionKey(x, scope) == k && rootActions.Contains(actionKey(x, scope))) x.Copy(Body = x.Body + "\n" + a.Body) else x)
+        }
+        acc.Append(a)
+    })
+
+// optionsDiffer says a delegate sets an option to a value the root does not,
+// as ANTLR compares them (GrammarRootAST.getOptionString): a -D option first,
+// then the grammar's value without its quotes, then ANTLR's default
+// (language is Java). ANTLR then warns that the delegate's options are ignored.
+func optionsDiffer(root g4.Grammar, del g4.Grammar, defines Array[g4.OptionEntry]) bool {
+    val value = (g g4.Grammar, name string) => defines.FindLast((d) => d.Name == name).Map(_.Value)
+        .OrElse(g.Options.FindLast((o) => o.Name == name).Map((o) => unquote(o.Value)))
+        .OrElse(if (name == "language") Some("Java") else None[string]())
+    del.Options.Exists((o) => value(del, o.Name) != value(root, o.Name))
+}
 
 // importChecks are ANTLR's checks of root's own imports (not of its
 // delegates' imports): which kinds of grammar may import which (error 111),
@@ -222,6 +236,6 @@ func recognizerName(del g4.Grammar) string = del.Kind match {
 // merged in as the front end merges them, or the errors found doing so. It
 // is for tools that read a grammar outside Run, such as galop-sample.
 func WithImports(g g4.Grammar, path string, libDir Option[string], files Files) Either[Array[diag.Diagnostic], g4.Grammar] {
-    val (merged, problems) = mergeImports(g, LoadImports(g, path, libDir, files))
+    val (merged, problems) = mergeImports(g, LoadImports(g, path, libDir, files), EmptyArray[g4.OptionEntry]())
     if (diag.HasErrors(problems)) Left(problems) else Right(merged)
 }

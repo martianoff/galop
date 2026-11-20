@@ -13,6 +13,9 @@ lists every merged pull request.
   [DESIGN.md](docs/DESIGN.md#grammar-imports).
 - **Added:** nikunjy/rules' `JsonQuery.g4`, which imports `SemverGrammar.g4`, to
   the corpus, checked against ANTLR by `//differential/convert`.
+- **Fixed:** a name listed twice in `tokens {}` (or by a grammar and one it
+  imports) is one token, as in ANTLR. The generated Go code declared its
+  constant twice and did not compile.
 - **Fixed:** in the native flavor, `GetText` on a tree converted from ANTLR's
   error-recovered parse could include a token that is in no node. ANTLR's
   recovery can consume an error token into a left-recursive rule's context
