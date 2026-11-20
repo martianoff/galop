@@ -176,7 +176,7 @@ func (b Ptr[builder]) located(g g4.Grammar) Array[diag.Diagnostic] = b.problems.
         find(ArrayOf(r)).OrElse(find(g.Rules))
     })
     val pos = elementPos.GetOrElse(r.Pos)
-    p.Diagnostic.At(pos.Line, pos.Col)
+    g4.At(p.Diagnostic, pos)
 })
 
 func (b Ptr[builder]) ruleName(rule int) string = b.names.Get(rule)

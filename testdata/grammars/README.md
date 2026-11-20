@@ -15,6 +15,7 @@ Each file's license and copyright notice, as its license requires, is in
 | `Plan.g4` | [milvus-io/milvus](https://github.com/milvus-io/milvus) `internal/parser/planparserv2/Plan.g4` | `master` at `301f3bf5` | Apache-2.0 |
 | `grulev3.g4` | [hyperjumptech/grule-rule-engine](https://github.com/hyperjumptech/grule-rule-engine) `antlr/grulev3.g4` | `master` at `f23b4a27` | Apache-2.0 |
 | `fileseq.g4` | [justinfx/gofileseq](https://github.com/justinfx/gofileseq) `grammar/fileseq.g4` | `master` at `2014c3fe` | MIT |
+| `JsonQuery.g4`, `SemverGrammar.g4` | [nikunjy/rules](https://github.com/nikunjy/rules) `parser/JsonQuery.g4`, `parser/SemverGrammar.g4` | `master` at `fa9c2951` | MIT |
 
 `.gitattributes` stores every grammar with LF line endings; `grulev3.g4` has CRLF
 upstream.
@@ -24,3 +25,6 @@ upstream.
 them against ANTLR on generated sentences and mutants. It also checks `fileseq.g4`,
 whose whitespace is a token rather than skipped: its nodes' tokens are
 contiguous in the source, the case where `GetText` returns a slice of it.
+
+`JsonQuery.g4` imports `SemverGrammar.g4` (`import SemverGrammar;`): the check
+reads both, and `//differential/convert` checks the merged grammar against ANTLR.

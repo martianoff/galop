@@ -31,13 +31,17 @@ struct Outcome(Stdout string, Stderr string, ExitCode int)
 // FileResult is what one grammar file produced.
 struct FileResult(Diagnostics Array[diag.Diagnostic], Stdout string)
 
-// Source is a grammar file as read: its text, or None when it could not be read.
-struct Source(Path string, Text Option[string])
+// Stage is the part of the configuration the front end needs. Defines are
+// the -D options, which ANTLR applies to imported grammars too.
+struct Stage(
+    Action Action,
+    Werror bool,
+    NoBrackets bool = false,
+    Defines Array[g4.OptionEntry] = EmptyArray[g4.OptionEntry](),
+)
 
-// Stage is the part of the configuration the front end needs.
-struct Stage(Action Action, Werror bool, NoBrackets bool = false)
-
-// Analyzed is a grammar that passed the front end and is ready for a target.
+// Analyzed is a grammar that passed the front end and is ready for a target,
+// with its imports merged in.
 struct Analyzed(Grammar g4.Grammar, Compiled atn.Compiled, Analysis Option[analysis.Analysis])
 
 // FrontEnd is the front end's result for one file: what to report, and the
@@ -49,13 +53,15 @@ val DefaultLanguage = "Go"
 
 // Run executes a galop command line.
 //
-// Each grammar file goes through the front end (parse, check, compile,
-// analyze) in its own Future: that work is pure and independent, so files are
-// processed concurrently and an error in one does not stop the others.
-// Generation and file writes then run in command-line order, so output and
-// diagnostics are deterministic. (GALA does not let an injected target or
-// file system cross into a Future: interfaces and function values are never
-// shareable, so they stay on this goroutine.)
+// Each grammar file goes through the front end in two Futures: one parses it,
+// the other merges what it imports and checks, compiles and analyzes it. That
+// work is pure and independent, so files are processed concurrently and an
+// error in one does not stop the others. Between the two, on this goroutine,
+// the grammars a file imports are read, only for a grammar with an `import`
+// statement. Generation and file writes then run in command-line order, so
+// output and diagnostics are deterministic. (GALA does not let an injected
+// target or file system cross into a Future: interfaces and function values
+// are never shareable, so they stay on this goroutine.)
 func Run(args Array[string], kit Toolkit) Outcome {
     val parsed = ParseArgs(args)
     val cfg = parsed.Config
@@ -67,14 +73,26 @@ func Run(args Array[string], kit Toolkit) Outcome {
             if diag.HasErrors(setup) || (cfg.Werror && setup.NonEmpty()) {
                 return finish(cfg, setup, "")
             }
-            val stage = Stage(cfg.Action, cfg.Werror, cfg.NoBrackets)
-            val sources = cfg.Files.Map((path) => Source(path, kit.Files.Read(path).ToOption()))
-            val fronts = sources.Map((src) => Future(frontEnd(stage, src)))
-            val results = sources.Zip(fronts).Map((pair) => {
-                val path = pair.V1.Path
+            val stage = Stage(cfg.Action, cfg.Werror, cfg.NoBrackets, cfg.Defines)
+            val texts = cfg.Files.Map((path) => (path, kit.Files.Read(path).ToOption()))
+            val parses = texts.Map((p) => Future(parseStage(stage, p.V1, p.V2)))
+            // Every parse is started before the first is awaited, and each
+            // file's second Future starts as soon as its parse is in.
+            val fronts = cfg.Files.Zip(parses).Map((pair) => {
+                val path = pair.V1
+                awaited(path, pair.V2) match {
+                    case Left(f) => FutureOf(f)
+                    case Right(root) => {
+                        val imported = importsOf(stage, root, path, cfg.LibDir, kit.Files)
+                        Future(checked(stage, path, root, imported))
+                    }
+                }
+            })
+            val results = cfg.Files.Zip(fronts).Map((pair) => {
+                val path = pair.V1
                 val front = pair.V2.Await() match {
                     case Success(f) => f
-                    case Failure(e) => done(problemsOnly(ArrayOf(diag.InternalError.New(s"$path: ${e.Error()}"))))
+                    case Failure(e) => futureFailed(path, e)
                 }
                 front.Ready match {
                     case Some(a) => front.Result.Then(backEnd(cfg, kit, path, a))
@@ -104,23 +122,57 @@ func checkDirectories(cfg Config, files Files) Array[diag.Diagnostic] {
     ArrayOf(out, lib).Collect((d) => d)
 }
 
-// frontEnd runs one grammar through the pure part of the pipeline: parse,
-// check, compile and analyze, or whatever less the action needs.
-func frontEnd(stage Stage, src Source) FrontEnd = src.Text match {
-    case None() => done(problemsOnly(ArrayOf(diag.CannotOpenFile.New(src.Path))))
-    case Some(text) => g4.Parse(text) match {
-        case Left(d) => done(problemsOnly(ArrayOf(located(d, src.Path))))
+// awaited is a parse Future's result (see parseStage), or the internal error when
+// the Future failed.
+func awaited(path string, f Future[Either[FrontEnd, g4.Grammar]]) Either[FrontEnd, g4.Grammar] = f.Await() match {
+    case Success(r) => r
+    case Failure(e) => Left(futureFailed(path, e))
+}
+
+// futureFailed reports a front-end Future that failed on path's grammar.
+func futureFailed(path string, e error) FrontEnd =
+    done(problemsOnly(ArrayOf(diag.InternalError.New(s"$path: ${e.Error()}"))))
+
+// parseStage is the front end's first step: the grammar in path parsed from text
+// (None when the file could not be read), or what to report when there is no
+// more to do (the file is unreadable or has a syntax error, or the action is
+// -format, which prints the grammar as written, without its imports).
+func parseStage(stage Stage, path string, text Option[string]) Either[FrontEnd, g4.Grammar] = text match {
+    case None() => Left(done(problemsOnly(ArrayOf(diag.CannotOpenFile.New(path)))))
+    case Some(t) => g4.Parse(t) match {
+        case Left(d) => Left(done(problemsOnly(ArrayOf(located(d, path)))))
         case Right(g) => stage.Action match {
-            case PrintFormatted() => done(printed(g4.Format(g)))
-            case _ => checked(stage, src.Path, g)
+            case PrintFormatted() => Left(done(printed(g4.Format(g))))
+            case _ => Right(g)
         }
     }
 }
 
-// checked runs the semantic checks and, if they pass, the rest of the front end.
-func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
+// importsOf reads the grammars root, the grammar in path, imports. -depend
+// reports none of the problems: ANTLR's -depend never loads imports, so a
+// missing or broken one does not stop it there either.
+func importsOf(stage Stage, root g4.Grammar, path string, libDir Option[string], files Files) Imported {
+    val imported = LoadImports(root, path, libDir, files)
+    stage.Action match {
+        case Depend() => imported.Copy(Problems = EmptyArray[diag.Diagnostic](), Unreadable = false)
+        case _ => imported
+    }
+}
+
+// checked merges root's imports, runs the semantic checks and, if they pass,
+// the rest of the front end. The checks and everything after see the merged
+// grammar; -roundtrip formats root alone, as written.
+func checked(stage Stage, path string, root g4.Grammar, imported Imported) FrontEnd {
+    if imported.Unreadable {
+        return done(problemsOnly(imported.Problems.Map((d) => located(d, path))))
+    }
+    val (g, importProblems) = mergeImports(root, imported, stage.Defines)
+    val importFiles = imported.Delegates.Map(_.Pos.File)
+    // As in ANTLR, the import problems come first; the checks' follow in
+    // source order, root's own file first, then each imported file's.
     val found = nameProblems(path, g).AppendAll(g4.Check(g)).AppendAll(optionProblems(g))
-    val problems = diag.InSourceOrder(found).Map((d) => located(d, path))
+    val ordered = diag.InFileOrder(found, (d) => importFiles.IndexOf(d.File) + 1)
+    val problems = importProblems.AppendAll(ordered).Map((d) => located(d, path))
     val stop = diag.HasErrors(problems) || (stage.Werror && problems.NonEmpty())
     if stop {
         return done(problemsOnly(problems))
@@ -133,7 +185,7 @@ func checked(stage Stage, path string, g g4.Grammar) FrontEnd {
             leftRecursionProblem(plan.LeftRecursion, c, path) match {
                 case Some(d) => done(problemsOnly(ArrayOf(d)))
                 case None() => stage.Action match {
-                    case Validate(roundTrip) => done(validated(path, g, roundTrip))
+                    case Validate(roundTrip) => done(validated(path, root, g, roundTrip))
                     // -depend only needs the file names, which come from the compiled grammar.
                     case Depend() => FrontEnd(printed(""), Some(Analyzed(g, c, None())))
                     case PrintReport() => done(report(path, c, plan, stage.NoBrackets))
@@ -176,11 +228,12 @@ func optionProblems(g g4.Grammar) Array[diag.Diagnostic] = g.Options.Collect((o)
 })
 
 // validated is -check: everything up to compilation passed; with -roundtrip
-// the grammar must also survive the formatter.
-func validated(path string, g g4.Grammar, roundTrip bool) FileResult {
-    val trip = if (roundTrip) g4.RoundTrip(g) else None()
+// the grammar as written, root, must also survive the formatter. The counts
+// are of g, root with its imports merged.
+func validated(path string, root g4.Grammar, g g4.Grammar, roundTrip bool) FileResult {
+    val trip = if (roundTrip) g4.RoundTrip(root) else None()
     trip match {
-        case Some(msg) => problemsOnly(ArrayOf(diag.RoundTripFailed.New(msg).At(g.Pos.Line, g.Pos.Col)))
+        case Some(msg) => problemsOnly(ArrayOf(diag.RoundTripFailed.New(msg).At(root.Pos.Line, root.Pos.Col)))
         case None() => {
             val lexer = g.Rules.Count(_.IsLexer())
             printed(s"$path: ok (grammar ${g.Name}: ${g.Rules.Size() - lexer} parser rules, $lexer lexer rules)\n")

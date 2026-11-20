@@ -11,8 +11,10 @@ sealed type GrammarKind {
 }
 
 // Pos is a 1-based source position. NoPos (line 0) marks a model built in
-// code rather than parsed.
-struct Pos(Line int, Col int)
+// code rather than parsed. File is the grammar file the position is in when
+// that is not the file being processed: a rule merged in from an imported
+// grammar keeps its own file (see InFile), and diagnostics name it.
+struct Pos(Line int, Col int, File string = "")
 
 // NoPos is the position of something that did not come from a source file.
 val NoPos = Pos(0, 0)
@@ -34,7 +36,16 @@ struct Grammar(
     Actions Array[NamedAction] = EmptyArray[NamedAction](),
     Rules Array[Rule] = EmptyArray[Rule](),
     Pos Pos = NoPos,
+    // Imports are the grammar's `import` statements, in order.
+    Imports Array[Import] = EmptyArray[Import](),
+    // OptionsPos is where the `options` keyword is, or NoPos.
+    OptionsPos Pos = NoPos,
 )
+
+// Import is one grammar in an `import` statement: `import Name;`, or
+// `import Alias = Name;`, which imports Name (ANTLR keeps the alias but loads
+// Name). Pos is where Name is.
+struct Import(Name string, Alias Option[string], Pos Pos = NoPos)
 
 // OptionEntry is one `name = value;` inside an `options { ... }` block.
 // Value keeps its source spelling (an identifier, a quoted string or a number).
@@ -91,9 +102,29 @@ func ElementNodes(e Element) Array[Element] = ArrayOf(e).AppendAll(e match {
 // differ only in where things were written compare equal.
 func StripPositions(g Grammar) Grammar = g.Copy(
     Pos = NoPos,
+    OptionsPos = NoPos,
     Options = g.Options.Map(_.Copy(Pos = NoPos)),
+    Imports = g.Imports.Map(_.Copy(Pos = NoPos)),
     Rules = g.Rules.Map(StripRulePositions),
 )
+
+// InFile returns g with file set on every known position, as for a grammar
+// read from an imported file: its rules keep pointing at that file once
+// merged into the importing grammar.
+func InFile(g Grammar, file string) Grammar {
+    val inFile = (p Pos) => if (p.IsKnown()) p.Copy(File = file) else p
+    g.Copy(
+        Pos = inFile(g.Pos),
+        OptionsPos = inFile(g.OptionsPos),
+        Options = g.Options.Map((o) => o.Copy(Pos = inFile(o.Pos))),
+        Imports = g.Imports.Map((i) => i.Copy(Pos = inFile(i.Pos))),
+        Rules = g.Rules.Map((r) => r.Copy(
+            Pos = inFile(r.Pos),
+            NodePos = r.NodePos.Map(inFile),
+            Alts = r.Alts.Map((a) => a.Copy(Options = a.Options.Map((o) => o.Copy(Pos = inFile(o.Pos))))),
+        )),
+    )
+}
 
 // StripRulePositions returns r with its positions cleared, those of its
 // alternatives' options included.

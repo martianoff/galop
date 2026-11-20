@@ -118,5 +118,9 @@ func singleLine(text string) string = strings.ReplaceAll(text, "\n", " ")
 func HasErrors(ds Array[Diagnostic]) bool = ds.Exists(_.IsError())
 
 // InSourceOrder sorts ds by line, then column.
-func InSourceOrder(ds Array[Diagnostic]) Array[Diagnostic] =
-    ds.SortWith((a, b) => a.Line < b.Line || (a.Line == b.Line && a.Col < b.Col))
+func InSourceOrder(ds Array[Diagnostic]) Array[Diagnostic] = InFileOrder(ds, (_) => 0)
+
+// InFileOrder sorts ds by file, as rank orders the files, then in source
+// order within each file.
+func InFileOrder(ds Array[Diagnostic], rank func(Diagnostic) int) Array[Diagnostic] =
+    ds.SortWith((a, b) => rank(a) < rank(b) || (rank(a) == rank(b) && (a.Line < b.Line || (a.Line == b.Line && a.Col < b.Col))))

@@ -3,6 +3,25 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
+## Unreleased
+
+- **Added:** grammar imports, `import A, B = C;`, as ANTLR 4.13.1 resolves and
+  merges them: an imported grammar is looked for in the working directory, next
+  to the importing grammar and in `-lib`; the root grammar's rules win; ANTLR's
+  import errors and warning (11, 109, 110, 111, 113) are reported with its
+  wording and positions. Where galop's diagnostics differ is in
+  [DESIGN.md](docs/DESIGN.md#grammar-imports).
+- **Added:** nikunjy/rules' `JsonQuery.g4`, which imports `SemverGrammar.g4`, to
+  the corpus, checked against ANTLR by `//differential/convert`.
+- **Fixed:** a name listed twice in `tokens {}` (or by a grammar and one it
+  imports) is one token, as in ANTLR. The generated Go code declared its
+  constant twice and did not compile.
+- **Fixed:** in the native flavor, `GetText` on a tree converted from ANTLR's
+  error-recovered parse could include a token that is in no node. ANTLR's
+  recovery can consume an error token into a left-recursive rule's context
+  and then discard that context. Such trees now set `Dropped`, and `GetText`
+  builds their text from the nodes' tokens.
+
 ## 0.5.2
 
 - **Changed (license):** the code galop generates is yours to use under any terms:

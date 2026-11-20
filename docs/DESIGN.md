@@ -1263,7 +1263,7 @@ problems only galop has use codes from 500 up:
 
 | Code | Problem |
 |---|---|
-| 500 | a construct galop does not support yet (imports, `tokenVocab`, rule arguments, ...) |
+| 500 | a construct galop does not support yet (`tokenVocab`, rule arguments, ...) |
 | 501 | a parser rule references a fragment rule |
 | 502 | `-check -roundtrip`: the formatter does not preserve the grammar |
 | 503 | an element that cannot appear in this kind of rule (a `[set]` in a parser rule) |
@@ -1293,6 +1293,59 @@ registry. For each grammar file the front end (read, parse, check, compile,
 analyze) runs in its own `Future`; generation and writes then run in
 command-line order, so output and diagnostics are deterministic and an error
 in one grammar does not stop the others.
+
+### Grammar imports
+
+`import A, B = C;` works as in ANTLR 4.13.1 (`tool/imports.gala`). A
+`Future` cannot use the file system, so `tool.Run` splits the front end in
+two. One `Future` parses the grammar. On the main goroutine, the grammars it
+imports are read, only for a grammar with an `import` statement. A second
+`Future` merges them into the grammar, checks, compiles and analyzes it. Each
+grammar is still parsed once, and files still run concurrently.
+
+- **Finding a grammar.** `import C` (or `B = C`) loads `C.g4`, then
+  `C.g`, each looked for in the working directory, the importing grammar's
+  directory and the `-lib` directory, in that order. Imported grammars are
+  loaded depth first, each grammar once; an import back to a grammar on the way
+  there is ignored, as ANTLR ignores it. A grammar that cannot be found is
+  reported at every import of it.
+- **Merging.** The root grammar's rules come first. Each imported grammar, in
+  order, adds its rules whose names were not taken before (by the root, an
+  earlier imported grammar or itself), its channels and `tokens {}` names, and
+  its named actions. An action the root grammar has (`@members`, say) gets the
+  imported text after its own, on a new line. Any other is added as it is. A
+  name in `tokens {}` twice is one token.
+- **Diagnostics.** ANTLR's wording and positions for:
+  - error 110: the grammar cannot be found;
+  - error 11: it cannot be read; like ANTLR, galop names the grammar where a
+    file name goes;
+  - error 111: a kind of grammar that cannot import that kind;
+  - error 113: a combined grammar `G` imports `GLexer` or `GParser`;
+  - warning 109: the imported grammar's options are ignored. Options are
+    compared as ANTLR compares them: a `-D` option first, then the grammar's
+    value without quotes, then ANTLR's default (`language` is Java).
+
+  A syntax error in an imported grammar stops that grammar, as in ANTLR.
+- **Printing.** `-format` and `-roundtrip` work on the grammar as written,
+  imports and all; `-check`'s rule counts are of the merged grammar.
+
+Where galop differs, and its tests (`tool/imports_test.gala`) say so:
+
+- **Which file a diagnostic names.** galop names the imported grammar's file
+  for a diagnostic about an imported rule. ANTLR does too for some (error
+  56). For others it names the root grammar's file with the imported file's
+  line and column (warning 125, error 147).
+- **Order and stopping.** The import problems are reported with the rule
+  checks. ANTLR stops after an undefined or duplicate rule (errors 51, 56),
+  before it checks which grammar kinds may import which, so it reports 111
+  only on a grammar without them.
+- **`-depend`.** ANTLR 4.13.1 never loads imports for `-depend`, so it lists
+  no imported grammar and reports no problem with one. galop does the same,
+  but merges the imported grammars it finds, because its `-depend` checks the
+  grammar.
+- **Errors not reported.** galop does not report error 94 (an action defined
+  twice, #87) or warning 108 (a token name defined again, #88). These checks
+  are missing with or without imports.
 
 ## Bazel (`rules_gala`)
 

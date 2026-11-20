@@ -206,8 +206,11 @@ galop options:
 - **`-format`** prints a canonical form. Comments are not part of the grammar
   model, so they are not printed.
 
-`-lib` is accepted; importing grammars or a token vocabulary (`import`,
-`tokenVocab`) is not supported yet and is reported as an error.
+Grammar imports (`import A, B = C;`) work as in ANTLR: an imported grammar is
+looked for in the working directory, then next to the importing grammar, then
+in the `-lib` directory, and its rules are merged in (see
+[DESIGN.md](docs/DESIGN.md#grammar-imports)). A token vocabulary (`tokenVocab`)
+is not supported yet and is reported as an error.
 
 Grammar files are processed concurrently and independently: an error in one
 does not stop the others, and output is reported in command-line order.
@@ -337,6 +340,7 @@ sources for a `go_library`.
 
 - `grammar`, `lexer grammar`, `parser grammar` headers
 - `options { ... }`, `tokens { ... }`, `channels { ... }`, `@name { ... }` and `@scope::name { ... }` actions
+- `import A, B = C;`: imported grammars, merged as ANTLR merges them
 - parser and lexer rules, `fragment` rules, alternatives with `# Label`
 - rule and token references, quoted literals, `'a'..'z'` ranges, `[...]` sets, `.`, `~`
 - `?` `*` `+` and their non-greedy forms `??` `*?` `+?`
@@ -346,9 +350,8 @@ sources for a `go_library`.
 
 Not supported yet, and reported as errors rather than ignored: rule arguments,
 `returns`/`locals`, rule-level options and actions, element options other than
-`<assoc=left|right>` on an alternative, lexer modes, grammar imports, the
-`tokenVocab` and `caseInsensitive` options, and in the Go target, semantic
-predicates.
+`<assoc=left|right>` on an alternative, lexer modes, the `tokenVocab` and
+`caseInsensitive` options, and in the Go target, semantic predicates.
 
 Directly left-recursive rules (`e : e '+' e | INT`) are rewritten into a
 precedence loop as ANTLR rewrites them, which `-report` shows, and both flavors

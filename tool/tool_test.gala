@@ -153,10 +153,12 @@ type memory struct {
 func newMemory(files ...Tuple[string, string]) Ptr[memory] =
     &memory{files: HashMapOf(files...), writes: EmptyArray[string]()}
 
-// fs is the in-memory file system; writing under `locked/` fails, and `taken`
-// is a regular file.
+// fs is the in-memory file system; writing under `locked/` fails, `taken`
+// is a regular file, a path some file is under is a directory, and a file
+// named `Unreadable.g4` exists but cannot be read.
 func (m Ptr[memory]) fs() Files = Files(
     Read = (path) => m.files.Get(path) match {
+        case Some(_) if filepath.Base(path) == "Unreadable.g4" => Failure[string](errors.New("permission denied"))
         case Some(text) => Success(text)
         case None() => Failure[string](errors.New("no such file"))
     },
@@ -168,7 +170,10 @@ func (m Ptr[memory]) fs() Files = Files(
         m.writes = m.writes.Append(filepath.ToSlash(path))
         return Success[Void](Void())
     },
-    Kind = (path) => if (path == "taken") RegularFile() else if (m.files.Contains(path)) RegularFile() else Missing(),
+    Kind = (path) =>
+        if (path == "taken" || m.files.Contains(path)) RegularFile()
+        else if (m.files.Keys().Exists((f) => strings.HasPrefix(f, path + "/"))) Directory()
+        else Missing(),
 )
 
 // fakeGo is a Go target that writes one file per grammar, recording the

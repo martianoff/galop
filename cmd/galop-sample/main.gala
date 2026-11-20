@@ -1,7 +1,10 @@
 // Command galop-sample writes random sentences of a grammar (see package
 // sample), for the differential fuzz tests:
 //
-//    galop-sample [-n count] [-seed n] [-nesting n] [-tokens n] [-start rule] -o out grammar.g4
+//    galop-sample [-n count] [-seed n] [-nesting n] [-tokens n] [-separator text] [-start rule] -o out grammar.g4
+//
+// -separator is the text between two tokens, a space by default; a grammar
+// whose spacing is its own tokens takes an empty one.
 //
 // The output holds each sentence as its length in bytes on a line of its own,
 // then the sentence and a newline, so sentences may contain any text.
@@ -18,6 +21,7 @@ import (
     "github.com/martianoff/galop/g4"
     "github.com/martianoff/galop/lexgen"
     "github.com/martianoff/galop/sample"
+    "github.com/martianoff/galop/tool"
 )
 
 // flags is a parsed command line.
@@ -39,6 +43,7 @@ func parse(args List[string], f flags) Either[string, flags] = args match {
         intArg(v).FlatMap((n) => parse(rest, f.Copy(Opts = f.Opts.Copy(MaxNesting = n))))
     case List("-tokens", v, rest...) =>
         intArg(v).FlatMap((n) => parse(rest, f.Copy(Opts = f.Opts.Copy(MaxTokens = n))))
+    case List("-separator", v, rest...) => parse(rest, f.Copy(Opts = f.Opts.Copy(Separator = v)))
     case List("-start", v, rest...) => parse(rest, f.Copy(Start = Some(v)))
     case List("-o", v, rest...) => parse(rest, f.Copy(Out = Some(v)))
     case List(file, rest...) if f.Grammar.IsEmpty() => parse(rest, f.Copy(Grammar = Some(file)))
@@ -50,18 +55,25 @@ func intArg(v string) Either[string, int] = strconv.Atoi(v) match {
     case Failure(_) => Left(s"not a number: $v")
 }
 
-// generate reads, compiles and samples the grammar; the result is the output file's text.
+// generate reads the grammar and the grammars it imports, compiles and
+// samples it; the result is the output file's text.
 func generate(f flags, path string) Either[string, string] = fs.ReadFileString(path) match {
     case Failure(e) => Left(e.Error())
     case Success(text) => g4.Parse(text) match {
         case Left(d) => Left(d.String())
-        case Right(g) => atn.Compile(g) match {
-            case Left(errs) => Left(errs.Map(_.String()).MkString("\n"))
-            case Right(c) => lexerOf(c, g).FlatMap((lexer) => startRule(c, f.Start).FlatMap((start) =>
-                sample.Generate(c, lexer, start, f.Opts).Map((sentences) =>
-                    sentences.Map((s) => s"${s.ByteSize()}\n$s\n").MkString(""))))
+        case Right(parsed) => tool.WithImports(parsed, path, None[string](), tool.OSFiles()) match {
+            case Left(ds) => Left(ds.Map(_.String()).MkString("\n"))
+            case Right(g) => sampled(f, g)
         }
     }
+}
+
+// sampled compiles and samples g.
+func sampled(f flags, g g4.Grammar) Either[string, string] = atn.Compile(g) match {
+    case Left(errs) => Left(errs.Map(_.String()).MkString("\n"))
+    case Right(c) => lexerOf(c, g).FlatMap((lexer) => startRule(c, f.Start).FlatMap((start) =>
+        sample.Generate(c, lexer, start, f.Opts).Map((sentences) =>
+            sentences.Map((s) => s"${s.ByteSize()}\n$s\n").MkString(""))))
 }
 
 func lexerOf(c atn.Compiled, g g4.Grammar) Either[string, lexgen.DFA] = c.Lexer match {

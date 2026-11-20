@@ -43,6 +43,12 @@ func TestVocabularyFollowsANTLR(t T) T {
     Eq(t5, v.TypeOf("EOF"), Some(TokenEOF))
 }
 
+// TestRepeatedTokensNameOneToken checks that a name listed twice in
+// `tokens {}` (or by a grammar and one it imports) gets one type, as ANTLR
+// gives it, so generated code declares it once.
+func TestRepeatedTokensNameOneToken(t T) T =
+    Eq(t, compiled(t, "grammar g;\ntokens { X, Y, X }\ns: A X Y EOF;\nA: 'a';\n").Vocab.Names, ArrayOf("<INVALID>", "A", "X", "Y"))
+
 func TestIntervalSets(t T) T {
     val a = SetOf(1, 2, 3, 7)
     val b = RangeSet(3, 8)

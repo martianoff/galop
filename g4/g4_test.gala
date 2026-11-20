@@ -83,6 +83,31 @@ func TestParseModel(t T) T {
     Eq(t1, StripPositions(g), want)
 }
 
+func TestParseImports(t T) T {
+    val src = "grammar g;\noptions { x = y; }\nimport A, B = C;\nimport D;\na: b;\n"
+    val (t1, g) = parseOrFail(t, src)
+    val t2 = Eq(t1, g.Imports, ArrayOf(
+        Import("A", None[string](), Pos(3, 8)),
+        Import("C", Some("B"), Pos(3, 15)),
+        Import("D", None[string](), Pos(4, 8)),
+    ))
+    val t3 = Eq(t2, g.OptionsPos, Pos(2, 1))
+    // The imports print as one statement after the options, and read back.
+    val t4 = Eq(t3, Format(g), "grammar g;\n\noptions {\n    x = y;\n}\nimport A, B = C, D;\n\na: b;\n")
+    Eq(t4, RoundTrip(g), None[string]())
+}
+
+func TestInFileMarksEveryPosition(t T) T {
+    val (t1, g) = parseOrFail(t, "grammar g;\noptions { x = y; }\nimport A;\ne: <assoc=up> e '+' e | INT;\n")
+    val in = InFile(g, "lib/G.g4")
+    val t2 = Eq(t1, ArrayOf(in.Pos, in.OptionsPos, in.Options.Get(0).Pos, in.Imports.Get(0).Pos, in.Rules.Get(0).Pos).Map(_.File), ArrayOf("lib/G.g4", "lib/G.g4", "lib/G.g4", "lib/G.g4", "lib/G.g4"))
+    val t3 = IsTrue(t2, in.Rules.Get(0).NodePos.ForAll((p) => p.File == "lib/G.g4"))
+    // The diagnostics about an imported grammar's rule (the bad assoc, the
+    // implicit token INT) name that grammar's file.
+    val t4 = Eq(t3, Check(in).Map((d) => d.File), ArrayOf("lib/G.g4", "lib/G.g4"))
+    Eq(t4, StripPositions(in), StripPositions(g))
+}
+
 func TestParsePrintsElements(t T) T = RunCases[string, string](t,
     (sub, in, want) => Eq(sub, ruleText(in), want),
     Case[string, string](Name = "sequence", Input = "a : b C 'd' ;", Expected = "a: b C 'd';\n"),
@@ -112,7 +137,8 @@ func TestParseErrors(t T) T = RunCases[string, string](t,
     Case[string, string](Name = "rule arguments", Input = "grammar g;\na[int x]: b;", Expected = "2:2: galop does not support rule arguments yet"),
     Case[string, string](Name = "returns", Input = "grammar g;\na returns [int x]: b;", Expected = "2:3: galop does not support 'returns' yet"),
     Case[string, string](Name = "element options other than assoc", Input = "grammar g;\na: <fail=x> b;", Expected = "2:5: galop does not support the element option fail yet"),
-    Case[string, string](Name = "imports", Input = "grammar g;\nimport Other;", Expected = "2:1: galop does not support grammar imports yet"),
+    Case[string, string](Name = "import without a name", Input = "grammar g;\nimport ;", Expected = "2:8: syntax error: expected a grammar name, found ';'"),
+    Case[string, string](Name = "import without a semicolon", Input = "grammar g;\nimport A\na: b;", Expected = "3:1: syntax error: expected ';', found 'a'"),
     Case[string, string](Name = "lexer modes", Input = "lexer grammar g;\nA: 'a';\nmode M;\nB: 'b';", Expected = "3:1: galop does not support lexer modes yet"),
     Case[string, string](Name = "bad range", Input = "grammar g;\nA: 'a'..B;", Expected = "2:9: syntax error: expected a literal after '..', found 'B'"),
     Case[string, string](Name = "lex error surfaces", Input = "grammar g;\nA: 'a", Expected = "2:4: unterminated string literal"),
@@ -125,7 +151,7 @@ func TestParseErrorCodes(t T) T = RunCases[string, int](t,
     }, want),
     Case[string, int](Name = "syntax error", Input = "a: b;", Expected = 50),
     Case[string, int](Name = "unterminated string", Input = "grammar g;\nA: 'a", Expected = 152),
-    Case[string, int](Name = "unsupported", Input = "grammar g;\nimport Other;", Expected = 500),
+    Case[string, int](Name = "unsupported", Input = "lexer grammar g;\nA: 'a';\nmode M;\nB: 'b';", Expected = 500),
 )
 
 // checkText runs Check on src and renders each diagnostic as `code line:col: message`.

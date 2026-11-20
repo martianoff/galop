@@ -68,7 +68,7 @@ func RewriteOf(r g4.Rule) Either[diag.Diagnostic, Option[Rewrite]] {
         return Right(None[Rewrite]())
     }
     if primary.IsEmpty() {
-        return Left(NoNonLeftRecursiveAlts.New(r.Name).At(r.Pos.Line, r.Pos.Col))
+        return Left(g4.At(NoNonLeftRecursiveAlts.New(r.Name), r.Pos))
     }
     Right(Some(Rewrite(primary, ops)))
 }

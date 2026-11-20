@@ -15,6 +15,7 @@ gala_binary(
         "//lexgen",
         "//repair",
         "//sample",
+        "//tool",
         "@gala//collection_immutable",
         "@gala//collection_mutable",
         "@gala//concurrent",

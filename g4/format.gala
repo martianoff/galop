@@ -8,6 +8,7 @@ func Format(g Grammar) string {
     val header = s"${kindPrefix(g.Kind)}grammar ${g.Name};\n"
     val sections = ArrayOf(
         printOptions(g.Options),
+        printImports(g.Imports),
         printNameList("tokens", g.Tokens),
         printNameList("channels", g.Channels),
         g.Actions.Map(printNamedAction).MkString(""),
@@ -26,6 +27,11 @@ func kindPrefix(k GrammarKind) string = k match {
 func printOptions(options Array[OptionEntry]) string =
     if (options.IsEmpty()) ""
     else "options {\n" + options.Map((o) => s"    ${o.Name} = ${o.Value};\n").MkString("") + "}\n"
+
+// printImports is the grammar's imports as one `import` statement.
+func printImports(imports Array[Import]) string =
+    if (imports.IsEmpty()) ""
+    else "import " + imports.Map((i) => i.Alias.Map(_ + " = ").GetOrElse("") + i.Name).MkString(", ") + ";\n"
 
 func printNameList(keyword string, names Array[string]) string =
     if (names.IsEmpty()) "" else s"$keyword { ${names.MkString(", ")} }\n"

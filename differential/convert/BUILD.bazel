@@ -41,3 +41,15 @@ load(":defs.bzl", "convert_test")
         ("fileseq", "fileseq", "input", "-n 400 -seed 1 -nesting 4 -tokens 60"),
     ]
 ]]
+
+# A grammar that imports another (`import SemverGrammar;`): ANTLR and galop
+# each merge the imported lexer rules into JsonQuery.
+convert_test(
+    name = "jsonquery",
+    grammar = "//testdata/grammars:JsonQuery.g4",
+    grammar_name = "JsonQuery",
+    imports = ["//testdata/grammars:SemverGrammar.g4"],
+    # Spacing is the grammar's own SP token, so tokens are joined with nothing.
+    sample_flags = "-n 400 -seed 1 -nesting 4 -tokens 200 -separator ''",
+    start = "query",
+)
