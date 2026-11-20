@@ -3,7 +3,7 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
-## Unreleased
+## 0.6.0
 
 - **Added:** grammar imports, `import A, B = C;`, as ANTLR 4.13.1 resolves and
   merges them: an imported grammar is looked for in the working directory, next
