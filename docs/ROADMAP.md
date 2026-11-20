@@ -173,11 +173,43 @@ Roughly by payoff, and not before M4 ships:
   expressions, CEL, SigNoz, Grule), are generated and checked against ANTLR; see
   [DESIGN.md](DESIGN.md#left-recursive-rules).
 - **The conflict report as a feature.** ANTLR hides ambiguity until it is slow in
-  production; galop names it at build time.
+  production; galop names it at build time, including the decisions where valid input
+  sends ANTLR to full-context prediction and the grammar change that avoids it.
 - **GALA as an output target**, for DSL parsers written in GALA.
 - **Editor tooling from the same grammar**: highlighting, outline, an LSP skeleton.
 - **Incremental reparsing** for editors.
-- **More output targets** (TypeScript, Rust), only if there is demand.
+
+### More target languages
+
+Go is galop's only target today. Projects that use ANTLR often generate one grammar
+into several languages, and a project whose parsers are not all in languages galop
+supports cannot adopt it: a second generator for some languages is extra work, not a
+gain. More targets therefore come next, in the order ANTLR users most need them:
+
+| Target | Why | Checked against |
+|---|---|---|
+| Go | done | ANTLR's Go runtime |
+| Python | the largest gain: on gofileseq's grammar ANTLR's Python runtime takes 6.5 ms for a frame range its Go runtime parses in 0.39 ms | ANTLR's Python runtime |
+| Java | ANTLR's reference target, the most used | ANTLR's Java runtime |
+| TypeScript / JavaScript | parsers in browsers and editors | ANTLR's TypeScript runtime |
+| C++ | native tools that share a grammar with Python or Java | ANTLR's C++ runtime |
+| C# | .NET projects | ANTLR's C# runtime |
+
+Each target is a `codegen.Target`, as Go is. It gets both flavors where the language
+allows (the `antlr` flavor builds that runtime's own contexts; the native flavor needs
+no runtime), the same differential harness against ANTLR's runtime for that language,
+and a performance gate. A grammar then means the same thing in every target galop
+supports, as it does in ANTLR.
+
+Grammar features ANTLR users rely on and galop does not read yet (lexer modes, embedded
+actions in the target language, `tokenVocab`) matter as much as the languages: a
+project needs all of its grammar supported too.
+
+**Adoption.** galop is offered only to projects whose parsers are all in languages it
+supports, and whose grammars use only what it supports. Its speed is compared with
+ANTLR on the same grammar after the cheap fixes: a grammar that sends valid input to
+ANTLR's full-context fallback (one shared rule called from contexts SLL cannot tell
+apart) is often fixed in the grammar itself, and that fixed ANTLR is the baseline.
 
 ## Risks
 
