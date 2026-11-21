@@ -352,6 +352,7 @@ sources for a `go_library`.
 - element labels `x=e` and `xs+=e`
 - embedded actions `{...}` and predicates `{...}?`
 - lexer commands: `-> skip`, `-> channel(HIDDEN)`, `-> pushMode(X)`, ...
+- `EOF` in lexer rules, matching the end of the input (`LINE : '//' ~[\n]* ('\n' | EOF) ;`)
 
 Not supported yet, and reported as errors rather than ignored: rule arguments,
 `returns`/`locals`, rule-level options and actions, element options other than

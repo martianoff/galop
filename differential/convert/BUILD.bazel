@@ -30,6 +30,8 @@ exports_files(glob(["grammars/*.g4"]))
     ("shapes", "grammars/Shapes.g4", "Shapes", "prog", "-n 400 -seed 1 -nesting 4 -tokens 200"),
     # Spaces are a token (GetText takes a slice), and EOF is not the root's last child.
     ("text", "grammars/Text.g4", "Text", "prog", "-n 300 -seed 1 -nesting 4 -tokens 60"),
+    # EOF in lexer rules: a line comment or a block may end the input.
+    ("lines", "grammars/Lines.g4", "Lines", "prog", "-n 300 -seed 1 -nesting 4 -tokens 60"),
 ] + [
     # Corpus grammars from other projects (testdata/grammars); all but fileseq have
     # left-recursive rules.

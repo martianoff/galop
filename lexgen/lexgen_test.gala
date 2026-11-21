@@ -204,3 +204,30 @@ func TestLexerDepthOption(t T) T {
     val t4 = Eq(t3, depth("-3"), Left[string, int]("lexerDepth must be a positive number, not '-3'"))
     Eq(t4, depth("deep"), Left[string, int]("lexerDepth must be a positive number, not 'deep'"))
 }
+
+// eofGrammar matches EOF in lexer rules, as ANTLR allows (#93).
+val eofGrammar = `lexer grammar E1;
+LINE : '//' ~[\n]* ('\n' | EOF) ;
+A : 'a' EOF ;
+END : '!' EOF EOF? ;
+ID : [b-z]+ ;
+WS : [ \n]+ -> skip ;
+`
+
+// TestEOFInLexerRules checks EOF in lexer rules against ANTLR 4.13.1's lexer:
+// it matches only at the end of the input and consumes nothing, an optional
+// EOF after it is taken too, and a rule that needs EOF elsewhere fails as in
+// ANTLR, its scan reported as one error.
+func TestEOFInLexerRules(t T) T {
+    val d = dfaOf(eofGrammar)
+    val lexed = (input string) string => {
+        val l = d.Tokenize(input)
+        (l.Errors.Map((e) => s"[$e]")).AppendAll(ArrayOf(names(d, l))).MkString(" ")
+    }
+    val t1 = Eq(t, lexed("// a\nb // c"), "LINE:// a\n ID:b LINE:// c EOF")
+    val t2 = Eq(t1, lexed("a"), "A:a EOF")
+    val t3 = Eq(t2, lexed("aa"), "[1:0 token recognition error at: 'aa'] EOF")
+    val t4 = Eq(t3, lexed("b a"), "ID:b A:a EOF")
+    val t5 = Eq(t4, lexed("!"), "END:! EOF")
+    Eq(t5, lexed("! b"), "[1:0 token recognition error at: '! '] ID:b EOF")
+}

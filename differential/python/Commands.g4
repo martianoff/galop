@@ -1,16 +1,17 @@
 // A lexer grammar for galop's Python target tests: lexer commands, a channel
 // of its own, a recursive fragment past the DFA's rule-call depth (the tests
 // generate it with -DlexerDepth=2, so nested blocks are matched on the ATN),
-// non-greedy loops, code points above ASCII, literals with escapes, and a
-// token named like a Python word ANTLR's Python target escapes.
+// EOF in lexer rules, non-greedy loops, code points above ASCII, literals
+// with escapes, and a token named like a Python word ANTLR's Python target
+// escapes.
 lexer grammar Commands;
 
 channels { COMMENTS }
 
-BLOCK : '{' BODY '}' ;
+BLOCK : '{' BODY ('}' | EOF) ;
 fragment BODY : ( '{' BODY '}' | ~[{}] )* ;
 
-LINE_COMMENT : '//' .*? '\n' -> channel(COMMENTS) ;
+LINE_COMMENT : '//' .*? ('\n' | EOF) -> channel(COMMENTS) ;
 DOC : '/**' .*? '*/' -> channel(HIDDEN) ;
 COMMENT : '/*' .*? '*/' -> skip ;
 
@@ -25,4 +26,5 @@ NL : '\r'? '\n' ;
 TAB : '\t' ;
 ARROW : '\u2192' ;
 EMOJI : [\u{1F600}-\u{1F64F}] ;
+END : '!' EOF ;
 WS : ' '+ -> skip ;

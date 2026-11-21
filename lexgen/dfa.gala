@@ -67,11 +67,13 @@ func (s Sim) moved(c Config, target int, stack List[int], actions Array[int]) Co
 
 // closure adds c and every configuration reachable from it without consuming
 // to set, in ANTLR's order, and reports whether the alternative has reached
-// its token rule's stop state (ANTLR's currentAltReachedAcceptState).
-func (s Sim) closure(c Config, set Ptr[configSet], reached bool) bool {
+// its token rule's stop state (ANTLR's currentAltReachedAcceptState). On the
+// end-of-input step (eof), a transition on EOF consumes nothing, so the
+// closure takes it too (ANTLR's treatEofAsEpsilon).
+func (s Sim) closure(c Config, set Ptr[configSet], reached bool, eof bool = false) bool {
     if s.M.IsStop.Get(c.State) {
         return c.Stack match {
-            case List(ret, rest...) => s.closure(s.moved(c, ret, rest, c.Actions), set, reached)
+            case List(ret, rest...) => s.closure(s.moved(c, ret, rest, c.Actions), set, reached, eof)
             case _ => {
                 set.add(c)
                 true
@@ -82,15 +84,16 @@ func (s Sim) closure(c Config, set Ptr[configSet], reached bool) bool {
         set.add(c)
     }
     s.M.Out.Get(c.State).FoldLeft(reached, (r, e) => e match {
-        case Eps(target) => s.closure(s.moved(c, target, c.Stack, c.Actions), set, r)
+        case Eps(target) => s.closure(s.moved(c, target, c.Stack, c.Actions), set, r, eof)
         case Call(_, _) if s.MaxDepth > 0 && c.Stack.Size() >= s.MaxDepth => {
             set.overflow = true
             r
         }
-        case Call(target, follow) => s.closure(s.moved(c, target, c.Stack.Prepend(follow), c.Actions), set, r)
+        case Call(target, follow) => s.closure(s.moved(c, target, c.Stack.Prepend(follow), c.Actions), set, r, eof)
         // Commands of a rule reached through a rule call are ignored, as in ANTLR.
-        case Act(target, acts) if c.Stack.IsEmpty() => s.closure(s.moved(c, target, c.Stack, c.Actions.AppendAll(acts)), set, r)
-        case Act(target, _) => s.closure(s.moved(c, target, c.Stack, c.Actions), set, r)
+        case Act(target, acts) if c.Stack.IsEmpty() => s.closure(s.moved(c, target, c.Stack, c.Actions.AppendAll(acts)), set, r, eof)
+        case Act(target, _) => s.closure(s.moved(c, target, c.Stack, c.Actions), set, r, eof)
+        case Consume(target, _, in) if eof && in.Get(s.M.EOFClass()) => s.closure(s.moved(c, target, c.Stack, c.Actions), set, r, eof)
         case Consume(_, _, _) => r
     })
 }
@@ -110,12 +113,13 @@ func (s Sim) Start() Ptr[configSet] {
 // non-greedy decision stop matching.
 func (s Sim) Reach(configs Array[Config], cls int) Ptr[configSet] {
     val set = newConfigSet()
+    val eof = cls == s.M.EOFClass()
     configs.FoldLeft(0, (skipAlt, cfg) => {
         val reached = cfg.Alt == skipAlt
         if (reached && cfg.NonGreedy) skipAlt
         else s.M.Out.Get(cfg.State).FoldLeft(skipAlt, (skip, e) => e match {
             case Consume(target, _, in) if in.Get(cls) =>
-                if (s.closure(s.moved(cfg, target, cfg.Stack, cfg.Actions), set, reached)) cfg.Alt else skip
+                if (s.closure(s.moved(cfg, target, cfg.Stack, cfg.Actions), set, reached, eof)) cfg.Alt else skip
             case _ => skip
         })
     })

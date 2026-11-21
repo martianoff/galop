@@ -925,8 +925,16 @@ ignored inside a called rule), and the longest accepted prefix wins.
 - **Reference.** `DFA.Tokenize` runs the DFA the way `BaseLexer.NextToken` runs
   ANTLR's simulator (skip, more, type, channel, EOF, error recovery). The unit
   tests use it, and the generated Go lexer follows it.
+- **EOF.** `EOF` in a lexer rule is a transition on ANTLR's EOF symbol, which
+  gets an input class of its own (only in grammars that use it, so other
+  grammars' tables are unchanged). As in ANTLR's `execATN`, once the input runs
+  out the scan takes EOF edges, consuming nothing, until a state accepts or no
+  edge follows, and on that step the closure takes further EOF transitions as
+  if they were epsilon (`treatEofAsEpsilon`). Where states that do not accept
+  form an EOF cycle, ANTLR's lexer loops forever; galop stops after as many
+  steps as there are states.
 - **Not supported yet:** lexer modes, predicates and embedded actions in lexer
-  rules (reported as errors), and `EOF` inside lexer rules.
+  rules (reported as errors).
 
 ANTLR's Go runtime compares two lexer configurations with no actions as equal
 whenever their hashes collide, whatever their states; galop compares them in full.

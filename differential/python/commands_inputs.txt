@@ -17,3 +17,9 @@ $
 \x00 \ufeff \uffff
 none\nnone
 \r
+// comment at the end
+!
+! x
+x !
+{a{b{c{d
+{a}{b
