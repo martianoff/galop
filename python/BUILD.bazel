@@ -1,0 +1,52 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+gala_library(
+    name = "python",
+    srcs = ["target.gala"],
+    importpath = "github.com/martianoff/galop/python",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//analysis",
+        "//atn",
+        "//brackets",
+        "//codegen",
+        "//diag",
+        "//g4",
+        "//leftrec",
+        "//lexgen",
+        "//repair",
+        "@gala//collection_immutable",
+        "@gala//collection_mutable",
+        "@gala//concurrent",
+        "@gala//go_interop",
+        "@gala//stream",
+        "@gala//strings",
+    ],
+)
+
+gala_test(
+    name = "python_test",
+    srcs = ["target_test.gala"],
+    importpath = "github.com/martianoff/galop/python",
+    lib_srcs = ["target.gala"],
+    pkg = "python",
+    deps = [
+        "//analysis",
+        "//atn",
+        "//brackets",
+        "//codegen",
+        "//diag",
+        "//g4",
+        "//grammartest",
+        "//leftrec",
+        "//lexgen",
+        "//repair",
+        "@gala//collection_immutable",
+        "@gala//collection_mutable",
+        "@gala//concurrent",
+        "@gala//go_builtins",
+        "@gala//go_interop",
+        "@gala//stream",
+        "@gala//strings",
+    ],
+)

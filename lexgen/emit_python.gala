@@ -1,0 +1,452 @@
+package lexgen
+
+import (
+    "strconv"
+    gostrings "strings"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/g4"
+)
+
+// Python emission. The Python target's lexer subclasses ANTLR's Python
+// runtime's antlr4.Lexer and overrides nextToken, so it replaces ANTLR's
+// generated Python lexer in front of ANTLR's parser (see the class's comment
+// in pyLexerTemplate). It runs the DFA the Go lexers run, from tables written
+// as Python tuples.
+
+// PythonLexerFile generates the Python lexer of in's grammar as file name,
+// declaring class className. The DFA keeps rule-call stacks up to the
+// `lexerDepth` define (default 12), as for Go.
+func PythonLexerFile(in codegen.Input, opts codegen.Options, name string, className string) Either[Array[string], codegen.OutputFile] =
+    buildDFA(in, opts).Map((d) => codegen.OutputFile(name, EmitPython(d, in.Grammar.Name, className, in.Grammar.Channels, isCombined(in.Grammar))))
+
+// isCombined reports whether g is a combined grammar (parser and lexer rules).
+func isCombined(g g4.Grammar) bool = g.Kind match {
+    case g4.Combined() => true
+    case _ => false
+}
+
+// EmitPython renders d as a Python module declaring lexer class className.
+// The lexer of a combined grammar knows only the token types its lexer rules
+// and implicit literals define, as ANTLR's lexer of a combined grammar does:
+// a name only the parser's `tokens {}` declares is not one of them.
+func EmitPython(d DFA, grammar string, className string, channels Array[string], combined bool) string {
+    val m = d.Model
+    val all = m.ATN.Vocab
+    val vocab = if (combined) all.Copy(Names = all.Names.ZipWithIndex().Map((ni) =>
+        if (ni.V2 == 0 || all.Implicit.Get(ni.V2) || m.ATN.RuleNames.Contains(ni.V1)) ni.V1 else "")) else all
+    // ANTLR's Python template lists only the names a token type has, after
+    // "<INVALID>": its lists are not indexed by type.
+    val literals = ArrayOf("<INVALID>").AppendAll(literalNames(vocab).Filter(_ != ""))
+    val symbols = ArrayOf("<INVALID>").AppendAll(symbolicNames(vocab).Filter(_ != ""))
+    val channelConsts = channels.ZipWithIndex().Map((ci) => s"    ${PyName(ci.V1)} = ${ci.V2 + 2}")
+    val tokenConsts = ArrayTabulate(vocab.MaxType(), (k) => k + 1).Filter((t) => vocab.Names.Get(t) != "")
+        .Map((t) => s"    ${PyName(vocab.Names.Get(t))} = $t")
+    val consts = ArrayOf(channelConsts, tokenConsts).Filter(_.NonEmpty()).Map(_.MkString("\n") + "\n").MkString("\n")
+    val names = ArrayOf(
+        pyList("channelNames", ArrayOf("DEFAULT_TOKEN_CHANNEL", "HIDDEN").AppendAll(channels)),
+        pyList("modeNames", ArrayOf("DEFAULT_MODE")),
+        pyList("literalNames", literals),
+        pyList("symbolicNames", symbols),
+        pyList("ruleNames", m.ATN.RuleNames),
+        s"    grammarFileName = ${strconv.Quote(grammar + ".g4")}\n",
+    ).MkString("\n")
+    fill(
+        pyLexerTemplate,
+        "@CLASS@", className,
+        "@GRAMMAR@", grammar,
+        "@GRAMMARFILE@", grammar + ".g4",
+        "@STATS@", dfaStats(d),
+        "@CONSTS@", consts,
+        "@NAMES@", names,
+    ) + pyTables(d)
+}
+
+// pyReserved are the words ANTLR's Python3 target escapes in names it
+// declares (its Python3Target.reservedWords).
+val pyReserved = ArrayOf(
+    "abs", "all", "and", "any", "apply", "as", "assert", "bin", "bool", "break", "buffer", "bytearray",
+    "callable", "chr", "class", "classmethod", "coerce", "compile", "complex", "continue", "def", "del",
+    "delattr", "dict", "dir", "divmod", "elif", "else", "enumerate", "eval", "execfile", "except", "file",
+    "filter", "finally", "float", "for", "format", "from", "frozenset", "getattr", "global", "globals",
+    "hasattr", "hash", "help", "hex", "id", "if", "import", "in", "input", "int", "intern", "is",
+    "isinstance", "issubclass", "iter", "lambda", "len", "list", "locals", "max", "min", "memoryview",
+    "next", "nonlocal", "not", "object", "oct", "open", "or", "ord", "pass", "pow", "print", "property",
+    "raise", "range", "raw_input", "reduce", "reload", "repr", "return", "reversed", "round", "set",
+    "setattr", "slice", "sorted", "staticmethod", "str", "sum", "super", "try", "tuple", "type", "unichr",
+    "unicode", "vars", "with", "while", "yield", "zip", "__import__", "True", "False", "None", "rule",
+    "parserRule",
+)
+
+// PyName is name as ANTLR's Python3 target declares it: with a trailing
+// underscore when it is a reserved word (a token named `None`).
+func PyName(name string) string = if (pyReserved.Contains(name)) name + "_" else name
+
+// pyList renders a class attribute holding a list of strings, eight to a line.
+func pyList(name string, values Array[string]) string =
+    s"    $name = [\n" + values.Grouped(8).Map((row) => "        " + row.Map((v) => strconv.Quote(v)).MkString(", ") + ",").MkString("\n") + "\n    ]\n"
+
+// pyTuple renders values as a module-level tuple, sixteen to a line.
+func pyTuple(name string, values Array[int], doc string) string =
+    s"# $name $doc\n$name = (\n" + values.Grouped(16).Map((row) => "    " + row.MkString(", ") + ",").MkString("\n") + "\n)\n"
+
+// pyTables renders the DFA and, when it has dynamic edges, the lexer ATN and
+// its simulator, as module-level names after the class.
+func pyTables(d DFA) string {
+    val m = d.Model
+    val numClasses = m.Classes.Size()
+    val accepts = d.States.Map((st) => st.Accept match {
+        case Some(acc) => {
+            val effect = m.EffectOf(acc.Actions)
+            Tuple(effect.Type.GetOrElse(acc.Prediction), effect.Channel.GetOrElse(-1))
+        }
+        case None() => Tuple(TypeInvalid, -1)
+    })
+    val ranges = m.ClassRanges()
+    val ascii = ranges.Collect({ case r if r.Lo < 128 => ArrayFill((if (r.Hi < 128) r.Hi else 127) - r.Lo + 1, r.Class) }).FlatMap((a) => a)
+    val high = ranges.Collect({ case r if r.Hi >= 128 => if (r.Lo < 128) r.Copy(Lo = 128) else r })
+    val edges = "# _EDGES is the DFA, " + s"${d.States.Size()} states by $numClasses classes: _EDGES[s][c] is the\n" +
+        "# next state, -1 to stop, or _DYNAMIC.\n_EDGES = (\n" +
+        d.Edges.Map((row) => "    (" + row.Grouped(24).Map(_.MkString(", ")).MkString(",\n     ") + (if (row.Size() == 1) ",)," else "),")).MkString("\n") +
+        "\n)\n"
+    val tables = ArrayOf(
+        s"\n# _NUM_CLASSES is the number of input classes: code points every\n# transition treats alike.\n_NUM_CLASSES = $numClasses\n",
+        s"# _DYNAMIC marks an edge that needs a deeper rule-call stack than the DFA\n# keeps; the token is then matched on the ATN.\n_DYNAMIC = $DynamicEdge\n",
+        pyTuple("_ASCII", ascii, "is the class of each ASCII code point."),
+        pyTuple("_RANGE_LO", high.Map(_.Lo), "holds the first code point of each run of one class above ASCII."),
+        pyTuple("_RANGE_CLASS", high.Map(_.Class), "is the class of each run in _RANGE_LO."),
+        edges,
+        pyTuple("_ACC_TYPE", accepts.Map(_.V1), "is the token type each DFA state accepts (0: none); skip and more\n# are ANTLR's Lexer.SKIP and Lexer.MORE."),
+        pyTuple("_ACC_CHANNEL", accepts.Map(_.V2), "is the channel each accepting state sets, or -1."),
+    )
+    val sim = if (d.HasDynamicEdges()) pyATNTables(m) + pySimTemplate else pyNoSimTemplate
+    tables.MkString("\n") + pyMatchTemplate + sim
+}
+
+// pyATNTables renders the lexer ATN for the runtime simulator.
+func pyATNTables(m Model) string {
+    val sets = m.Out.FlatMap((out) => out.Collect({ case Consume(_, _, in) => bitString(in) })).Distinct()
+    val actLists = m.Out.FlatMap((out) => out.Collect({ case Act(_, acts) => acts.MkString(",") })).Distinct()
+    val trans = m.Out.Map((out) => out.Map((e) => e match {
+        case Eps(target) => s"(0, $target, 0)"
+        case Call(target, follow) => s"(1, $target, $follow)"
+        case Consume(target, _, in) => s"(2, $target, ${sets.IndexOf(bitString(in))})"
+        case Act(target, acts) => s"(3, $target, ${actLists.IndexOf(acts.MkString(","))})"
+    }))
+    val flags = ArrayTabulate(m.Out.Size(), (s) =>
+        (if (m.IsStop.Get(s)) 1 else 0) + (if (m.NonGreedy.Get(s)) 2 else 0) + (if (m.EpsilonOnly.Get(s)) 4 else 0)
+    )
+    val stateType = ArrayTabulate(m.Out.Size(), (s) => if (m.IsStop.Get(s)) m.TokenType(s) else 0)
+    val actType = m.Actions.Map((a) => a match {
+        case SkipAction() => TypeSkip
+        case MoreAction() => TypeMore
+        case TypeAction(t) => t
+        case ChannelAction(_) => 0
+    })
+    val actChannel = m.Actions.Map((a) => a match {
+        case ChannelAction(c) => c
+        case _ => -1
+    })
+    val classSets = sets.Map((b) => ArrayFromSlice(gostrings.Split(b, "")).ZipWithIndex().Collect({ case (bit, c) if bit == "1" => c }))
+    ArrayOf(
+        "",
+        pyTuple("_STATE_FLAGS", flags, "holds each ATN state's flags: 1 rule stop, 2 non-greedy decision, 4\n# epsilon only."),
+        pyTuple("_STATE_TYPE", stateType, "is the token type of each rule stop state's rule (0 for fragments)."),
+        pyTuple("_TRANS_START", codegen.Offsets(trans.Map(_.Size())), "indexes each ATN state's first transition in _TRANS."),
+        "# _TRANS holds the ATN's transitions: kind (0 epsilon, 1 rule call, 2 consume,\n" +
+            "# 3 actions), target state, and the follow state, set or action list.\n_TRANS = (\n" +
+            trans.FlatMap((out) => out).Grouped(6).Map((row) => "    " + row.MkString(", ") + ",").MkString("\n") + "\n)\n",
+        "# _SETS are the classes each consuming transition's set matches.\n_SETS = (\n" +
+            classSets.Map((cs) => "    frozenset((" + cs.MkString(", ") + (if (cs.Size() == 1) ",))," else ")),")).MkString("\n") + "\n)\n",
+        "# _ACT_LISTS are the action ids each actions transition appends.\n_ACT_LISTS = (\n" +
+            actLists.Map((l) => "    (" + gostrings.ReplaceAll(l, ",", ", ") + (if (gostrings.Contains(l, ",")) ")," else ",),")).MkString("\n") + "\n)\n",
+        pyTuple("_ACT_TYPE", actType, "is the type each action sets (0: none)."),
+        pyTuple("_ACT_CHANNEL", actChannel, "is the channel each action sets (-1: none)."),
+        pyTuple("_START_TARGETS", m.StartTargets, "are the token rules' start states, in priority order."),
+    ).MkString("\n")
+}
+
+// pyLexerTemplate is the lexer class. @CLASS@ is its name.
+val pyLexerTemplate = `# Generated by galop from @GRAMMARFILE@. DO NOT EDIT.
+
+import sys
+from bisect import bisect_right
+
+from antlr4.Lexer import Lexer
+from antlr4.Token import Token
+from antlr4.atn.LexerATNSimulator import LexerATNSimulator
+from antlr4.error.Errors import IllegalStateException, LexerNoViableAltException
+
+
+class @CLASS@(Lexer):
+    """The lexer of the @GRAMMAR@ grammar, generated by galop.
+
+    It produces the tokens ANTLR 4.13.1's generated Python lexer produces for
+    the same input (type, text, channel, start, stop, line and column, through
+    the EOF token) and reports token recognition errors the way it does, to the
+    lexer's error listeners. It subclasses antlr4.Lexer, so it stands in for
+    ANTLR's lexer anywhere: in a CommonTokenStream, in front of ANTLR's parser.
+    As in ANTLR's lexer, the current line and column live in _interp, a
+    LexerATNSimulator that only counts: it holds no ATN.
+
+    The input must be one of the runtime's character streams (InputStream,
+    FileStream, StdinStream): the lexer reads their text directly.
+
+    Matching runs a DFA computed when the code was generated (@STATS@).
+    """
+
+@CONSTS@
+@NAMES@
+    def __init__(self, input=None, output=sys.stdout):
+        super().__init__(input, output)
+        self.checkVersion("4.13.1")
+        self._interp = LexerATNSimulator(self, None, None, None)
+        self._actions = None
+        self._predicates = None
+        # The input classes of the text in _galop_text, one per code point.
+        self._galop_text = None
+        self._galop_classes = None
+
+    def nextToken(self):
+        """The next token: the longest match, the earliest rule on a tie, with
+        skip, more, type and channel commands applied, as ANTLR's
+        Lexer.nextToken. At the end of the input it returns EOF tokens."""
+        input = self._input
+        if input is None:
+            raise IllegalStateException("nextToken requires a non-null input stream.")
+        text = input.strdata
+        if text is not self._galop_text:
+            self._galop_classes = _classes(text)
+            self._galop_text = text
+        classes = self._galop_classes
+        n = len(classes)
+        interp = self._interp
+        # The position is kept in locals and written to the input stream and
+        # the simulator before anything else can read it: before a token is
+        # emitted and before an error is reported.
+        at = input.index
+        line, column = interp.line, interp.column
+        while True:
+            if self._hitEOF:
+                input.seek(at)
+                interp.line, interp.column = line, column
+                self.emitEOF()
+                return self._token
+            self._token = None
+            self._text = None
+            start, start_line, start_column = at, line, column
+            channel = Token.DEFAULT_CHANNEL
+            while True:
+                end, ttype, ch, stop = _match(classes, at, n)
+                if end < 0:
+                    if stop >= n and stop == at:
+                        ttype = Token.EOF
+                        end = at
+                    else:
+                        end = stop
+                # Count lines as ANTLR's lexer does: one after each "\n".
+                lines = text.count("\n", at, end)
+                if lines:
+                    line += lines
+                    column = end - text.rfind("\n", at, end) - 1
+                else:
+                    column += end - at
+                if ttype == 0:
+                    # ANTLR's lexer reports the error with the input at the
+                    # code point the scan stopped at, then skips that one.
+                    input.seek(stop)
+                    interp.line, interp.column = line, column
+                    interp.startIndex = at
+                    self._tokenStartCharIndex = start
+                    self._tokenStartLine = start_line
+                    self._tokenStartColumn = start_column
+                    e = LexerNoViableAltException(self, input, at, None)
+                    self.notifyListeners(e)
+                    self.recover(e)
+                    at = input.index
+                    line, column = interp.line, interp.column
+                    ttype = Lexer.SKIP
+                else:
+                    at = end
+                    if ch >= 0:
+                        channel = ch
+                if at >= n:
+                    self._hitEOF = True
+                if ttype != Lexer.MORE:
+                    break
+            if ttype != Lexer.SKIP:
+                input.seek(at)
+                interp.line, interp.column = line, column
+                self._tokenStartCharIndex = start
+                self._tokenStartLine = start_line
+                self._tokenStartColumn = start_column
+                self._channel = channel
+                self._type = ttype
+                self.emit()
+                return self._token
+`
+
+// pyMatchTemplate is the DFA scan: input classes and one longest match.
+val pyMatchTemplate = `
+
+class _ClassMap(dict):
+    """The input class of each code point, as str.translate reads it: ASCII
+    up front, others looked up and kept on first use."""
+
+    def __missing__(self, c):
+        k = _RANGE_CLASS[bisect_right(_RANGE_LO, c) - 1]
+        self[c] = k
+        return k
+
+
+_CLASS_MAP = _ClassMap(enumerate(_ASCII))
+
+
+def _classes(text):
+    """The input class of each code point of text, by index."""
+    if _NUM_CLASSES <= 256:
+        return text.translate(_CLASS_MAP).encode("latin-1")
+    return [ord(c) for c in text.translate(_CLASS_MAP)]
+
+
+def _match(classes, i, n):
+    """Runs the DFA from index i: ANTLR's LexerATNSimulator.execATN. It
+    returns where the longest match ends (-1 for none), its token type and
+    channel, and where the scan stopped."""
+    start = i
+    edges = _EDGES
+    acc = _ACC_TYPE
+    best = 0 if acc[0] else -1
+    end = i
+    s = 0
+    while i < n:
+        s = edges[s][classes[i]]
+        if s < 0:
+            if s == _DYNAMIC:
+                return _match_atn(classes, start, n)
+            break
+        i += 1
+        if acc[s]:
+            best = s
+            end = i
+    if best < 0:
+        return -1, 0, -1, i
+    return end, acc[best], _ACC_CHANNEL[best], i
+`
+
+// pyNoSimTemplate stands in for the simulator when the DFA has no dynamic edge.
+val pyNoSimTemplate = `
+
+def _match_atn(classes, i, n):
+    """Never called: this DFA has no dynamic edges."""
+    raise RuntimeError("galop: dynamic DFA edge without an ATN")
+`
+
+// pySimTemplate is the runtime lexer ATN simulator: ANTLR's closure and reach
+// with unbounded rule-call stacks, used only past the DFA's depth. A
+// configuration is a tuple (state, alt, non-greedy, stack, actions); a stack
+// is (return state, next frame) or None, and an action list (latest action,
+// earlier ones) or None.
+val pySimTemplate = `
+
+def _moved(c, target, stack, acts):
+    return (target, c[1], c[2] or _STATE_FLAGS[target] & 2 != 0, stack, acts)
+
+
+def _add(configs, seen, c):
+    if c not in seen:
+        seen.add(c)
+        configs.append(c)
+
+
+def _closure(configs, seen, c, reached):
+    """ANTLR's LexerATNSimulator.closure; it reports whether the
+    configuration's alternative has reached its rule's stop state."""
+    flags = _STATE_FLAGS[c[0]]
+    if flags & 1:
+        if c[3] is None:
+            _add(configs, seen, c)
+            return True
+        return _closure(configs, seen, _moved(c, c[3][0], c[3][1], c[4]), reached)
+    if not flags & 4 and (not reached or not c[2]):
+        _add(configs, seen, c)
+    for i in range(_TRANS_START[c[0]], _TRANS_START[c[0] + 1]):
+        kind, target, arg = _TRANS[i]
+        if kind == 0:
+            reached = _closure(configs, seen, _moved(c, target, c[3], c[4]), reached)
+        elif kind == 1:
+            reached = _closure(configs, seen, _moved(c, target, (arg, c[3]), c[4]), reached)
+        elif kind == 3:
+            acts = c[4]
+            if c[3] is None:
+                for a in _ACT_LISTS[arg]:
+                    acts = (a, acts)
+            reached = _closure(configs, seen, _moved(c, target, c[3], acts), reached)
+    return reached
+
+
+def _reach(configs, k):
+    """ANTLR's getReachableConfigSet: the configurations after a code point
+    of class k."""
+    out = []
+    seen = set()
+    skip_alt = 0
+    for c in configs:
+        reached = c[1] == skip_alt
+        if reached and c[2]:
+            continue
+        for i in range(_TRANS_START[c[0]], _TRANS_START[c[0] + 1]):
+            kind, target, arg = _TRANS[i]
+            if kind == 2 and k in _SETS[arg]:
+                if _closure(out, seen, _moved(c, target, c[3], c[4]), reached):
+                    skip_alt = c[1]
+    return out
+
+
+def _accept(configs):
+    """What configs accept: the type and channel of the first configuration
+    at a rule stop state, after its actions; None if none is."""
+    for c in configs:
+        if not _STATE_FLAGS[c[0]] & 1:
+            continue
+        ids = []
+        a = c[4]
+        while a is not None:
+            ids.append(a[0])
+            a = a[1]
+        ttype, channel = _STATE_TYPE[c[0]], -1
+        for a in reversed(ids):
+            if _ACT_TYPE[a]:
+                ttype = _ACT_TYPE[a]
+            if _ACT_CHANNEL[a] >= 0:
+                channel = _ACT_CHANNEL[a]
+        return ttype, channel
+    return None
+
+
+def _match_atn(classes, i, n):
+    """Matches one token on the ATN, with no limit on rule-call depth:
+    ANTLR's execATN without a DFA cache. It returns what _match returns."""
+    configs = []
+    seen = set()
+    for alt, target in enumerate(_START_TARGETS, 1):
+        _closure(configs, seen, (target, alt, False, None, None), False)
+    end, ttype, channel = -1, 0, -1
+    accepted = _accept(configs)
+    if accepted is not None:
+        end = i
+        ttype, channel = accepted
+    while i < n:
+        reach = _reach(configs, classes[i])
+        if not reach:
+            break
+        i += 1
+        configs = reach
+        accepted = _accept(configs)
+        if accepted is not None:
+            end = i
+            ttype, channel = accepted
+    return end, ttype, channel, i
+`

@@ -28,6 +28,7 @@ at build time, never checked in. `go.mod` here exists for Bazel's `go_deps`.
 | `milvus/` | Milvus's filter expressions (`exprs.json`, below) parsed by galop's native flavor of Milvus's `Plan.g4`, by ANTLR out of the box and by ANTLR as Milvus drives it: the performance gate's `milvus` input, and a test that galop builds ANTLR's tree for each |
 | `convert/` | For each test grammar and each corpus grammar with left-recursive rules: ANTLR's parser, both flavors and the converter, checked against each other (see [FUZZ_AND_PERF.md](../docs/FUZZ_AND_PERF.md)) |
 | `lexdiff/` | galop's generated lexers (both flavors) against ANTLR's, token by token over the corpus; lexer benchmarks |
+| `python/` | galop's Python lexers against ANTLR's Python lexers (hermetic Python 3.12, `antlr4-python3-runtime` 4.13.1): the corpus and test grammars, `Commands.g4` for lexer commands, and the GALA corpus |
 | `cmd/treedump` | Print each file's tree (ANTLR's `ToStringTree`) |
 | `cmd/difftest` | Compare two parsers over a corpus; exit 1 on any mismatch |
 | `cmd/bench` | Lexer and parser timings, warm and in a fresh process |

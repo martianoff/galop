@@ -181,7 +181,7 @@ Roughly by payoff, and not before M4 ships:
 
 ### More target languages
 
-Go is galop's only target today. Projects that use ANTLR often generate one grammar
+Go is galop's complete target today; Python has a lexer. Projects that use ANTLR often generate one grammar
 into several languages, and a project whose parsers are not all in languages galop
 supports cannot adopt it: a second generator for some languages is extra work, not a
 gain. More targets therefore come next, in the order ANTLR users most need them:
@@ -189,7 +189,7 @@ gain. More targets therefore come next, in the order ANTLR users most need them:
 | Target | Why | Checked against |
 |---|---|---|
 | Go | done | ANTLR's Go runtime |
-| Python | the largest gain: on gofileseq's grammar ANTLR's Python runtime takes 6.5 ms for a frame range its Go runtime parses in 0.39 ms | ANTLR's Python runtime |
+| Python | lexer done (`antlr` flavor); parser next. The largest gain: on gofileseq's grammar ANTLR's Python runtime takes 6.5 ms for a frame range its Go runtime parses in 0.39 ms | ANTLR's Python runtime |
 | Java | ANTLR's reference target, the most used | ANTLR's Java runtime |
 | TypeScript / JavaScript | parsers in browsers and editors | ANTLR's TypeScript runtime |
 | C++ | native tools that share a grammar with Python or Java | ANTLR's C++ runtime |

@@ -1,5 +1,7 @@
 load(":defs.bzl", "convert_test")
 
+exports_files(glob(["grammars/*.g4"]))
+
 # Each grammar's ANTLR parser, galop's antlr flavor with the converter to the
 # native tree and galop's native flavor with its listener and visitor, built
 # and run on sentences galop-sample generates: the converted trees must be

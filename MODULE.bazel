@@ -81,3 +81,23 @@ filegroup(
     ("heldout_gala_tui", "gala-tui", "c46554dd1e24a2074c4b99dd2294f30cbe955489", "c73c94b1b84a481d786f8e8402c3d4593bbf0bf9d5346de05c917c8ffff6624d"),
     ("heldout_gala_server", "gala-server", "ba67dc284908010cde53c7984a06288534c54dfb", "c013c4b8d8a3cf9a33ba99b6f7ebb1ed325ce628107a13b7d94f5f18cf950ad5"),
 ]]
+
+# --- Python harness (//differential/python) ----------------------------------
+# A hermetic Python and ANTLR's Python runtime, to check galop's Python target
+# against ANTLR's.
+
+bazel_dep(name = "rules_python", version = "1.9.3", dev_dependency = True)
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python", dev_dependency = True)
+python.toolchain(
+    is_default = True,
+    python_version = "3.12",
+)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip", dev_dependency = True)
+pip.parse(
+    hub_name = "pypi",
+    python_version = "3.12",
+    requirements_lock = "//differential/python:requirements_lock.txt",
+)
+use_repo(pip, "pypi")

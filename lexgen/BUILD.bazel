@@ -5,6 +5,7 @@ gala_library(
     srcs = [
         "dfa.gala",
         "emit_go.gala",
+        "emit_python.gala",
         "model.gala",
         "native_go.gala",
         "tokenize.gala",
@@ -36,6 +37,7 @@ gala_test(
     lib_srcs = [
         "dfa.gala",
         "emit_go.gala",
+        "emit_python.gala",
         "native_go.gala",
         "model.gala",
         "tokenize.gala",
