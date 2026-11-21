@@ -94,7 +94,7 @@ func dfaStats(d DFA) string =
 
 // literalNames are the token types' literal names, ANTLR's LiteralNames.
 func literalNames(vocab atn.Vocabulary) Array[string] = ArrayTabulate(vocab.Names.Size(), (t) =>
-    if (t == 0) "" else vocab.Literals.Get(t).Map((lit) => s"'$lit'").GetOrElse("")
+    if (t == 0) "" else vocab.LiteralName(t).GetOrElse("")
 )
 
 // symbolicNames are the token types' symbolic names, ANTLR's SymbolicNames:

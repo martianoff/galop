@@ -151,4 +151,4 @@ func implicitTokens(g Grammar) Array[diag.Diagnostic] {
 }
 
 func isDeclaredToken(g Grammar, name string) bool =
-    name == "EOF" || g.Tokens.Contains(name) || g.Rules.Exists(_.Name == name)
+    name == "EOF" || g.Tokens.Contains(name) || LexerTokenNames(g).Contains(name) || g.Rules.Exists((r) => r.Name == name && r.Fragment)

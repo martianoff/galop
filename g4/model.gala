@@ -240,11 +240,13 @@ func TokenPositions(g Grammar) Array[Pos] =
     if (g.TokensPos.Size() == g.Tokens.Size()) g.TokensPos
     else ArrayTabulate(g.Tokens.Size(), (_) => NoPos)
 
-// literalRules pairs a literal with each lexer rule that is exactly that
-// literal (`VAL: 'val';`), as (literal, rule name).
-func literalRules(g Grammar) Array[Tuple[string, string]] =
+// LiteralRules pairs a literal with each lexer rule that is exactly that
+// literal (`VAL: 'val';`), as (literal, rule name), in file order. As in ANTLR
+// (Grammar.getStringLiteralAliasesFromLexerRules), the rule may have up to two
+// commands (`AT: '@' -> more;`).
+func LiteralRules(g Grammar) Array[Tuple[string, string]] =
     g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Collect((r) => r.Alts match {
-        case Array(alt) => alt.Elements match {
+        case Array(alt) if alt.Commands.Size() <= 2 => alt.Elements match {
             case Array(Literal(v)) => Some(Tuple(v, r.Name))
             case _ => None[Tuple[string, string]]()
         }
@@ -255,7 +257,7 @@ func literalRules(g Grammar) Array[Tuple[string, string]] =
 // literal, as (literal, rule name), when one rule is: a parser-rule literal
 // uses that rule's token. As in ANTLR, a literal two rules claim is no alias.
 func LiteralAliases(g Grammar) Array[Tuple[string, string]] {
-    val claimed = literalRules(g)
+    val claimed = LiteralRules(g)
     claimed.Filter((p) => claimed.Count(_.V1 == p.V1) == 1)
 }
 
@@ -264,7 +266,7 @@ func LiteralAliases(g Grammar) Array[Tuple[string, string]] {
 // ImplicitTokenName of its index. A literal two lexer rules claim gets none
 // either, so a parser rule that uses it is error 126.
 func ImplicitLiterals(g Grammar) Array[string] {
-    val claimed = literalRules(g)
+    val claimed = LiteralRules(g)
     g.Rules.Filter((r) => !r.IsLexer())
         .FlatMap(_.Nodes())
         .Collect({ case Literal(v) => v })
@@ -274,3 +276,24 @@ func ImplicitLiterals(g Grammar) Array[string] {
 
 // ImplicitTokenName is ANTLR's name for the k-th implicit literal token: T__k.
 func ImplicitTokenName(k int) string = s"T__$k"
+
+// HasTypeOrMoreCommand reports whether lexer rule r's first alternative with
+// commands has a `type(...)` or `more` command. ANTLR gives such a rule a token
+// type of its own only if it is exactly one literal (see LiteralRules), after
+// the other rules (SemanticPipeline.hasTypeOrMoreCommand).
+func HasTypeOrMoreCommand(r Rule) bool =
+    r.Alts.Find(_.Commands.NonEmpty()).Exists(_.Commands.Exists((c) => c.Name == "type" || c.Name == "more"))
+
+// LexerTokenNames are the lexer rules of g that define a token type, in the
+// order ANTLR numbers them (SemanticPipeline.assignLexerTokenTypes): first
+// every non-fragment rule without a `type(...)` or `more` command, then each
+// rule that is the first to be exactly a literal (see LiteralRules) and is not
+// named yet. A rule with such a command that is not a literal defines no
+// token: the command sets its tokens' type.
+func LexerTokenNames(g Grammar) Array[string] {
+    val plain = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment && !HasTypeOrMoreCommand(r)).Map(_.Name)
+    val firstClaims = LiteralRules(g).FoldLeft(EmptyArray[Tuple[string, string]](), (acc, p) =>
+        if (acc.Exists(_.V1 == p.V1)) acc else acc.Append(p)
+    )
+    plain.AppendAll(firstClaims.Map(_.V2).Filter((n) => !plain.Contains(n)))
+}

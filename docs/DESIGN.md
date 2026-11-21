@@ -39,10 +39,18 @@ not depend on each other run concurrently (see [Concurrency](#concurrency)).
 galop's contract is "the same grammar means the same thing as in ANTLR 4":
 
 - **Token types** are numbered as ANTLR numbers them (`atn/vocab.gala`): implicit
-  literal tokens `T__n` in order of first use in parser rules, then non-fragment
-  lexer rules in file order, then `tokens {}` names, then names only referenced.
-  Generated code can therefore consume tokens from an ANTLR-generated lexer and
-  vice versa.
+  literal tokens `T__n` in order of first use in parser rules, then the lexer
+  rules that define a token, then `tokens {}` names, then names only referenced.
+  As in ANTLR, the lexer rules are numbered in two passes: first those without
+  a `type(...)` or `more` command, in file order, then those that are exactly
+  one literal (with at most two commands) and have no type yet. A rule with
+  such a command that is not one literal defines no token, and a parser rule
+  that uses its name gets warning 125. A lexer grammar numbers its
+  `tokens {}` names before its rules. Literal names (`'+'`) are written as
+  ANTLR's code generator writes them: the escapes of `n`, `r`, `t`, `b`, `f`,
+  `u` and the backslash are kept, and other escapes lose their backslash
+  (`'\''` is named `'''`). Generated code can therefore consume tokens from an
+  ANTLR-generated lexer and vice versa.
 - **Decisions and alternative numbers** come from an ATN built the way ANTLR builds
   it (`atn/build.gala`): an optional block's alternatives and its exit share one
   decision; a loop has its own enter/exit (or repeat/exit) decision; a non-greedy

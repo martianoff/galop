@@ -15,6 +15,15 @@ lists every merged pull request.
   section. As in ANTLR, only a grammar's first `import` statement is loaded,
   and an imported grammar contributes only its first `tokens {}` and
   `options {}` sections; galop merged them all.
+- **Fixed:** token types are numbered as ANTLR numbers them when lexer rules
+  have `type(...)` or `more` commands: such a rule gets a type of its own only
+  if it is exactly one literal, after the other rules, and a lexer grammar's
+  `tokens {}` names come first. galop numbered every rule in file order, so the
+  Go target's `antlr` flavor could hand ANTLR's parser the wrong token types.
+  A parser rule that uses the name of a rule that defines no token gets
+  ANTLR's warning 125.
+- **Fixed:** literal names are ANTLR's: `'\''` is named `'''` in the generated
+  `LiteralNames` and in error messages, as in ANTLR's generated code.
 - **Fixed:** a `tokens {}` name of an implicit literal token (`T__0`) is that
   token; the generated Go code declared its constant twice.
 
