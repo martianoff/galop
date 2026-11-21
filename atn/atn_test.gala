@@ -202,3 +202,41 @@ func callFollows(steps Array[Step]) Array[int] = steps.FlatMap((s) => s match {
 // literal token (T__0) is that token, as in ANTLR (which warns, 108).
 func TestTokensNameAnImplicitToken(t T) T =
     Eq(t, compiled(t, "grammar g;\ntokens { T__0, B }\ns: 'x' T__0 B EOF;\nA: 'a';\n").Vocab.Names, ArrayOf("<INVALID>", "T__0", "A", "B"))
+
+// TestLexerTokenTypesFollowANTLR checks ANTLR's three passes over a lexer
+// grammar: `tokens {}` first, then rules without a type or more command, then
+// rules that are the first to be exactly a literal (up to two commands); a
+// rule with such a command that is not a literal defines no token. The
+// expected types are ANTLR 4.13.1's (T1.tokens).
+func TestLexerTokenTypesFollowANTLR(t T) T {
+    val g = "lexer grammar T1;\ntokens { A, ID }\n" +
+        "AT : '@' -> more ;\nNUM : [0-9]+ -> type(ID) ;\nID : [a-z]+ ;\n" +
+        "X : 'x' -> type(ID), channel(HIDDEN), skip ;\nY : 'y' -> skip, channel(HIDDEN) ;\n" +
+        "WS : ' '+ -> skip ;\nM2 : 'm' -> more ;\nM3 : 'm' ;\n"
+    val v = compiled(t, g).Vocab
+    val t1 = Eq(t, v.Names, ArrayOf("<INVALID>", "A", "ID", "Y", "WS", "M3", "AT", "M2"))
+    // 'm' is claimed twice, so no type has it as its literal.
+    Eq(t1, ArrayTabulate(v.Names.Size(), (k) => v.LiteralName(k).GetOrElse("")), ArrayOf("", "", "", "'y'", "", "", "'@'", ""))
+}
+
+// TestCombinedTokenTypesFollowANTLR checks a combined grammar: implicit
+// literals, the lexer's tokens (AT last, NUM none), `tokens {}`, then tokens
+// only parser rules use, NUM among them. The types are ANTLR's (T3.tokens).
+func TestCombinedTokenTypesFollowANTLR(t T) T {
+    val g = "grammar T3;\ntokens { A }\ns : 'q' NUM AT ID Z ;\n" +
+        "AT : '@' -> more ;\nNUM : [0-9]+ -> type(ID) ;\nID : [a-z]+ ;\nfragment FRAG : 'f' ;\n"
+    Eq(t, compiled(t, g).Vocab.Names, ArrayOf("<INVALID>", "T__0", "ID", "AT", "A", "NUM", "Z"))
+}
+
+// TestLiteralNamesFollowANTLR checks literal names as ANTLR's code generator
+// writes them: escapes of n, r, t, b, f, u and the backslash are kept, others
+// lose their backslash.
+func TestLiteralNamesFollowANTLR(t T) T = RunCases(t, (sub, lit, want) => Eq(sub, LiteralName(lit), want),
+    Case[string, string](Name = `x`, Input = `x`, Expected = `'x'`),
+    Case[string, string](Name = `\'`, Input = `\'`, Expected = `'''`),
+    Case[string, string](Name = `\n\t\r\b\f`, Input = `\n\t\r\b\f`, Expected = `'\n\t\r\b\f'`),
+    Case[string, string](Name = `\\`, Input = `\\`, Expected = `'\\'`),
+    Case[string, string](Name = `\u2192`, Input = `\u2192`, Expected = `'\u2192'`),
+    Case[string, string](Name = `\u{1F600}`, Input = `\u{1F600}`, Expected = `'\u{1F600}'`),
+    Case[string, string](Name = `a\-b`, Input = `a\-b`, Expected = `'a-b'`),
+)

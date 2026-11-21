@@ -931,7 +931,7 @@ func recoveryTables(e env, align bool) string {
     val contexts = a.ContextSteps.ZipWithIndex().Collect({
         case (Some(step), s) => (s, contextCode(step, altLabels.Get(a.State(s).Rule), byRule.Get(a.State(s).Rule)))
     })
-    val literals = e.vocab.Literals.Map((l) => l.Map((lit) => s"'$lit'").GetOrElse(""))
+    val literals = e.vocab.Literals.Map((l) => l.Map(atn.LiteralName).GetOrElse(""))
     val lastLiteral = literals.ZipWithIndex().Collect({ case (l, i) if l != "" => i }).LastOption().GetOrElse(0)
     // The automata of the kinds whose children the converter aligns (see aligns).
     val aligned = nodeKinds(e).Filter((k) => align && aligns(k)).Map((k) =>

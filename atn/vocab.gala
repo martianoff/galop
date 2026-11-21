@@ -1,6 +1,8 @@
 package atn
 
 import (
+    "strings"
+
     . "martianoff/gala/collection_immutable"
 
     "github.com/martianoff/galop/g4"
@@ -14,9 +16,11 @@ val TokenEOF = -1
 //
 // Index 0 is unused (ANTLR's invalid type). For a combined grammar the order is:
 // the implicit tokens of parser-rule literals that no lexer rule defines
-// (`T__0`, `T__1`, … in order of first use), then every non-fragment lexer rule
-// in file order, then `tokens {}` names, then token names that are only
-// referenced (ANTLR warns about those and defines them).
+// (`T__0`, `T__1`, … in order of first use), then the lexer rules that define a
+// token (g4.LexerTokenNames: those without a `type` or `more` command, then
+// those that are one literal), then `tokens {}` names, then token names that
+// are only referenced (ANTLR warns about those and defines them). A lexer
+// grammar numbers its `tokens {}` names first.
 struct Vocabulary(
     // Names holds each type's constant name: `T__3`, `IDENTIFIER`.
     Names Array[string],
@@ -49,7 +53,25 @@ func (v Vocabulary) Name(t int) string =
 // (`'('`), otherwise the name; EOF is `<EOF>`.
 func (v Vocabulary) Display(t int) string =
     if (t == TokenEOF) "<EOF>"
-    else v.Literals.GetOption(t).FlatMap((o) => o).Map((lit) => s"'$lit'").GetOrElse(v.Name(t))
+    else v.LiteralName(t).GetOrElse(v.Name(t))
+
+// LiteralName is the literal name of type t, if it has a literal, as ANTLR's
+// generated code lists it (see LiteralName).
+func (v Vocabulary) LiteralName(t int) Option[string] = v.Literals.GetOption(t).FlatMap((o) => o).Map(LiteralName)
+
+// LiteralName is the literal name of literal body lit, as ANTLR's code generator
+// writes it (Target.getTargetStringLiteralFromANTLRStringLiteral): quoted, with
+// the escapes of n, r, t, b, f, u and the backslash kept, and the backslash of
+// any other escape dropped, so the body of `'\''` is named `'''`.
+func LiteralName(lit string) string {
+    val (body, _) = ArrayFromSlice(strings.Split(lit, "")).FoldLeft(("", false), (acc, c) => acc match {
+        case (s, true) if strings.Contains("nrtbfu\\", c) => (s + "\\" + c, false)
+        case (s, true) => (s + c, false)
+        case (s, false) if c == "\\" => (s, true)
+        case (s, _) => (s + c, false)
+    })
+    s"'$body'"
+}
 
 // BuildVocabulary numbers the tokens of g the way ANTLR does.
 func BuildVocabulary(g g4.Grammar) Vocabulary {
@@ -57,16 +79,26 @@ func BuildVocabulary(g g4.Grammar) Vocabulary {
     val implicitLits = g4.ImplicitLiterals(g)
     val implicitCount = implicitLits.Size()
     val implicitNames = ArrayTabulate(implicitCount, g4.ImplicitTokenName)
-    val lexerNames = g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Map(_.Name)
+    val lexerNames = g4.LexerTokenNames(g)
+    val tokens = g.Tokens.Distinct()
     // A name listed twice in `tokens {}` (or by the root and an imported
     // grammar), or one that is already a token, is that one token, as in ANTLR
-    // (which warns, 108).
-    val known = implicitNames.AppendAll(lexerNames)
-    val declared = lexerNames.AppendAll(g.Tokens.Distinct().Filter((t) => !known.Contains(t)))
-    val referenced = g.Rules.FlatMap(_.Nodes())
+    // (which warns, 108). A lexer grammar numbers its `tokens {}` first; a
+    // combined grammar's belong to its parser, numbered after the lexer's.
+    val declared = g.Kind match {
+        case g4.LexerOnly() => tokens.AppendAll(lexerNames.Filter((n) => !tokens.Contains(n)))
+        case _ => {
+            val known = implicitNames.AppendAll(lexerNames)
+            lexerNames.AppendAll(tokens.Filter((t) => !known.Contains(t)))
+        }
+    }
+    // Tokens a parser rule uses that nothing defines are defined last (ANTLR
+    // warns, 125), a lexer rule that defines no token included; a fragment
+    // is error 501 instead.
+    val referenced = g.Rules.Filter((r) => !r.IsLexer()).FlatMap(_.Nodes())
         .Collect({ case g4.TokenRef(n) if n != "EOF" => n })
         .Distinct()
-        .Filter((n) => !known.Contains(n) && !declared.Contains(n) && !g.Rules.Exists(_.Name == n))
+        .Filter((n) => !implicitNames.Contains(n) && !declared.Contains(n) && !g.Rules.Exists((r) => r.Name == n && r.Fragment))
     val named = declared.AppendAll(referenced)
     val names = ArrayOf("<INVALID>")
         .AppendAll(implicitNames)
