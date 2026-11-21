@@ -7,6 +7,7 @@ import (
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/g4"
     "github.com/martianoff/galop/grammartest"
 )
 
@@ -49,4 +50,23 @@ func TestParserGrammarHasNothingToGenerate(t T) T {
     val (names, result) = generate("parser grammar P;\ns : A EOF ;\n")
     val t1 = Eq(t, names, EmptyArray[string]())
     Eq(t1, result.Fold((msgs) => msgs.MkString("; "), (_) => ""), "Python3 target: only lexers are supported yet; use ANTLR's Python parser")
+}
+
+// TestNativeFlavorWritesAModule checks the native flavor's file name, a
+// module named after the grammar's base name in lower case, and that its
+// constants include a name only the parser's tokens {} declares, which the
+// native parser will share.
+func TestNativeFlavorWritesAModule(t T) T {
+    val (g, c) = grammartest.Compile("grammar Expr;\ntokens { EXTRA }\ns : ID EXTRA? EOF ;\nID : [a-z]+ ;\n")
+    val opts = codegen.Options(Defines = ArrayOf(g4.OptionEntry("flavor", "native")))
+    val t1 = Eq(t, Target().FileNames(g, c, opts), ArrayOf("expr_lexer.py"))
+    Target().Generate(codegen.Input(g, c, None()), opts) match {
+        case Right(files) => {
+            val code = files.Head().Content
+            val t2 = Eq(t1, files.Map(_.Name), ArrayOf("expr_lexer.py"))
+            val t3 = IsTrue(t2, strings.Contains(code, "\nID = 1\nEXTRA = 2\n"))
+            IsTrue(t3, strings.Contains(code, "def lex(src, line=1, column=0):"))
+        }
+        case Left(msgs) => Eq(t1, msgs.MkString("; "), "")
+    }
 }

@@ -5,6 +5,11 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Added:** the Python target's `native` flavor lexer (`-Dflavor=native`):
+  `<grammar>_lexer.py`, a module with no dependency whose `lex(src)` returns
+  ANTLR's tokens as arrays, with off-channel tokens and token recognition
+  errors as ANTLR's Python runtime words them, in about a sixth of ANTLR's
+  time on the GALA corpus. It is the first step of the native Python parser.
 - **Added:** `EOF` in lexer rules (`('\n' | EOF)`), which matches the end of
   the input without consuming it, as in ANTLR's lexer, in the Go and Python
   lexers. galop reported it as error 56.

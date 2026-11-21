@@ -6,10 +6,10 @@ load("@rules_python//python:defs.bzl", "py_library", "py_test")
 def py_lexer_test(name, grammar, grammar_name, sample_flags = None, inputs = None, antlr_module = None, defines = [], imports = [], corpus = None):
     """Generates both Python lexers of a grammar and compares them.
 
-    It generates ANTLR 4.13.1's Python lexer and galop's, and sentences from
-    galop-sample, and runs lexer_test.py over them as `<name>_test`: every
-    sentence, mutants of them and, with corpus, every file it lists, must give
-    the same tokens and errors from both lexers. A lexer grammar, which
+    It generates ANTLR 4.13.1's Python lexer and galop's in both flavors, and
+    sentences from galop-sample, and runs lexer_test.py over them as
+    `<name>_test`: every sentence, mutants of them and, with corpus, every file
+    it lists, must give the same tokens and errors from all three lexers. A lexer grammar, which
     galop-sample cannot write sentences for, gives its own inputs instead.
 
     Args:
@@ -27,7 +27,9 @@ def py_lexer_test(name, grammar, grammar_name, sample_flags = None, inputs = Non
       corpus: a corpus_manifest target whose files are lexed too.
     """
     antlr_module = antlr_module or grammar_name + "Lexer"
-    galop_module = (grammar_name[:-len("Lexer")] if grammar_name.endswith("Lexer") and grammar_name != "Lexer" else grammar_name) + "GalopLexer"
+    base = grammar_name[:-len("Lexer")] if grammar_name.endswith("Lexer") and grammar_name != "Lexer" else grammar_name
+    galop_module = base + "GalopLexer"
+    native_module = base.lower() + "_lexer"
 
     native.genrule(
         name = name + "_antlr_py",
@@ -56,6 +58,17 @@ def py_lexer_test(name, grammar, grammar_name, sample_flags = None, inputs = Non
         ),
     )
 
+    native.genrule(
+        name = name + "_native_py",
+        srcs = ["//cmd/galop", grammar] + imports,
+        outs = [name + "/" + native_module + ".py"],
+        cmd = "$(location //cmd/galop) -Dlanguage=Python3 -Dflavor=native {defines} -Xexact-output-dir -o $(RULEDIR)/{name} $(location {grammar})".format(
+            defines = " ".join(["-D" + d for d in defines]),
+            name = name,
+            grammar = grammar,
+        ),
+    )
+
     samples = inputs or ":" + name + "_samples"
     if not inputs:
         native.genrule(
@@ -70,11 +83,11 @@ def py_lexer_test(name, grammar, grammar_name, sample_flags = None, inputs = Non
 
     py_library(
         name = name + "_lexers",
-        srcs = [":" + name + "_antlr_py", ":" + name + "_galop_py"],
+        srcs = [":" + name + "_antlr_py", ":" + name + "_galop_py", ":" + name + "_native_py"],
         imports = [name],
     )
 
-    args = [antlr_module, galop_module, "$(rlocationpath " + samples + ")"]
+    args = [antlr_module, galop_module, native_module, "$(rlocationpath " + samples + ")"]
     data = [samples]
     if corpus:
         args.append("$(rlocationpath " + corpus + ")")
