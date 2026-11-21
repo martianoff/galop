@@ -129,11 +129,12 @@ func (p Ptr[parser]) grammar() Grammar {
     val name = p.expectId("a grammar name")
     p.expectPunct(";")
     var options = EmptyArray[OptionEntry]()
-    var tokens = EmptyArray[string]()
+    var tokens = EmptyArray[Tuple[string, Pos]]()
     var channels = EmptyArray[string]()
     var actions = EmptyArray[NamedAction]()
     var imports = EmptyArray[Import]()
     var optionsPos = NoPos
+    var sections = EmptyArray[Section]()
     // A `break` inside a match arm would only leave the match, so the arms
     // report whether the prequel continues.
     var inPrequel = true
@@ -145,19 +146,25 @@ func (p Ptr[parser]) grammar() Grammar {
                 if !optionsPos.IsKnown() {
                     optionsPos = posOf(t)
                 }
-                options = options.AppendAll(p.optionsBlock())
+                val entries = p.optionsBlock()
+                sections = sections.Append(Section("options", posOf(t), entries.Size()))
+                options = options.AppendAll(entries)
                 true
             }
             case "tokens" if opensBlock => {
-                tokens = tokens.AppendAll(p.nameList())
+                val names = p.nameList()
+                sections = sections.Append(Section("tokens", posOf(t), names.Size()))
+                tokens = tokens.AppendAll(names)
                 true
             }
             case "channels" if opensBlock => {
-                channels = channels.AppendAll(p.nameList())
+                channels = channels.AppendAll(p.nameList().Map(_.V1))
                 true
             }
             case "import" if t.Kind.isTokId() => {
-                imports = imports.AppendAll(p.importStatement())
+                val more = p.importStatement()
+                sections = sections.Append(Section("import", posOf(t), more.Size()))
+                imports = imports.AppendAll(more)
                 true
             }
             case "@" if t.Kind.isTokPunct() => {
@@ -175,7 +182,8 @@ func (p Ptr[parser]) grammar() Grammar {
             rules = rules.Append(p.rule())
         }
     }
-    Grammar(kind, name, options, tokens, channels, actions, rules, posOf(nameTok), Imports = imports, OptionsPos = optionsPos)
+    Grammar(kind, name, options, tokens.Map(_.V1), channels, actions, rules, posOf(nameTok),
+        Imports = imports, OptionsPos = optionsPos, TokensPos = tokens.Map(_.V2), Sections = sections)
 }
 
 // importStatement reads `import A, B = C;`: each grammar, optionally with an
@@ -251,13 +259,15 @@ func (p Ptr[parser]) optionValue() string {
     }
 }
 
-// nameList reads `tokens { A, B, C }` or `channels { ... }`; a trailing comma is allowed.
-func (p Ptr[parser]) nameList() Array[string] {
+// nameList reads `tokens { A, B, C }` or `channels { ... }`, each name with
+// its position; a trailing comma is allowed.
+func (p Ptr[parser]) nameList() Array[Tuple[string, Pos]] {
     p.advance()
     p.expectPunct("{")
-    var names = EmptyArray[string]()
+    var names = EmptyArray[Tuple[string, Pos]]()
     for p.ok() && !p.isPunct("}") {
-        names = names.Append(p.expectId("a name"))
+        val at = posOf(p.peek())
+        names = names.Append((p.expectId("a name"), at))
         if !p.acceptPunct(",") && !p.isPunct("}") {
             p.fail(s"expected ',' or '}', found ${describe(p.peek())}")
         }
@@ -269,6 +279,7 @@ func (p Ptr[parser]) nameList() Array[string] {
 // namedAction reads `@name {...}` or `@scope::name {...}`.
 func (p Ptr[parser]) namedAction() NamedAction {
     p.advance()
+    val at = posOf(p.peek())
     val first = p.expectId("an action name")
     val scoped = p.acceptPunct("::")
     val name = if (scoped) p.expectId("an action name") else first
@@ -276,10 +287,10 @@ func (p Ptr[parser]) namedAction() NamedAction {
     val t = p.peek()
     if !t.Kind.isTokAction() {
         p.fail(s"expected an action block, found ${describe(t)}")
-        return NamedAction(scope, name, "")
+        return NamedAction(scope, name, "", at)
     }
     p.advance()
-    NamedAction(scope, name, t.Text)
+    NamedAction(scope, name, t.Text, at)
 }
 
 // --- rules ---

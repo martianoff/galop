@@ -31,7 +31,72 @@ func Check(g Grammar) Array[diag.Diagnostic] {
         r.Located().Collect((l) => refProblem(g, r, l.Element).Map((d) => At(d, l.Pos)))
     )
     val all = noRules.AppendAll(redefinitions).AppendAll(kindErrors).AppendAll(refErrors).AppendAll(assocProblems(g))
-    diag.InSourceOrder(all.AppendAll(implicitTokens(g)))
+        .AppendAll(repeatedSections(g)).AppendAll(actionRedefinitions(g))
+    diag.InSourceOrder(all.AppendAll(tokenRedefinitions(g)).AppendAll(implicitTokens(g)))
+}
+
+// repeatedSections are ANTLR's error 54 at the second `options`, `import` or
+// `tokens` section of g, if it has one; a third is not reported, as in ANTLR.
+func repeatedSections(g Grammar) Array[diag.Diagnostic] =
+    ArrayOf("options", "import", "tokens").Collect((k) =>
+        g.Sections.Filter(_.Keyword == k).Drop(1).HeadOption().Map((s) => At(diag.RepeatedPrequel.New(), s.Pos)))
+
+// actionRedefinitions are ANTLR's error 94 for a named action defined twice
+// in one scope, found as ANTLR's SymbolChecks finds them. ANTLR checks a
+// combined grammar's actions twice: in the lexer it extracts (when the grammar
+// has lexer rules or literals), which gets every action, and in the parser,
+// which keeps those not scoped to the lexer. A duplicate both see is reported
+// twice, as ANTLR reports it.
+func actionRedefinitions(g Grammar) Array[diag.Diagnostic] = g.Kind match {
+    case LexerOnly() => actionPass(g.Actions, "lexer")
+    case ParserOnly() => actionPass(g.Actions, "parser")
+    case Combined() => {
+        val hasLexer = g.Rules.Exists(_.IsLexer()) || ImplicitLiterals(g).NonEmpty()
+        val inLexer = if (hasLexer) actionPass(g.Actions, "lexer") else EmptyArray[diag.Diagnostic]()
+        inLexer.AppendAll(actionPass(g.Actions.Filter((a) => a.Scope.GetOrElse("") != "lexer"), "parser"))
+    }
+}
+
+// actionPass reports each action whose scope and name an earlier one has. As
+// in ANTLR's SymbolChecks, an action written without a scope is in the scope
+// of the last action written with one (defaultScope until there is one), not
+// always in defaultScope.
+func actionPass(actions Array[NamedAction], defaultScope string) Array[diag.Diagnostic] {
+    val start = (defaultScope, EmptyHashSet[string](), EmptyArray[diag.Diagnostic]())
+    val (_, _, found) = actions.FoldLeft(start, (acc, a) => {
+        val (last, seen, out) = acc
+        val scope = a.Scope.GetOrElse(last)
+        val key = scope + "::" + a.Name
+        if (seen.Contains(key)) (scope, seen, out.Append(At(diag.ActionRedefinition.New(a.Name), a.Pos)))
+        else (scope, seen.Add(key), out)
+    })
+    found
+}
+
+// tokenRedefinitions are ANTLR's warning 108 for a `tokens {}` name that is
+// already a token when ANTLR defines it: EOF, a name listed before it, or in a
+// combined grammar a token of its lexer (a non-fragment lexer rule or an
+// implicit literal token, T__0 ...). A lexer grammar's `tokens {}` is not
+// checked, nor is a grammar's whose tokenVocab option supplies its tokens.
+func tokenRedefinitions(g Grammar) Array[diag.Diagnostic] = g.Kind match {
+    case LexerOnly() => EmptyArray[diag.Diagnostic]()
+    case _ if g.Options.Exists(_.Name == "tokenVocab") => EmptyArray[diag.Diagnostic]()
+    case Combined() => tokensDefinedAgain(g, ArrayTabulate(ImplicitLiterals(g).Size(), ImplicitTokenName)
+        .AppendAll(g.Rules.Collect({ case r if r.IsLexer() && !r.Fragment => r.Name })))
+    case ParserOnly() => tokensDefinedAgain(g, EmptyArray[string]())
+}
+
+// tokensDefinedAgain reports each `tokens {}` name that EOF, lexerTokens or
+// an earlier `tokens {}` name already defines.
+func tokensDefinedAgain(g Grammar, lexerTokens Array[string]) Array[diag.Diagnostic] {
+    val start = (lexerTokens.FoldLeft(EmptyHashSet[string]().Add("EOF"), (s, n) => s.Add(n)), EmptyArray[diag.Diagnostic]())
+    val (_, found) = g.Tokens.Zip(TokenPositions(g)).FoldLeft(start, (acc, tp) => {
+        val (defined, out) = acc
+        val (name, pos) = tp
+        if (defined.Contains(name)) (defined, out.Append(At(diag.TokenNameReassignment.New(name), pos)))
+        else (defined.Add(name), out)
+    })
+    found
 }
 
 // assocProblems are ANTLR's warning 84 for an `assoc` option whose value is

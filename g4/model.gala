@@ -40,7 +40,42 @@ struct Grammar(
     Imports Array[Import] = EmptyArray[Import](),
     // OptionsPos is where the `options` keyword is, or NoPos.
     OptionsPos Pos = NoPos,
+    // TokensPos holds where each name of Tokens is, in the same order; it is
+    // empty for a grammar built in code.
+    TokensPos Array[Pos] = EmptyArray[Pos](),
+    // Sections are the grammar's `options`, `import` and `tokens` sections in
+    // source order; empty for a grammar built in code. ANTLR reads only the
+    // first of each kind in places (see FirstSectionSize) and reports a second
+    // one (error 54).
+    Sections Array[Section] = EmptyArray[Section](),
 )
+
+// Section is one `options {}`, `import` or `tokens {}` section: its keyword,
+// where the keyword is, and how many entries (options, imported grammars,
+// token names) it holds.
+struct Section(Keyword string, Pos Pos, Count int)
+
+// FirstSectionSize is how many of g's entries of the given section keyword
+// come from its first section of that kind: all total of them for a grammar
+// with no recorded sections, 0 when it has none of that kind.
+func FirstSectionSize(g Grammar, keyword string, total int) int =
+    if (g.Sections.IsEmpty()) total
+    else g.Sections.Find(_.Keyword == keyword).Map(_.Count).GetOrElse(0)
+
+// LoadedImports are the imports ANTLR loads: those of g's first `import`
+// statement.
+func LoadedImports(g Grammar) Array[Import] = g.Imports.Take(FirstSectionSize(g, "import", g.Imports.Size()))
+
+// AsImported is g as ANTLR merges it into an importing grammar: only its first
+// `tokens {}` and `options {}` sections count.
+func AsImported(g Grammar) Grammar {
+    val tokens = FirstSectionSize(g, "tokens", g.Tokens.Size())
+    g.Copy(
+        Tokens = g.Tokens.Take(tokens),
+        TokensPos = TokenPositions(g).Take(tokens),
+        Options = g.Options.Take(FirstSectionSize(g, "options", g.Options.Size())),
+    )
+}
 
 // Import is one grammar in an `import` statement: `import Name;`, or
 // `import Alias = Name;`, which imports Name (ANTLR keeps the alias but loads
@@ -53,8 +88,9 @@ struct Import(Name string, Alias Option[string], Pos Pos = NoPos)
 struct OptionEntry(Name string, Value string, Pos Pos = NoPos)
 
 // NamedAction is a top-level `@name { ... }` or `@scope::name { ... }` block.
-// Body is the text between the braces, unchanged.
-struct NamedAction(Scope Option[string], Name string, Body string)
+// Body is the text between the braces, unchanged. Pos is where the name after
+// `@` is: the scope's, when the action has one.
+struct NamedAction(Scope Option[string], Name string, Body string, Pos Pos = NoPos)
 
 // Rule is a parser rule (lowercase name) or a lexer rule (uppercase name).
 // Pos is where the rule's name is. NodePos holds the start of every element
@@ -103,6 +139,10 @@ func ElementNodes(e Element) Array[Element] = ArrayOf(e).AppendAll(e match {
 func StripPositions(g Grammar) Grammar = g.Copy(
     Pos = NoPos,
     OptionsPos = NoPos,
+    TokensPos = EmptyArray[Pos](),
+    // Sections are layout too: the formatter prints one section of each kind.
+    Sections = EmptyArray[Section](),
+    Actions = g.Actions.Map(_.Copy(Pos = NoPos)),
     Options = g.Options.Map(_.Copy(Pos = NoPos)),
     Imports = g.Imports.Map(_.Copy(Pos = NoPos)),
     Rules = g.Rules.Map(StripRulePositions),
@@ -116,6 +156,9 @@ func InFile(g Grammar, file string) Grammar {
     g.Copy(
         Pos = inFile(g.Pos),
         OptionsPos = inFile(g.OptionsPos),
+        TokensPos = g.TokensPos.Map(inFile),
+        Sections = g.Sections.Map((s) => s.Copy(Pos = inFile(s.Pos))),
+        Actions = g.Actions.Map((a) => a.Copy(Pos = inFile(a.Pos))),
         Options = g.Options.Map((o) => o.Copy(Pos = inFile(o.Pos))),
         Imports = g.Imports.Map((i) => i.Copy(Pos = inFile(i.Pos))),
         Rules = g.Rules.Map((r) => r.Copy(
@@ -190,3 +233,44 @@ sealed type Element {
 // with an uppercase ASCII letter.
 func IsTokenName(name string) bool =
     name.ByteSize() > 0 && name[0] >= 'A' && name[0] <= 'Z'
+
+// TokenPositions is where each name of g.Tokens is, NoPos for each when g has
+// no positions (a grammar built in code).
+func TokenPositions(g Grammar) Array[Pos] =
+    if (g.TokensPos.Size() == g.Tokens.Size()) g.TokensPos
+    else ArrayTabulate(g.Tokens.Size(), (_) => NoPos)
+
+// literalRules pairs a literal with each lexer rule that is exactly that
+// literal (`VAL: 'val';`), as (literal, rule name).
+func literalRules(g Grammar) Array[Tuple[string, string]] =
+    g.Rules.Filter((r) => r.IsLexer() && !r.Fragment).Collect((r) => r.Alts match {
+        case Array(alt) => alt.Elements match {
+            case Array(Literal(v)) => Some(Tuple(v, r.Name))
+            case _ => None[Tuple[string, string]]()
+        }
+        case _ => None[Tuple[string, string]]()
+    })
+
+// LiteralAliases pairs a literal with the lexer rule that is exactly that
+// literal, as (literal, rule name), when one rule is: a parser-rule literal
+// uses that rule's token. As in ANTLR, a literal two rules claim is no alias.
+func LiteralAliases(g Grammar) Array[Tuple[string, string]] {
+    val claimed = literalRules(g)
+    claimed.Filter((p) => claimed.Count(_.V1 == p.V1) == 1)
+}
+
+// ImplicitLiterals are the literals of parser rules that no lexer rule is
+// exactly, in order of first use: ANTLR gives each an implicit token,
+// ImplicitTokenName of its index. A literal two lexer rules claim gets none
+// either, so a parser rule that uses it is error 126.
+func ImplicitLiterals(g Grammar) Array[string] {
+    val claimed = literalRules(g)
+    g.Rules.Filter((r) => !r.IsLexer())
+        .FlatMap(_.Nodes())
+        .Collect({ case Literal(v) => v })
+        .Distinct()
+        .Filter((v) => !claimed.Exists(_.V1 == v))
+}
+
+// ImplicitTokenName is ANTLR's name for the k-th implicit literal token: T__k.
+func ImplicitTokenName(k int) string = s"T__$k"

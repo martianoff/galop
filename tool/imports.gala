@@ -55,7 +55,8 @@ func LoadImports(root g4.Grammar, path string, libDir Option[string], files File
 // then the grammars it imports. path is g's file.
 func (l Ptr[loader]) load(g g4.Grammar, path string) Array[g4.Grammar] {
     l.visited = l.visited.Add(g.Name)
-    g.Imports.FoldLeft(EmptyArray[g4.Grammar](), (acc, imp) => {
+    // As ANTLR, only the first `import` statement is loaded.
+    g4.LoadedImports(g).FoldLeft(EmptyArray[g4.Grammar](), (acc, imp) => {
         // A grammar already on the way here is a circular import: ignored.
         if l.visited.Contains(imp.Name) {
             return acc
@@ -96,7 +97,8 @@ func (l Ptr[loader]) read(imp g4.Import, from string, importer string) Option[g4
                     l.unreadable = true
                     None[g4.Grammar]()
                 }
-                case Right(g) => Some(g4.InFile(g, file))
+                // Only its first tokens {} and options {} count, as in ANTLR.
+                case Right(g) => Some(g4.AsImported(g4.InFile(g, file)))
             }
         }
     }
@@ -129,27 +131,28 @@ func mergeImports(root g4.Grammar, imported Imported, defines Array[g4.OptionEnt
         return (root, imported.Problems)
     }
     val scope = defaultActionScope(root)
-    val rootActions = root.Actions.Map((a) => actionKey(a, scope))
-    val start = (root, root.Rules.FoldLeft(EmptyHashSet[string](), (acc, r) => acc.Add(r.Name)))
-    val (merged, _) = imported.Delegates.FoldLeft(start, (acc, del) => {
-        val (g, names) = acc
+    val start = (root, root.Rules.FoldLeft(EmptyHashSet[string](), (acc, r) => acc.Add(r.Name)), EmptyArray[diag.Diagnostic]())
+    val (merged, _, actionProblems) = imported.Delegates.FoldLeft(start, (acc, del) => {
+        val (g, names, problems) = acc
         // A rule is taken if no rule of its name was taken before, the
         // delegate's own earlier rules included, as ANTLR's rootRuleNames.
         val (rules, taken) = del.Rules.FoldLeft((g.Rules, names), (rn, r) =>
             if (rn.V2.Contains(r.Name)) rn else (rn.V1.Append(r), rn.V2.Add(r.Name)))
+        val (actions, redefined) = mergeActions(g.Actions, del.Actions, root.Actions, scope)
         val next = g.Copy(
             Channels = g.Channels.AppendAll(del.Channels.Filter((c) => !g.Channels.Contains(c))),
             Tokens = g.Tokens.AppendAll(del.Tokens),
-            Actions = mergeActions(g.Actions, del.Actions, rootActions, scope),
+            TokensPos = g4.TokenPositions(g).AppendAll(g4.TokenPositions(del)),
+            Actions = actions,
             Rules = rules,
         )
-        (next, taken)
+        (next, taken, problems.AppendAll(redefined))
     })
     val checks = importChecks(root, imported.Delegates)
         .AppendAll(imported.Delegates.Collect({ case del if optionsDiffer(root, del, defines) =>
             g4.At(diag.OptionsInDelegate.New(del.Name), del.OptionsPos)
         }))
-    (merged, imported.Problems.AppendAll(checks))
+    (merged, imported.Problems.AppendAll(checks).AppendAll(actionProblems))
 }
 
 // defaultActionScope is the scope of a named action without one: ANTLR's
@@ -163,19 +166,48 @@ func defaultActionScope(g g4.Grammar) string = g.Kind match {
 // written without one.
 func actionKey(a g4.NamedAction, scope string) string = a.Scope.GetOrElse(scope) + "::" + a.Name
 
-// mergeActions adds a delegate's named actions to the merged grammar's, as
-// ANTLR's integrateImportedGrammars does: an action the root grammar itself
-// has (rootActions, its keys) gets the delegate's text after its own on a new
-// line; any other is added as it is, even when an earlier delegate has the
-// same one (ANTLR then reports error 94, which galop does not check yet).
-func mergeActions(into Array[g4.NamedAction], from Array[g4.NamedAction], rootActions Array[string], scope string) Array[g4.NamedAction] =
-    from.FoldLeft(into, (acc, a) => {
-        val k = actionKey(a, scope)
-        if rootActions.Contains(k) {
-            return acc.Map((x) => if (actionKey(x, scope) == k && rootActions.Contains(actionKey(x, scope))) x.Copy(Body = x.Body + "\n" + a.Body) else x)
+// mergeActions adds a delegate's named actions (from) to the merged grammar's
+// (into), as ANTLR's integrateImportedGrammars does, and gives ANTLR's error
+// 94 for the actions it finds twice. ANTLR goes through the root grammar's
+// own actions (root), then the delegate's, by scope (scope for an action
+// written without one) and name:
+//   - a key the root has: a later root action of that key is error 94 (once
+//     per delegate, as ANTLR reports it), and each delegate action of that key
+//     joins the root's first, its text after the root's on a new line;
+//   - any other key: the delegate's first action of it is added, a later one
+//     is error 94.
+// The added actions go before all others, in ANTLR's order: grouped by scope
+// in order of first use (the root's actions included), then reversed, as
+// ANTLR inserts each at the front. Their order matters to the checks of the
+// merged grammar (see g4.Check), which report a key that two delegates add.
+func mergeActions(
+    into Array[g4.NamedAction],
+    from Array[g4.NamedAction],
+    root Array[g4.NamedAction],
+    scope string,
+) Tuple[Array[g4.NamedAction], Array[diag.Diagnostic]] {
+    val key = (a g4.NamedAction) => actionKey(a, scope)
+    val redefined = (a g4.NamedAction) => g4.At(diag.ActionRedefinition.New(a.Name), a.Pos)
+    val rootKeys = root.Map(key)
+    val rootRepeats = root.ZipWithIndex().Collect((ai) =>
+        When(rootKeys.Take(ai.V2).Contains(key(ai.V1)), redefined(ai.V1)))
+    val start = (into, EmptyArray[g4.NamedAction](), EmptyArray[diag.Diagnostic]())
+    val (joined, added, repeats) = from.FoldLeft(start, (acc, a) => {
+        val (all, kept, out) = acc
+        val k = key(a)
+        if rootKeys.Contains(k) {
+            val first = all.Map(key).IndexOf(k)
+            return (all.ZipWithIndex().Map((xi) => if (xi.V2 == first) xi.V1.Copy(Body = xi.V1.Body + "\n" + a.Body) else xi.V1), kept, out)
         }
-        acc.Append(a)
+        if (kept.Exists((x) => key(x) == k)) (all, kept, out.Append(redefined(a)))
+        else (all, kept.Append(a), out)
     })
+    val scopeOf = (a g4.NamedAction) => a.Scope.GetOrElse(scope)
+    val scopes = root.AppendAll(added).Map(scopeOf).Distinct()
+    val inserted = scopes.FlatMap((s) => added.Filter((a) => scopeOf(a) == s))
+    val actions = inserted.FoldLeft(joined, (acc, a) => ArrayOf(a).AppendAll(acc))
+    (actions, rootRepeats.AppendAll(repeats))
+}
 
 // optionsDiffer says a delegate sets an option to a value the root does not,
 // as ANTLR compares them (GrammarRootAST.getOptionString): a -D option first,

@@ -3,6 +3,21 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
+## Unreleased
+
+- **Added:** ANTLR's error 94, a named action (`@members`) defined twice in one
+  scope, and warning 108, a `tokens {}` name that is already a token, with
+  ANTLR's positions and counts, in grammars that import others too. ANTLR's
+  quirks are kept: a combined grammar's repeated action is reported twice
+  (ANTLR checks it in its lexer and in its parser), and an action without a
+  scope takes the scope of the last action that has one.
+- **Added:** ANTLR's error 54, a second `options`, `import` or `tokens`
+  section. As in ANTLR, only a grammar's first `import` statement is loaded,
+  and an imported grammar contributes only its first `tokens {}` and
+  `options {}` sections; galop merged them all.
+- **Fixed:** a `tokens {}` name of an implicit literal token (`T__0`) is that
+  token; the generated Go code declared its constant twice.
+
 ## 0.6.0
 
 - **Added:** grammar imports, `import A, B = C;`, as ANTLR 4.13.1 resolves and

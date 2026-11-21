@@ -97,10 +97,22 @@ func TestParseImports(t T) T {
     Eq(t4, RoundTrip(g), None[string]())
 }
 
+// TestParsePrequelPositions checks where `tokens {}` names and named actions
+// are: an action's position is its scope's when it has one.
+func TestParsePrequelPositions(t T) T {
+    val (t1, g) = parseOrFail(t, "grammar g;\ntokens { A,\n  B }\n@members { m }\n@lexer::header { h }\ntokens { C }\na: A;\n")
+    val t2 = Eq(t1, g.Tokens, ArrayOf("A", "B", "C"))
+    val t3 = Eq(t2, g.TokensPos, ArrayOf(Pos(2, 10), Pos(3, 3), Pos(6, 10)))
+    val t4a = Eq(t3, g.Actions.Map(_.Pos), ArrayOf(Pos(4, 2), Pos(5, 2)))
+    val t4 = Eq(t4a, g.Sections, ArrayOf(Section("tokens", Pos(2, 1), 2), Section("tokens", Pos(6, 1), 1)))
+    Eq(t4, StripPositions(g).TokensPos.IsEmpty() && StripPositions(g).Actions.ForAll((a) => !a.Pos.IsKnown()), true)
+}
+
 func TestInFileMarksEveryPosition(t T) T {
-    val (t1, g) = parseOrFail(t, "grammar g;\noptions { x = y; }\nimport A;\ne: <assoc=up> e '+' e | INT;\n")
+    val (t1, g) = parseOrFail(t, "grammar g;\noptions { x = y; }\nimport A;\ntokens { T }\n@members {}\ne: <assoc=up> e '+' e | INT;\n")
     val in = InFile(g, "lib/G.g4")
-    val t2 = Eq(t1, ArrayOf(in.Pos, in.OptionsPos, in.Options.Get(0).Pos, in.Imports.Get(0).Pos, in.Rules.Get(0).Pos).Map(_.File), ArrayOf("lib/G.g4", "lib/G.g4", "lib/G.g4", "lib/G.g4", "lib/G.g4"))
+    val positions = ArrayOf(in.Pos, in.OptionsPos, in.Options.Get(0).Pos, in.Imports.Get(0).Pos, in.TokensPos.Get(0), in.Actions.Get(0).Pos, in.Rules.Get(0).Pos)
+    val t2 = Eq(t1, positions.Map(_.File), ArrayTabulate(7, (_) => "lib/G.g4"))
     val t3 = IsTrue(t2, in.Rules.Get(0).NodePos.ForAll((p) => p.File == "lib/G.g4"))
     // The diagnostics about an imported grammar's rule (the bad assoc, the
     // implicit token INT) name that grammar's file.
@@ -180,6 +192,81 @@ func TestCheck(t T) T = RunCases[string, string](t,
     Case[string, string](Name = "tokenVocab supplies the tokens", Input = "parser grammar g;\noptions { tokenVocab = L; }\na: B;", Expected = ""),
     Case[string, string](Name = "no rules", Input = "lexer grammar Empty;", Expected = "99 1:15: grammar Empty has no rules"),
     Case[string, string](Name = "unknown associativity", Input = "grammar g;\ne: <assoc=up> e '^' e | B;\nB: 'b';", Expected = "84 2:5: unsupported option value assoc=up"),
+    // ANTLR checks a combined grammar's actions in the lexer it extracts and
+    // again in the parser, and reports a repeat in both.
+    Case[string, string](
+        Name = "repeated action",
+        Input = "grammar T;\n@members { a }\n@members { b }\ns: A EOF;\nA: 'a';",
+        Expected = "94 3:2: redefinition of members action; 94 3:2: redefinition of members action",
+    ),
+    Case[string, string](
+        Name = "repeated action, a literal makes the lexer",
+        Input = "grammar T;\n@members { a }\n@members { b }\ns: 'a' EOF;",
+        Expected = "94 3:2: redefinition of members action; 94 3:2: redefinition of members action",
+    ),
+    Case[string, string](
+        Name = "repeated action, no lexer",
+        Input = "grammar T;\n@members { a }\n@members { b }\ns: A EOF;",
+        Expected = "94 3:2: redefinition of members action; 125 4:4: implicit definition of token A in parser",
+    ),
+    // ANTLR's lexer check puts @header in the scope of the @lexer::header
+    // before it; its parser check, which drops @lexer:: actions, puts it in
+    // the parser's, which @parser::header repeats.
+    Case[string, string](
+        Name = "an action without a scope takes the last scope",
+        Input = "grammar T;\n@lexer::header { a }\n@header { b }\n@parser::header { c }\ns: A EOF;\nA: 'a';",
+        Expected = "94 3:2: redefinition of header action; 94 4:2: redefinition of header action",
+    ),
+    Case[string, string](
+        Name = "repeated lexer action, in the lexer only",
+        Input = "grammar T;\n@lexer::members { a }\n@lexer::members { b }\ns: A EOF;\nA: 'a';",
+        Expected = "94 3:2: redefinition of members action",
+    ),
+    Case[string, string](
+        Name = "repeated action in a lexer grammar",
+        Input = "lexer grammar T;\n@members { a }\n@lexer::members { b }\nA: 'a';",
+        Expected = "94 3:2: redefinition of members action",
+    ),
+    Case[string, string](Name = "different actions", Input = "grammar T;\n@parser::members { a }\n@lexer::members { b }\n@parser::header { c }\ns: A EOF;\nA: 'a';", Expected = ""),
+    // In ANTLR's lexer check an action without a scope is in the lexer's, so
+    // @lexer::members repeats @members.
+    Case[string, string](
+        Name = "an action without a scope is the lexer's in the lexer",
+        Input = "grammar T;\n@members { a }\n@header { b }\n@lexer::members { c }\ns: A EOF;\nA: 'a';",
+        Expected = "94 4:2: redefinition of members action",
+    ),
+    // ANTLR skips its parser's action check after the undefined rule, so it
+    // reports 94 once (docs/DESIGN.md: galop runs every check).
+    Case[string, string](
+        Name = "repeated action with an undefined rule",
+        Input = "grammar T;\n@members { a }\n@members { b }\ns: b EOF;\nA: 'a';",
+        Expected = "94 3:2: redefinition of members action; 94 3:2: redefinition of members action; 56 4:4: reference to undefined rule: b",
+    ),
+    // ANTLR prints the 54s in the order options, import, tokens, and only
+    // them: it stops there (docs/DESIGN.md: galop runs every check).
+    Case[string, string](
+        Name = "repeated sections, the second of each kind",
+        Input = "grammar T;\noptions { a = b; }\ntokens { X }\nimport L;\ntokens { Y }\noptions { c = d; }\nimport M;\ntokens { Z }\ns: X Y Z EOF;",
+        Expected = "54 5:1: repeated grammar prequel spec (options, tokens, or import); please merge; " +
+            "54 6:1: repeated grammar prequel spec (options, tokens, or import); please merge; " +
+            "54 7:1: repeated grammar prequel spec (options, tokens, or import); please merge",
+    ),
+    Case[string, string](
+        Name = "tokens already defined",
+        Input = "grammar T;\ntokens { X, X, A, Y }\ns: A X Y EOF;\nA: 'a';",
+        Expected = "108 2:13: token name X is already defined; 108 2:16: token name A is already defined",
+    ),
+    Case[string, string](
+        Name = "an implicit literal token is defined, a fragment is not",
+        Input = "grammar T;\ntokens { F, A, T__0 }\ns: A 'x' EOF;\nA: 'a' F;\nfragment F: 'f';",
+        Expected = "108 2:13: token name A is already defined; 108 2:16: token name T__0 is already defined",
+    ),
+    Case[string, string](
+        Name = "EOF and repeats in a parser grammar",
+        Input = "parser grammar P;\ntokens { X, X, EOF }\ns: X EOF;",
+        Expected = "108 2:13: token name X is already defined; 108 2:16: token name EOF is already defined",
+    ),
+    Case[string, string](Name = "a lexer grammar's tokens are not checked", Input = "lexer grammar L;\ntokens { X, X, A, EOF }\nA: 'a';", Expected = ""),
     Case[string, string](Name = "results in source order", Input = "grammar g;\nb: y;\na: x;\nb: 'z';", Expected = "56 2:4: reference to undefined rule: y; 56 3:4: reference to undefined rule: x; 51 4:1: rule b redefinition; previous at line 2"),
 )
 
