@@ -1008,8 +1008,9 @@ lexer, it replaces ANTLR's generated lexer in front of ANTLR's generated
 parser, with the same tokens (type, channel, start, stop, line, column, text,
 through EOF), the same token recognition errors sent to the error listeners,
 and the input stream and line and column left where ANTLR's lexer leaves them.
-Its only flavor is `antlr`. For a combined grammar it writes the lexer and
-leaves the parser to ANTLR; a parser grammar is error 505.
+That is the `antlr` flavor, the default; the `native` flavor is below. For a
+combined grammar the target writes the lexer and leaves the parser to ANTLR; a
+parser grammar is error 505.
 
 ```mermaid
 flowchart LR
@@ -1054,6 +1055,31 @@ for `gala.g4`, and `Commands.g4`, a lexer grammar for commands, channels,
 reserved names, code points above ASCII and nesting past the DFA's depth
 (generated with `-DlexerDepth=2`). The class attributes are compared too. On
 the GALA corpus (1.8 MB) it lexes in about a third of ANTLR's time.
+
+The **native flavor** (`-Dflavor=native`, `lexgen.NativePythonLexerFile`)
+writes `<base>_lexer.py`, a module that needs no runtime, the first step of
+the native Python parser (see the [roadmap](ROADMAP.md#the-python-parser)). It
+runs the same scanner, and its `lex(src, line=1, column=0)` returns `Tokens`,
+as the Go native lexer does:
+
+- the default-channel tokens as parallel lists (`types`, `starts`, `ends`,
+  `lines`, `columns`), spans in code points, ending with EOF, so lexing
+  creates no object per token;
+- `hidden`, the off-channel tokens, each a `HiddenToken` with its channel and
+  `next`, the index of the default-channel token after it (`hidden_before(i)`
+  finds a token's comments by binary search);
+- `errors`, the token recognition errors (`LexError`, with the message ANTLR's
+  Python runtime gives, which shows newlines, carriage returns and tabs
+  escaped, unlike its Go runtime), and `error_at`, for each, the index of the
+  first default-channel token after it.
+
+The module declares every token type of the grammar, the parser's
+`tokens {}` names included, with `LITERAL_NAMES` and `SYMBOLIC_NAMES` indexed
+by type and `token_name(t)`, since the native parser will share them. A token
+named like one of the module's own names (`Tokens`) gets a trailing `_`. The
+same differential test checks it on every input against ANTLR's tokens,
+split into default-channel and hidden ones; on the GALA corpus it lexes in
+about a sixth of ANTLR's time.
 
 ## Code generation (`codegen`, `golang`)
 

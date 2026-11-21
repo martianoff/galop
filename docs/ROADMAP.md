@@ -189,7 +189,7 @@ gain. More targets therefore come next, in the order ANTLR users most need them:
 | Target | Why | Checked against |
 |---|---|---|
 | Go | done | ANTLR's Go runtime |
-| Python | lexer done (`antlr` flavor); native parser next (below). The largest gain: on gofileseq's grammar ANTLR's Python runtime takes 6.5 ms for a frame range its Go runtime parses in 0.39 ms | ANTLR's Python runtime |
+| Python | lexers done (both flavors); native parser next (below). The largest gain: on gofileseq's grammar ANTLR's Python runtime takes 6.5 ms for a frame range its Go runtime parses in 0.39 ms | ANTLR's Python runtime |
 | Java | ANTLR's reference target, the most used | ANTLR's Java runtime |
 | TypeScript / JavaScript | parsers in browsers and editors | ANTLR's TypeScript runtime |
 | C++ | native tools that share a grammar with Python or Java | ANTLR's C++ runtime |
@@ -218,7 +218,7 @@ flowchart LR
     R --> O["5. guessing, brackets,<br/>repair, as in Go"]
 ```
 
-1. **Native lexer** (`-Dflavor=native`): the token list as parallel arrays, the
+1. **Native lexer** (`-Dflavor=native`, done): the token list as parallel arrays, the
    off-channel tokens and token recognition errors, as the Go native lexer has them.
 2. **Parser**: the native tree, rule functions with the decisions the analysis
    settles statically, and ANTLR's prediction (SLL, then LL from the start on a

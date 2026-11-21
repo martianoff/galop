@@ -14,16 +14,26 @@ import (
 // pythonTarget generates Python 3 (`-Dlanguage=Python3`, ANTLR's name for it).
 struct pythonTarget()
 
-// Target is the Python code generator. It writes lexers only: a grammar's
-// lexer as a subclass of the ANTLR Python runtime's Lexer, to use with
-// ANTLR's generated parser.
+// Target is the Python code generator. It writes lexers only, so far, in
+// either flavor (see PythonFlavors).
 func Target() codegen.Target = pythonTarget()
 
 func (t pythonTarget) Language() string = "Python3"
 
-// Flavors has the one flavor so far, `antlr`: code that runs on ANTLR's
-// Python runtime, next to ANTLR's own generated code.
-func (t pythonTarget) Flavors() Array[string] = ArrayOf("antlr")
+// PythonFlavors are the values of the Python target's `flavor` option; the
+// first is the default.
+//
+//   - `antlr`: `<base>GalopLexer.py`, a subclass of the ANTLR Python
+//     runtime's Lexer, to use with ANTLR's generated parser.
+//   - `native`: `<base>_lexer.py`, galop's own token arrays, with no
+//     dependency; the native parser will read them.
+val PythonFlavors = ArrayOf("antlr", "native")
+
+func (t pythonTarget) Flavors() Array[string] = PythonFlavors
+
+// native reports whether the `flavor` option picks the native flavor. The
+// tool rejects other values before asking (error 508).
+func native(opts codegen.Options) bool = opts.Define("flavor").Exists(_ == "native")
 
 // baseName is the grammar name without the trailing `Lexer` of a lexer
 // grammar: `ExprLexer` and `Expr` both give the class `ExprGalopLexer`.
@@ -32,17 +42,29 @@ func baseName(g g4.Grammar) string = g.Kind match {
     case _ => g.Name
 }
 
-// className is the lexer's class, which also names its file.
+// className is the antlr flavor's lexer class, which also names its file.
 func className(g g4.Grammar) string = baseName(g) + "GalopLexer"
+
+// lexerFileName names the lexer's file: the class for the antlr flavor; the
+// base name lowercased, as a Python module is, for the native flavor
+// (`expr_lexer.py`).
+func lexerFileName(g g4.Grammar, opts codegen.Options) string =
+    if (native(opts)) strings.ToLower(baseName(g)) + "_lexer.py" else className(g) + ".py"
 
 // FileNames lists the lexer's file, for a grammar with lexer rules.
 func (t pythonTarget) FileNames(g g4.Grammar, c atn.Compiled, opts codegen.Options) Array[string] =
-    c.Lexer.Map((_) => ArrayOf(className(g) + ".py")).GetOrElse(EmptyArray[string]())
+    c.Lexer.Map((_) => ArrayOf(lexerFileName(g, opts))).GetOrElse(EmptyArray[string]())
 
 // Generate writes the lexer of a lexer or combined grammar; the parser of a
-// combined grammar is ANTLR's. A parser grammar has nothing to generate yet.
+// combined grammar is ANTLR's, for now. A parser grammar has nothing to
+// generate yet.
 func (t pythonTarget) Generate(in codegen.Input, opts codegen.Options) Either[Array[string], Array[codegen.OutputFile]] =
     in.Compiled.Lexer match {
-        case Some(_) => lexgen.PythonLexerFile(in, opts, className(in.Grammar) + ".py", className(in.Grammar)).Map((f) => ArrayOf(f))
+        case Some(_) => {
+            val name = lexerFileName(in.Grammar, opts)
+            val file = if (native(opts)) lexgen.NativePythonLexerFile(in, opts, name)
+                else lexgen.PythonLexerFile(in, opts, name, className(in.Grammar))
+            file.Map((f) => ArrayOf(f))
+        }
         case None() => Left(ArrayOf("Python3 target: only lexers are supported yet; use ANTLR's Python parser"))
     }

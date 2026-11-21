@@ -181,11 +181,15 @@ galop options:
   `-Dflavor=native|antlr` its output style, `native` by default (see
   [design](docs/DESIGN.md#code-generation-codegen-golang)). `-D` options override
   the grammar's own `options {}`; an unknown flavor is error 508.
-- **Python.** `-Dlanguage=Python3` writes `<grammar>GalopLexer.py`, a lexer for
-  ANTLR's Python runtime (4.13.1) that stands in for ANTLR's generated lexer in
-  front of ANTLR's parser: same tokens, same errors, about a third of the time
-  on the GALA corpus. galop does not write Python parsers yet (see
-  [design](docs/DESIGN.md#the-python-lexer)).
+- **Python.** `-Dlanguage=Python3` writes lexers, in two flavors (see
+  [design](docs/DESIGN.md#the-python-lexer)). `-Dflavor=antlr` (the default)
+  writes `<grammar>GalopLexer.py`, a lexer for ANTLR's Python runtime (4.13.1)
+  that stands in for ANTLR's generated lexer in front of ANTLR's parser: same
+  tokens, same errors, about a third of the time on the GALA corpus.
+  `-Dflavor=native` writes `<grammar>_lexer.py`, a module with no dependency
+  whose `lex(src)` returns the same tokens as arrays, in about a sixth of
+  ANTLR's time. galop does not write Python parsers yet; the native parser is
+  [planned](docs/ROADMAP.md#the-python-parser). Python 3.10 or later.
 - **Output layout** follows ANTLR: files go next to the grammar; with `-o dir`
   they go to `dir` plus the grammar's relative directory (`-o gen sub/T.g4`
   writes to `gen/sub/`), unless `-Xexact-output-dir` is given.
