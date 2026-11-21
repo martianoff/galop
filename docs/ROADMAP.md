@@ -189,7 +189,7 @@ gain. More targets therefore come next, in the order ANTLR users most need them:
 | Target | Why | Checked against |
 |---|---|---|
 | Go | done | ANTLR's Go runtime |
-| Python | lexer done (`antlr` flavor); parser next. The largest gain: on gofileseq's grammar ANTLR's Python runtime takes 6.5 ms for a frame range its Go runtime parses in 0.39 ms | ANTLR's Python runtime |
+| Python | lexer done (`antlr` flavor); native parser next (below). The largest gain: on gofileseq's grammar ANTLR's Python runtime takes 6.5 ms for a frame range its Go runtime parses in 0.39 ms | ANTLR's Python runtime |
 | Java | ANTLR's reference target, the most used | ANTLR's Java runtime |
 | TypeScript / JavaScript | parsers in browsers and editors | ANTLR's TypeScript runtime |
 | C++ | native tools that share a grammar with Python or Java | ANTLR's C++ runtime |
@@ -200,6 +200,34 @@ allows (the `antlr` flavor builds that runtime's own contexts; the native flavor
 no runtime), the same differential harness against ANTLR's runtime for that language,
 and a performance gate. A grammar then means the same thing in every target galop
 supports, as it does in ANTLR.
+
+#### The Python parser
+
+The Python parser is native, as the Go target's default flavor is: galop's own
+tokens and tree and no ANTLR runtime. Speeding up ANTLR's Python parser piece by
+piece would gain little: profiled on GALA sources, its time is spread over
+error-recovery sync (about 30%), prediction (21%), the token stream (20%) and
+entering and leaving rules (11%). It comes in steps, each checked against ANTLR's
+Python runtime by `//differential/python`:
+
+```mermaid
+flowchart LR
+    L["1. native lexer:<br/>token arrays, no runtime"] --> P["2. parser: tree, static<br/>decisions, SLL then LL"]
+    P --> E["3. ANTLR's first<br/>syntax error"]
+    E --> R["4. error recovery"]
+    R --> O["5. guessing, brackets,<br/>repair, as in Go"]
+```
+
+1. **Native lexer** (`-Dflavor=native`): the token list as parallel arrays, the
+   off-channel tokens and token recognition errors, as the Go native lexer has them.
+2. **Parser**: the native tree, rule functions with the decisions the analysis
+   settles statically, and ANTLR's prediction (SLL, then LL from the start on a
+   failure) over tables in the generated file for the rest. Valid input gives
+   ANTLR's tree.
+3. **First syntax error**: ANTLR's message, line and column for invalid input.
+4. **Error recovery**: ANTLR's recovered tree and every error it reports.
+5. **The Go target's prediction speedups** (guessing first pass, bracket
+   abstraction, repair, the full-context cache), each where it pays in Python.
 
 Grammar features ANTLR users rely on and galop does not read yet (lexer modes, embedded
 actions in the target language, `tokenVocab`) matter as much as the languages: a
