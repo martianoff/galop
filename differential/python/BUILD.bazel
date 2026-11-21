@@ -1,4 +1,4 @@
-load(":defs.bzl", "py_lexer_test")
+load(":defs.bzl", "py_lexer_test", "py_parser_test")
 
 # galop's Python lexers against ANTLR's (see lexer_test.py). Commands.g4 is
 # this package's test grammar; the others are the corpus and test grammars
@@ -44,3 +44,21 @@ py_lexer_test(
     grammar_name = "gala",
     sample_flags = "-n 300 -seed 1 -nesting 3 -tokens 200",
 )
+
+# galop's native Python parser against ANTLR's Python parser (see
+# parser_test.py), on the test grammars whose decisions the analysis settles
+# ahead of time; runtime prediction comes next.
+[py_parser_test(
+    name = name + "_parser",
+    grammar = "//differential/convert:grammars/%s.g4" % grammar_name if grammar_name != "Errors" else "//differential/errors:Errors.g4",
+    grammar_name = grammar_name,
+    sample_flags = flags,
+    start = "prog",
+) for name, grammar_name, flags in [
+    ("expr", "Expr", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("labels", "Labels", "-n 300 -seed 1 -nesting 3 -tokens 200"),
+    ("lines", "Lines", "-n 300 -seed 1 -nesting 4 -tokens 60"),
+    ("recovery", "Recovery", "-n 300 -seed 1 -nesting 3 -tokens 200"),
+    ("text", "Text", "-n 300 -seed 1 -nesting 4 -tokens 60"),
+    ("errors", "Errors", "-n 300 -seed 1 -nesting 3 -tokens 300"),
+]]

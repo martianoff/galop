@@ -6,9 +6,11 @@ import (
     . "martianoff/gala/collection_immutable"
     . "martianoff/gala/test"
 
+    "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/g4"
     "github.com/martianoff/galop/grammartest"
+    "github.com/martianoff/galop/repair"
 )
 
 // generate runs the Python target on grammar src with no options.
@@ -59,14 +61,42 @@ func TestParserGrammarHasNothingToGenerate(t T) T {
 func TestNativeFlavorWritesAModule(t T) T {
     val (g, c) = grammartest.Compile("grammar Expr;\ntokens { EXTRA }\ns : ID EXTRA? EOF ;\nID : [a-z]+ ;\n")
     val opts = codegen.Options(Defines = ArrayOf(g4.OptionEntry("flavor", "native")))
-    val t1 = Eq(t, Target().FileNames(g, c, opts), ArrayOf("expr_lexer.py"))
-    Target().Generate(codegen.Input(g, c, None()), opts) match {
+    val t1 = Eq(t, Target().FileNames(g, c, opts), ArrayOf("expr_lexer.py", "expr_parser.py"))
+    Target().Generate(codegen.Input(g, c, Some(analysis.Analyze(c.Parser.Get(), repair.PlanFor(g, c), true))), opts) match {
         case Right(files) => {
             val code = files.Head().Content
-            val t2 = Eq(t1, files.Map(_.Name), ArrayOf("expr_lexer.py"))
+            val t2 = Eq(t1, files.Map(_.Name), ArrayOf("expr_lexer.py", "expr_parser.py"))
             val t3 = IsTrue(t2, strings.Contains(code, "\nID = 1\nEXTRA = 2\n"))
             IsTrue(t3, strings.Contains(code, "def lex(src, line=1, column=0):"))
         }
         case Left(msgs) => Eq(t1, msgs.MkString("; "), "")
     }
+}
+
+// nativeFiles generates the native flavor's files for src.
+func nativeFiles(src string) Array[codegen.OutputFile] {
+    val (g, c) = grammartest.Compile(src)
+    val opts = codegen.Options(Defines = ArrayOf(g4.OptionEntry("flavor", "native")))
+    Target().Generate(codegen.Input(g, c, Some(analysis.Analyze(c.Parser.Get(), repair.PlanFor(g, c), true))), opts).Fold((_) => EmptyArray[codegen.OutputFile](), (files) => files)
+}
+
+// TestNativeParserRules checks the parser module's rule methods: a labeled
+// alternative records its number, a token label its number, and a decision
+// settled by two tokens reads the second.
+func TestNativeParserRules(t T) T {
+    val files = nativeFiles("grammar Expr;\ns : a=ID '=' ID # set | ID # get ;\nID : [a-z]+ ;\nWS : ' '+ -> skip ;\n")
+    val code = files.Find(_.Name == "expr_parser.py").Map(_.Content).GetOrElse("")
+    val t1 = IsTrue(t, strings.Contains(code, "    def _r0(self):\n        # s\n        mark, start, alt = len(self.kids), self.pos, 0\n"))
+    val t2 = IsTrue(t1, strings.Contains(code, "            alt = 1\n            self.labs.append((1, self._match(ID)))\n"))
+    val t3 = IsTrue(t2, strings.Contains(code, "            t2 = self._la(2)\n"))
+    IsTrue(t3, strings.Contains(code, "def parse_s(tokens):"))
+}
+
+// TestNativeParserNotYetSupported checks that a grammar the native parser
+// cannot parse yet still gets its lexer, and a parser module that says why.
+func TestNativeParserNotYetSupported(t T) T {
+    val files = nativeFiles("grammar E;\ne : e '+' e | ID ;\nID : [a-z]+ ;\n")
+    val t1 = Eq(t, files.Map(_.Name), ArrayOf("e_lexer.py", "e_parser.py"))
+    val code = files.Find(_.Name == "e_parser.py").Map(_.Content).GetOrElse("")
+    IsTrue(t1, strings.Contains(code, "raise NotImplementedError(") && strings.Contains(code, "left-recursive rules are not supported yet: e"))
 }

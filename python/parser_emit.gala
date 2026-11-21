@@ -1,0 +1,220 @@
+package python
+
+import (
+    "strconv"
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/analysis"
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/lexgen"
+)
+
+// The native Python parser (`-Dflavor=native`): `<base>_parser.py`, which
+// parses the native lexer's token arrays into galop's own tree with no
+// runtime. So far it handles grammars whose every decision the analysis
+// settles ahead of time (see unsupported); on a syntax error it raises
+// ParseError at the token where the parse stopped, which is not yet ANTLR's
+// message (see the roadmap's Python parser steps).
+
+// penv is what emitting one grammar's parser needs.
+struct penv(
+    grammar string,
+    lexerModule string,
+    vocab atn.Vocabulary,
+    rules Array[atn.RuleIR],
+    plans Array[analysis.DecisionPlan],
+)
+
+// unsupported lists what the native Python parser cannot generate yet for a
+// grammar: runtime prediction, left-recursive rules, actions and predicates.
+func unsupported(rules Array[atn.RuleIR], plans Array[analysis.DecisionPlan]) Array[string] {
+    val runtime = plans.Filter((p) => needsRuntime(p.Lookahead)).Map((p) => s"decision ${p.Decision.Id} in rule ${rules.Get(p.Decision.Rule).Name}")
+    val recursive = rules.Collect({ case r if r.Rewrite.IsDefined() => r.Name })
+    val code = rules.Collect({ case r if r.Alts.Exists((a) => atn.HasStep(a.Steps, isCode)) => r.Name })
+    ArrayOf(
+        When(runtime.NonEmpty(), s"decisions that need runtime prediction are not supported yet: ${runtime.MkString(", ")}"),
+        When(recursive.NonEmpty(), s"left-recursive rules are not supported yet: ${recursive.MkString(", ")}"),
+        When(code.NonEmpty(), s"actions and predicates are not supported: ${code.MkString(", ")}"),
+    ).Collect((o) => o)
+}
+
+// needsRuntime says whether a lookahead tree leaves some input to runtime prediction.
+func needsRuntime(l analysis.Lookahead) bool = l match {
+    case analysis.Predict(_) => false
+    case analysis.Automaton(_) => false
+    case analysis.Switch(_, cases) => cases.Exists((c) => needsRuntime(c.Then))
+    case _ => true
+}
+
+func isCode(s atn.Step) bool = s match {
+    case atn.RunAction(_) => true
+    case atn.CheckPredicate(_) => true
+    case _ => false
+}
+
+// NativeParser renders the parser module.
+func nativeParser(e penv) string {
+    val setDefs = e.plans.FlatMap((p) => lookaheadSets(p.Lookahead)).AppendAll(e.rules.FlatMap((r) => r.Alts.FlatMap((a) => stepSets(a.Steps))))
+        .FoldLeft(EmptyArray[atn.IntervalSet](), (acc, s) => if (acc.Exists(_.String() == s.String())) acc else acc.Append(s))
+    val setKeys = setDefs.Map(_.String())
+    val setNames = (s atn.IntervalSet) => s"_SET${setKeys.IndexOf(s.String())}"
+    val rulesCode = e.rules.Map((r) => emitRule(e, r, setNames)).MkString("\n")
+    val decisionsCode = e.plans.Map((p) => emitDecision(e, p, setNames)).MkString("\n")
+    val setCode = setDefs.ZipWithIndex().Map((si) => s"_SET${si.V2} = frozenset((${si.V1.Values().MkString(", ")},))").MkString("\n")
+    val ruleConsts = e.rules.Map((r) => s"RULE_${r.Name} = ${r.Index}").MkString("\n")
+    val ruleNames = "RULE_NAMES = [\n" + e.rules.Grouped(8).Map((row) => "    " + row.Map((r) => strconv.Quote(r.Name)).MkString(", ") + ",").MkString("\n") + "\n]\n"
+    val entries = e.rules.Map((r) => fill(entryTemplate, "@RULE@", r.Name, "@INDEX@", s"${r.Index}")).MkString("\n")
+    val ruleFuncs = "_RULE_FUNCS = (\n" + e.rules.Map((r) => s"    _Parser._r${r.Index},").MkString("\n") + "\n)\n"
+    fill(
+        headerTemplate,
+        "@GRAMMAR@", e.grammar,
+        "@GRAMMARFILE@", e.grammar + ".g4",
+        "@LEXER@", e.lexerModule,
+    ) + ruleConsts + "\n\n" + ruleNames + "\n" + treeTemplate + parserTemplate + rulesCode + "\n" + decisionsCode + "\n\n" + ruleFuncs + "\n" + setCode + "\n\n" + automatonTables(e.plans) + parseTemplate + entries
+}
+
+// stepSets are the token sets steps match with MatchSet.
+func stepSets(steps Array[atn.Step]) Array[atn.IntervalSet] = steps.FlatMap((s) => s match {
+    case atn.MatchSet(set, _, _) => ArrayOf(set)
+    case atn.Choose(_, alts, _) => alts.FlatMap(stepSets)
+    case atn.Loop(_, _, _, body) => stepSets(body)
+    case _ => EmptyArray[atn.IntervalSet]()
+})
+
+// lookaheadSets are the token sets of a lookahead tree's cases with more than
+// one token (one token is compared directly).
+func lookaheadSets(l analysis.Lookahead) Array[atn.IntervalSet] = l match {
+    case analysis.Switch(_, cases) => cases.FlatMap((c) => (if (c.Tokens.Size() > 1) ArrayOf(c.Tokens) else EmptyArray[atn.IntervalSet]()).AppendAll(lookaheadSets(c.Then)))
+    case _ => EmptyArray[atn.IntervalSet]()
+}
+
+// tokenName is the native lexer module's constant for token type t.
+func (e penv) tokenName(t int) string = if (t == atn.TokenEOF) "EOF" else lexgen.NativePyName(e.vocab.Name(t))
+
+// emitRule emits the method that parses one rule and returns its node.
+func emitRule(e penv, r atn.RuleIR, setName func(atn.IntervalSet) string) string {
+    val altLabels = atn.SourceAlts(r).Collect((a) => a.Label).Distinct()
+    val labels = ruleLabels(r)
+    val (names, values) = if (altLabels.NonEmpty()) (", alt", ", 0") else ("", "")
+    val header = ArrayOf(s"    def _r${r.Index}(self):", s"        # ${r.Name}", s"        mark, start$names = len(self.kids), self.pos$values", "        labs = len(self.labs)")
+    val body = r.Decision match {
+        case Some(d) => ifChain(s"self._d$d()", r.Alts.ZipWithIndex().Map((ai) => (ai.V2 + 1, altSteps(e, ai.V1, altLabels, labels, setName, "            "))), "        ")
+        case None() => r.Alts.FlatMap((a) => altSteps(e, a, altLabels, labels, setName, "        "))
+    }
+    val altArg = if (altLabels.NonEmpty()) "alt" else "0"
+    header.AppendAll(body).Append(s"        return self._finish(${r.Index}, $altArg, start, mark, labs)").MkString("\n") + "\n"
+}
+
+// altSteps are an alternative's statements: the label's number in `alt` for
+// a labeled alternative, then its steps.
+func altSteps(e penv, a atn.AltIR, altLabels Array[string], labels Array[string], setName func(atn.IntervalSet) string, ind string) Array[string] =
+    a.Label.Map((l) => ArrayOf(s"${ind}alt = ${altLabels.IndexOf(l) + 1}")).GetOrElse(EmptyArray[string]())
+        .AppendAll(steps(e, a.Steps, labels, setName, ind))
+
+// ifChain picks a branch by the value of subject: an if/elif per branch;
+// a branch with no statements passes.
+func ifChain(subject string, branches Array[Tuple[int, Array[string]]], ind string) Array[string] =
+    ArrayOf(s"${ind}d = $subject").AppendAll(branches.ZipWithIndex().FlatMap((bi) => {
+        val kw = if (bi.V2 == 0) "if" else "elif"
+        ArrayOf(s"$ind$kw d == ${bi.V1.V1}:").AppendAll(orPass(bi.V1.V2, ind + "    "))
+    }))
+
+func orPass(lines Array[string], ind string) Array[string] = if (lines.IsEmpty()) ArrayOf(ind + "pass") else lines
+
+// steps emits steps in order.
+func steps(e penv, ss Array[atn.Step], labels Array[string], setName func(atn.IntervalSet) string, ind string) Array[string] =
+    ss.FlatMap((s) => step(e, s, labels, setName, ind))
+
+// step emits one step. Labels are numbered by their position in labels, from 1.
+func step(e penv, s atn.Step, labels Array[string], setName func(atn.IntervalSet) string, ind string) Array[string] = s match {
+    case atn.MatchToken(t, label) => tokenStep(s"self._match(${e.tokenName(t)})", label, labels, ind)
+    case atn.MatchSet(set, label, _) => tokenStep(s"self._match_in(${setName(set)})", label, labels, ind)
+    case atn.CallRule(rule, _, label, _, _) => label match {
+        case Some(l) => ArrayOf(s"${ind}child = self._r$rule()", s"${ind}self.kids.append(child)", s"${ind}self.node_label[child] = ${labels.IndexOf(l.Name) + 1}")
+        case None() => ArrayOf(s"${ind}self.kids.append(self._r$rule())")
+    }
+    case atn.Choose(d, alts, exitAlt) => {
+        val branches = alts.ZipWithIndex().Map((ai) => (atn.AltNumber(exitAlt, ai.V2), steps(e, ai.V1, labels, setName, ind + "    ")))
+        ifChain(s"self._d$d()", branches, ind)
+    }
+    case atn.Loop(plus, d, cont, body) if plus => ArrayOf(s"${ind}while True:")
+        .AppendAll(steps(e, body, labels, setName, ind + "    "))
+        .AppendAll(ArrayOf(s"$ind    if self._d$d() != $cont:", s"$ind        break"))
+    case atn.Loop(_, d, cont, body) => ArrayOf(s"${ind}while self._d$d() == $cont:")
+        .AppendAll(orPass(steps(e, body, labels, setName, ind + "    "), ind + "    "))
+    // unsupported keeps the rest out of the grammars this emits.
+    case _ => ArrayOf(s"${ind}raise NotImplementedError(\"galop: step not supported by the Python target\")")
+}
+
+// tokenStep matches a token and records its label, if any.
+func tokenStep(call string, label Option[atn.LabelRef], labels Array[string], ind string) Array[string] = label match {
+    case Some(l) => ArrayOf(s"${ind}self.labs.append((${labels.IndexOf(l.Name) + 1}, $call))")
+    case None() => ArrayOf(ind + call)
+}
+
+// ruleLabels are the distinct label names of a rule; a label's number is its
+// position here plus one.
+func ruleLabels(r atn.RuleIR) Array[string] = atn.SourceAlts(r).FlatMap((a) => labelNames(a.Steps)).Distinct()
+
+func labelNames(ss Array[atn.Step]) Array[string] = ss.FlatMap((s) => s match {
+    case atn.MatchToken(_, Some(l)) => ArrayOf(l.Name)
+    case atn.MatchSet(_, Some(l), _) => ArrayOf(l.Name)
+    case atn.CallRule(_, _, Some(l), _, _) => ArrayOf(l.Name)
+    case atn.Choose(_, alts, _) => alts.FlatMap(labelNames)
+    case atn.Loop(_, _, _, body) => labelNames(body)
+    case _ => EmptyArray[string]()
+})
+
+// emitDecision emits the method that picks an alternative of one decision.
+func emitDecision(e penv, plan analysis.DecisionPlan, setName func(atn.IntervalSet) string) string {
+    val d = plan.Decision.Id
+    val text = strings.ReplaceAll(plan.Decision.Text, "\n", " ")
+    ArrayOf(s"    def _d$d(self):", s"        # ${e.rules.Get(plan.Decision.Rule).Name}: $text")
+        .AppendAll(lookahead(e, d, plan.Lookahead, setName, "        "))
+        .MkString("\n") + "\n"
+}
+
+// lookahead emits the code of a lookahead tree. Cases are made disjoint: a
+// token goes to the first case that has it, as in the Go target.
+func lookahead(e penv, d int, la analysis.Lookahead, setName func(atn.IntervalSet) string, ind string) Array[string] = la match {
+    case analysis.Predict(alt) => ArrayOf(s"${ind}return $alt")
+    case analysis.Automaton(_) => ArrayOf(s"${ind}return self._automaton($d, _A$d)")
+    case analysis.Switch(depth, cases) => {
+        val subject = if (depth == 1) "self.types[self.pos]" else s"self._la($depth)"
+        val disjoint = cases.FoldLeft(Tuple(EmptyArray[analysis.LookaheadCase](), atn.EmptySet()), (acc, c) => {
+            val own = c.Tokens.Subtract(acc.V2)
+            Tuple(if (own.IsEmpty()) acc.V1 else acc.V1.Append(analysis.LookaheadCase(own, c.Then)), acc.V2.Union(own))
+        }).V1
+        val v = s"t$depth"
+        ArrayOf(s"$ind$v = $subject")
+            .AppendAll(disjoint.FlatMap((c) => {
+                val test = if (c.Tokens.Size() == 1) s"$v == ${c.Tokens.Min().Get()}" else s"$v in ${setName(c.Tokens)}"
+                ArrayOf(s"${ind}if $test:").AppendAll(lookahead(e, d, c.Then, setName, ind + "    "))
+            }))
+            .Append(s"${ind}return self._dead_end($d)")
+    }
+    case _ => ArrayOf(s"${ind}raise NotImplementedError(\"galop: runtime prediction is not supported by the Python target yet\")")
+}
+
+// automatonTables renders the lookahead automata: per state a dict from token
+// type to the next state, or to -alt where the edge ends in a final state.
+func automatonTables(plans Array[analysis.DecisionPlan]) string = plans.Collect({
+    case p if isAutomaton(p.Lookahead) => p.Lookahead match {
+        case analysis.Automaton(states) => s"_A${p.Decision.Id} = (\n" + states.Map((st) => "    {" + st.Edges.FlatMap((edge) => {
+            val target = states.Get(edge.Target).Final.Map((alt) => -alt).GetOrElse(edge.Target)
+            edge.Tokens.Values().Map((t) => s"$t: $target")
+        }).MkString(", ") + "},").MkString("\n") + "\n)\n"
+        case _ => ""
+    }
+}).MkString("\n")
+
+func isAutomaton(l analysis.Lookahead) bool = l match {
+    case analysis.Automaton(_) => true
+    case _ => false
+}
+
+// fill replaces each placeholder in template with its value; pairs alternate
+// placeholder and value.
+func fill(template string, pairs ...string) string = strings.NewReplacer(pairs...).Replace(template)
