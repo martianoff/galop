@@ -1,0 +1,48 @@
+package python
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+
+    "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/g4"
+    "github.com/martianoff/galop/lexgen"
+)
+
+// pythonTarget generates Python 3 (`-Dlanguage=Python3`, ANTLR's name for it).
+struct pythonTarget()
+
+// Target is the Python code generator. It writes lexers only: a grammar's
+// lexer as a subclass of the ANTLR Python runtime's Lexer, to use with
+// ANTLR's generated parser.
+func Target() codegen.Target = pythonTarget()
+
+func (t pythonTarget) Language() string = "Python3"
+
+// Flavors has the one flavor so far, `antlr`: code that runs on ANTLR's
+// Python runtime, next to ANTLR's own generated code.
+func (t pythonTarget) Flavors() Array[string] = ArrayOf("antlr")
+
+// baseName is the grammar name without the trailing `Lexer` of a lexer
+// grammar: `ExprLexer` and `Expr` both give the class `ExprGalopLexer`.
+func baseName(g g4.Grammar) string = g.Kind match {
+    case g4.LexerOnly() if g.Name != "Lexer" => strings.TrimSuffix(g.Name, "Lexer")
+    case _ => g.Name
+}
+
+// className is the lexer's class, which also names its file.
+func className(g g4.Grammar) string = baseName(g) + "GalopLexer"
+
+// FileNames lists the lexer's file, for a grammar with lexer rules.
+func (t pythonTarget) FileNames(g g4.Grammar, c atn.Compiled, opts codegen.Options) Array[string] =
+    c.Lexer.Map((_) => ArrayOf(className(g) + ".py")).GetOrElse(EmptyArray[string]())
+
+// Generate writes the lexer of a lexer or combined grammar; the parser of a
+// combined grammar is ANTLR's. A parser grammar has nothing to generate yet.
+func (t pythonTarget) Generate(in codegen.Input, opts codegen.Options) Either[Array[string], Array[codegen.OutputFile]] =
+    in.Compiled.Lexer match {
+        case Some(_) => lexgen.PythonLexerFile(in, opts, className(in.Grammar) + ".py", className(in.Grammar)).Map((f) => ArrayOf(f))
+        case None() => Left(ArrayOf("Python3 target: only lexers are supported yet; use ANTLR's Python parser"))
+    }

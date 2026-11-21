@@ -7,6 +7,7 @@ import (
 
     "github.com/martianoff/galop/codegen"
     "github.com/martianoff/galop/golang"
+    "github.com/martianoff/galop/python"
     "github.com/martianoff/galop/tool"
 )
 
@@ -15,7 +16,7 @@ val version = "0.0.0-dev"
 
 // targets are the code generators this binary ships. A language is added by
 // adding its codegen.Target here.
-func targets() Array[codegen.Target] = ArrayOf(golang.Target(version))
+func targets() Array[codegen.Target] = ArrayOf(golang.Target(version), python.Target())
 
 func main() {
     val kit = tool.Toolkit(Targets = targets(), Files = tool.OSFiles(), Version = version)

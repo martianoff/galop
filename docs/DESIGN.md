@@ -990,6 +990,63 @@ so several grammars can share a package:
 
 A program may change token types before parsing, as GALA's line-break rule does.
 
+### The Python lexer
+
+`-Dlanguage=Python3` (ANTLR's name for the language) picks the Python target
+(`python`). It writes lexers only, so far: `lexgen.PythonLexerFile` writes
+`<base>GalopLexer.py`, a class that subclasses the ANTLR Python runtime's
+`antlr4.Lexer` (4.13.1) and overrides `nextToken`. Like the Go `antlr` flavor's
+lexer, it replaces ANTLR's generated lexer in front of ANTLR's generated
+parser, with the same tokens (type, channel, start, stop, line, column, text,
+through EOF), the same token recognition errors sent to the error listeners,
+and the input stream and line and column left where ANTLR's lexer leaves them.
+Its only flavor is `antlr`. For a combined grammar it writes the lexer and
+leaves the parser to ANTLR; a parser grammar is error 505.
+
+```mermaid
+flowchart LR
+    G[grammar.g4] --> A[ANTLR: ExprParser.py]
+    G --> L[galop: ExprGalopLexer.py]
+    L -->|tokens| S[CommonTokenStream] --> A
+```
+
+The class declares what ANTLR's Python lexer declares: a constant per token
+type (names Python's target reserves get a trailing `_`, `None_`), the
+`channels {}` constants, and `literalNames`, `symbolicNames`, `ruleNames`,
+`channelNames`, `modeNames` and `grammarFileName`. Two of ANTLR's Python
+quirks are kept: `literalNames` and `symbolicNames` list only the names a type
+has, so they are not indexed by type, and a combined grammar's lexer has no
+names that only the parser's `tokens {}` declares.
+
+Matching runs the DFA the Go lexers run, from tables written as Python tuples
+(the ATN simulator for edges past the DFA's rule-call depth too). Python
+spends its time per bytecode, so the lexer does as little as it can per code
+point:
+
+- It maps the whole input to input classes once, with `str.translate` over a
+  table of the ASCII classes that learns other code points as it meets them,
+  into a `bytes` object when there are at most 256 classes.
+- The scan loop is two indexings and a comparison per code point
+  (`_EDGES[s][classes[i]]`, then the accept table).
+- Lines and columns are not counted per code point: each token's line and
+  column come from `str.count` and `str.rfind` over its text, which run in C.
+- The position lives in locals and reaches the input stream and the simulator
+  only before a token is emitted or an error reported.
+
+The input must be one of the runtime's character streams (`InputStream`,
+`FileStream`, `StdinStream`): the lexer reads their text (`strdata`) directly.
+Tokens are still made by the lexer's `emit`, through its token factory, so a
+subclass that overrides `emit` or sets a factory works as with ANTLR's lexer;
+that object creation is most of what is left of the time.
+
+`//differential/python` checks it against ANTLR's Python lexer with a hermetic
+Python 3.12 and `antlr4-python3-runtime` 4.13.1 (`rules_python`): galop-sample
+sentences and mutants of them for each corpus and test grammar, the GALA corpus
+for `gala.g4`, and `Commands.g4`, a lexer grammar for commands, channels,
+reserved names, code points above ASCII and nesting past the DFA's depth
+(generated with `-DlexerDepth=2`). The class attributes are compared too. On
+the GALA corpus (1.8 MB) it lexes in about a third of ANTLR's time.
+
 ## Code generation (`codegen`, `golang`)
 
 `codegen.Target` (in `codegen/target.gala`) is the extension point for languages:

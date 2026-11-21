@@ -15,6 +15,7 @@ gala_binary(
         "//guess",
         "//leftrec",
         "//lexgen",
+        "//python",
         "//repair",
         "//tool",
         "@gala//collection_immutable",

@@ -1,0 +1,52 @@
+package python
+
+import (
+    "strings"
+
+    . "martianoff/gala/collection_immutable"
+    . "martianoff/gala/test"
+
+    "github.com/martianoff/galop/codegen"
+    "github.com/martianoff/galop/grammartest"
+)
+
+// generate runs the Python target on grammar src with no options.
+func generate(src string) Tuple[Array[string], Either[Array[string], Array[codegen.OutputFile]]] {
+    val (g, c) = grammartest.Compile(src)
+    (Target().FileNames(g, c, codegen.Options()), Target().Generate(codegen.Input(g, c, None()), codegen.Options()))
+}
+
+// lexerOf is the one file generate writes for src, or "" when it writes none.
+func lexerOf(src string) Tuple[string, string] = generate(src).V2 match {
+    case Right(files) => files.HeadOption().Map((f) => (f.Name, f.Content)).GetOrElse(("", ""))
+    case Left(_) => ("", "")
+}
+
+// TestCombinedGrammarGetsALexer checks that a combined grammar gets its lexer
+// only, named after the grammar, with the token constants ANTLR's Python
+// lexer declares: those of the lexer's rules and implicit literals, not a
+// name only the parser's tokens {} declares.
+func TestCombinedGrammarGetsALexer(t T) T {
+    val src = "grammar Expr;\ntokens { EXTRA }\ns : 'x' ID None EOF ;\nID : [a-z]+ ;\nNone : 'none' ;\n"
+    val (names, _) = generate(src)
+    val (name, code) = lexerOf(src)
+    val t1 = Eq(t, names, ArrayOf("ExprGalopLexer.py"))
+    val t2 = Eq(t1, name, "ExprGalopLexer.py")
+    val t3 = IsTrue(t2, strings.Contains(code, "class ExprGalopLexer(Lexer):"))
+    val t4 = IsTrue(t3, strings.Contains(code, "    T__0 = 1\n    ID = 2\n    None_ = 3\n"))
+    val t5 = IsTrue(t4, !strings.Contains(code, "EXTRA"))
+    IsTrue(t5, strings.Contains(code, "\"<INVALID>\", \"'x'\", \"'none'\","))
+}
+
+// TestLexerGrammarName checks that a lexer grammar's trailing Lexer is
+// dropped from the class name, as from the Go target's names.
+func TestLexerGrammarName(t T) T =
+    Eq(t, lexerOf("lexer grammar CalcLexer;\nINT : [0-9]+ ;\n").V1, "CalcGalopLexer.py")
+
+// TestParserGrammarHasNothingToGenerate checks the message for a grammar with
+// no lexer rules: the target writes lexers only.
+func TestParserGrammarHasNothingToGenerate(t T) T {
+    val (names, result) = generate("parser grammar P;\ns : A EOF ;\n")
+    val t1 = Eq(t, names, EmptyArray[string]())
+    Eq(t1, result.Fold((msgs) => msgs.MkString("; "), (_) => ""), "Python3 target: only lexers are supported yet; use ANTLR's Python parser")
+}

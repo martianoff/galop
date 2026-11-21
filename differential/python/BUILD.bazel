@@ -1,0 +1,46 @@
+load(":defs.bzl", "py_lexer_test")
+
+# galop's Python lexers against ANTLR's (see lexer_test.py). Commands.g4 is
+# this package's test grammar; the others are the corpus and test grammars
+# the Go target is checked on.
+
+py_lexer_test(
+    name = "commands",
+    antlr_module = "Commands",
+    defines = ["lexerDepth=2"],
+    grammar = "Commands.g4",
+    grammar_name = "Commands",
+    inputs = "commands_inputs.txt",
+)
+
+[py_lexer_test(
+    name = name,
+    grammar = grammar,
+    grammar_name = grammar_name,
+    sample_flags = flags,
+) for name, grammar, grammar_name, flags in [
+    ("expr", "//differential/convert:grammars/Expr.g4", "Expr", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("text", "//differential/convert:grammars/Text.g4", "Text", "-n 300 -seed 1 -nesting 4 -tokens 60"),
+    ("plan", "//testdata/grammars:Plan.g4", "Plan", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("cel", "//testdata/grammars:CEL.g4", "CEL", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("having", "//testdata/grammars:HavingExpression.g4", "HavingExpression", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("grule", "//testdata/grammars:grulev3.g4", "grulev3", "-n 300 -seed 1 -nesting 3 -tokens 300"),
+    ("fileseq", "//testdata/grammars:fileseq.g4", "fileseq", "-n 300 -seed 1 -nesting 4 -tokens 60"),
+]]
+
+py_lexer_test(
+    name = "jsonquery",
+    grammar = "//testdata/grammars:JsonQuery.g4",
+    grammar_name = "JsonQuery",
+    imports = ["//testdata/grammars:SemverGrammar.g4"],
+    sample_flags = "-n 300 -seed 1 -nesting 4 -tokens 200 -separator ''",
+)
+
+# gala.g4 on the GALA corpus too: 723 files, 1.8 MB.
+py_lexer_test(
+    name = "gala",
+    corpus = "//differential:corpus",
+    grammar = "//testdata/grammars:gala.g4",
+    grammar_name = "gala",
+    sample_flags = "-n 300 -seed 1 -nesting 3 -tokens 200",
+)

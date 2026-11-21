@@ -5,6 +5,12 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Added:** a Python target, `-Dlanguage=Python3`, which writes lexers so
+  far: `<grammar>GalopLexer.py` subclasses the ANTLR Python runtime's `Lexer`
+  (4.13.1) and stands in for ANTLR's generated lexer in front of ANTLR's
+  parser, with the same tokens, errors and class attributes. On the GALA
+  corpus it lexes in about a third of ANTLR's time. `//differential/python`
+  checks it against ANTLR's Python lexer on the corpus grammars.
 - **Added:** ANTLR's error 94, a named action (`@members`) defined twice in one
   scope, and warning 108, a `tokens {}` name that is already a token, with
   ANTLR's positions and counts, in grammars that import others too. ANTLR's

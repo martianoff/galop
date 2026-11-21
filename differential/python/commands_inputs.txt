@@ -1,0 +1,19 @@
+abc def none nonex 123 @x $@y @@1
+{a{b{c{d{e{f}e}d}c}b}a} x {y} {}
+{a{b{c{d{e}}} x
+{ unclosed
+// line comment\nfoo // at end
+/** doc */ /* skip */ /*** odd **/ /**/ a
+/* unterminated
+"str" "esc \" q" "a\\" "bad\n"
+' '' x'y
+a\r\nb\tc\n\n
+\u2192\u2192 \U0001F600\U0001F64F \U0001F650
+\u00e9t\u00e9 \u03b1\u03b2 \u0250
+@
+$
+@@@
+1 % 2 ^ ~ ` ! #
+\x00 \ufeff \uffff
+none\nnone
+\r
