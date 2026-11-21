@@ -301,6 +301,9 @@ func (b Ptr[builder]) element(rule int, e g4.Element, label Option[LabelRef]) Pi
 func (b Ptr[builder]) compileElement(rule int, e g4.Element, label Option[LabelRef]) Piece = e match {
     case g4.Labeled(name, appendTo, inner) => b.element(rule, inner, Some(LabelRef(name, appendTo)))
     case g4.RuleRef(name) => b.ruleCall(rule, name, label)
+    // EOF in a lexer rule matches the end of the input, without consuming:
+    // ANTLR's lexer tries it once the input runs out.
+    case g4.TokenRef("EOF") if b.lexer => b.matchSet(rule, SetOf(TokenEOF), label, false)
     case g4.TokenRef(name) if b.lexer => b.ruleCall(rule, name, label)
     case g4.TokenRef(name) => b.vocab.TypeOf(name) match {
         case Some(t) => b.matchSet(rule, SetOf(t), label, true)

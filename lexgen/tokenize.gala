@@ -93,6 +93,31 @@ func (d DFA) MatchDFA(cps Array[int], lookup Lookup, from Position) MatchResult 
             accepted = Some(Matched(a, here))
         })
     }
+    // Once the input runs out, ANTLR's lexer tries EOF, which consumes
+    // nothing, until a state accepts or none follows. A cycle of states that
+    // do not accept would make ANTLR's lexer loop forever; this stops it.
+    val eof = d.Model.EOFClass()
+    var steps = 0
+    // Reason 5: EOF steps from the state the scan ended in.
+    for eof >= 0 && at.Index >= cps.Size() && steps < d.States.Size() {
+        val next = d.Edges.Get(state).Get(eof)
+        if next == DynamicEdge {
+            return MatchATN(Sim(d.Model, 0), cps, lookup, from)
+        }
+        if next == ErrorEdge {
+            break
+        }
+        state = next
+        steps = steps + 1
+        val here = at
+        val acc = d.States.Get(next).Accept
+        acc.ForEach((a) => {
+            accepted = Some(Matched(a, here))
+        })
+        if acc.IsDefined() {
+            break
+        }
+    }
     accepted match {
         case Some(m) => m
         case None() => NoMatch(at)
@@ -118,6 +143,26 @@ func MatchATN(sim Sim, cps Array[int], lookup Lookup, from Position) MatchResult
         sim.AcceptOf(reach).ForEach((a) => {
             accepted = Some(Matched(a, here))
         })
+    }
+    // The EOF steps, as in MatchDFA.
+    val eof = sim.M.EOFClass()
+    var steps = 0
+    // Reason 5: EOF steps over configuration sets.
+    for eof >= 0 && at.Index >= cps.Size() && steps < cps.Size() + sim.M.Out.Size() {
+        val reach = sim.Reach(configs, eof).configs
+        if reach.IsEmpty() {
+            break
+        }
+        configs = reach
+        steps = steps + 1
+        val here = at
+        val acc = sim.AcceptOf(reach)
+        acc.ForEach((a) => {
+            accepted = Some(Matched(a, here))
+        })
+        if acc.IsDefined() {
+            break
+        }
     }
     accepted match {
         case Some(m) => m

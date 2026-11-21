@@ -114,6 +114,7 @@ func pyTables(d DFA) string {
     val tables = ArrayOf(
         s"\n# _NUM_CLASSES is the number of input classes: code points every\n# transition treats alike.\n_NUM_CLASSES = $numClasses\n",
         s"# _DYNAMIC marks an edge that needs a deeper rule-call stack than the DFA\n# keeps; the token is then matched on the ATN.\n_DYNAMIC = $DynamicEdge\n",
+        s"# _EOF_CLASS is the input class of the end of the input, -1 when no rule\n# matches EOF.\n_EOF_CLASS = ${m.EOFClass()}\n",
         pyTuple("_ASCII", ascii, "is the class of each ASCII code point."),
         pyTuple("_RANGE_LO", high.Map(_.Lo), "holds the first code point of each run of one class above ASCII."),
         pyTuple("_RANGE_CLASS", high.Map(_.Class), "is the class of each run in _RANGE_LO."),
@@ -331,6 +332,22 @@ def _match(classes, i, n):
         if acc[s]:
             best = s
             end = i
+    else:
+        # Once the input runs out, ANTLR's lexer tries EOF, which consumes
+        # nothing, until a state accepts or none follows. A cycle of states
+        # that do not accept would make ANTLR's lexer loop forever; this
+        # stops it.
+        if _EOF_CLASS >= 0:
+            for _ in range(len(acc)):
+                s = edges[s][_EOF_CLASS]
+                if s < 0:
+                    if s == _DYNAMIC:
+                        return _match_atn(classes, start, n)
+                    break
+                if acc[s]:
+                    best = s
+                    end = i
+                    break
     if best < 0:
         return -1, 0, -1, i
     return end, acc[best], _ACC_CHANNEL[best], i
@@ -361,29 +378,33 @@ def _add(configs, seen, c):
         configs.append(c)
 
 
-def _closure(configs, seen, c, reached):
+def _closure(configs, seen, c, reached, eof=False):
     """ANTLR's LexerATNSimulator.closure; it reports whether the
-    configuration's alternative has reached its rule's stop state."""
+    configuration's alternative has reached its rule's stop state. On the
+    end-of-input step (eof) it takes transitions on EOF too, which consume
+    nothing (ANTLR's treatEofAsEpsilon)."""
     flags = _STATE_FLAGS[c[0]]
     if flags & 1:
         if c[3] is None:
             _add(configs, seen, c)
             return True
-        return _closure(configs, seen, _moved(c, c[3][0], c[3][1], c[4]), reached)
+        return _closure(configs, seen, _moved(c, c[3][0], c[3][1], c[4]), reached, eof)
     if not flags & 4 and (not reached or not c[2]):
         _add(configs, seen, c)
     for i in range(_TRANS_START[c[0]], _TRANS_START[c[0] + 1]):
         kind, target, arg = _TRANS[i]
         if kind == 0:
-            reached = _closure(configs, seen, _moved(c, target, c[3], c[4]), reached)
+            reached = _closure(configs, seen, _moved(c, target, c[3], c[4]), reached, eof)
         elif kind == 1:
-            reached = _closure(configs, seen, _moved(c, target, (arg, c[3]), c[4]), reached)
+            reached = _closure(configs, seen, _moved(c, target, (arg, c[3]), c[4]), reached, eof)
         elif kind == 3:
             acts = c[4]
             if c[3] is None:
                 for a in _ACT_LISTS[arg]:
                     acts = (a, acts)
-            reached = _closure(configs, seen, _moved(c, target, c[3], acts), reached)
+            reached = _closure(configs, seen, _moved(c, target, c[3], acts), reached, eof)
+        elif kind == 2 and eof and _EOF_CLASS in _SETS[arg]:
+            reached = _closure(configs, seen, _moved(c, target, c[3], c[4]), reached, eof)
     return reached
 
 
@@ -393,6 +414,7 @@ def _reach(configs, k):
     out = []
     seen = set()
     skip_alt = 0
+    eof = k == _EOF_CLASS
     for c in configs:
         reached = c[1] == skip_alt
         if reached and c[2]:
@@ -400,7 +422,7 @@ def _reach(configs, k):
         for i in range(_TRANS_START[c[0]], _TRANS_START[c[0] + 1]):
             kind, target, arg = _TRANS[i]
             if kind == 2 and k in _SETS[arg]:
-                if _closure(out, seen, _moved(c, target, c[3], c[4]), reached):
+                if _closure(out, seen, _moved(c, target, c[3], c[4]), reached, eof):
                     skip_alt = c[1]
     return out
 
@@ -448,5 +470,18 @@ def _match_atn(classes, i, n):
         if accepted is not None:
             end = i
             ttype, channel = accepted
+    else:
+        # The end-of-input step, as in _match.
+        if _EOF_CLASS >= 0:
+            for _ in range(len(_STATE_FLAGS) + 1):
+                reach = _reach(configs, _EOF_CLASS)
+                if not reach:
+                    break
+                configs = reach
+                accepted = _accept(configs)
+                if accepted is not None:
+                    end = i
+                    ttype, channel = accepted
+                    break
     return end, ttype, channel, i
 `

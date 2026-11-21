@@ -3,6 +3,12 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
+## Unreleased
+
+- **Added:** `EOF` in lexer rules (`('\n' | EOF)`), which matches the end of
+  the input without consuming it, as in ANTLR's lexer, in the Go and Python
+  lexers. galop reported it as error 56.
+
 ## 0.7.0
 
 - **Added:** a Python target, `-Dlanguage=Python3`, which writes lexers so

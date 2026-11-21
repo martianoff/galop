@@ -78,7 +78,8 @@ struct Model(
     // epsilonOnlyTransitions); a state with no transitions is not one.
     EpsilonOnly Array[bool],
     // Classes partitions the code points 0..MaxCodePoint: every consuming
-    // transition matches all of a class or none of it.
+    // transition matches all of a class or none of it. When a rule matches EOF,
+    // one more class, the last, holds EOF alone (see EOFClass).
     Classes Array[atn.IntervalSet],
     // Actions are the distinct lexer actions, by id.
     Actions Array[Action],
@@ -93,10 +94,13 @@ func NewModel(a atn.ATN, channels Array[string]) Either[Array[string], Model] = 
 }
 
 func newModel(a atn.ATN, start int, channels Array[string]) Either[Array[string], Model] {
-    val classes = Partition(a.States.FlatMap((st) => st.Out.Collect({
+    val sets = a.States.FlatMap((st) => st.Out.Collect({
         case atn.Atom(_, label) => atn.SetOf(label)
         case atn.SetMatch(_, set) => set
-    })))
+    }))
+    val classes = Partition(sets).AppendAll(
+        if (sets.Exists(_.Contains(atn.TokenEOF))) ArrayOf(atn.SetOf(atn.TokenEOF)) else EmptyArray[atn.IntervalSet](),
+    )
     val resolve = (c g4.LexerCommand) Either[string, Action] => resolveCommand(c, a.Vocab, channels)
     val resolved = a.States.FlatMap((st) => st.Out.Collect({ case atn.LexerActions(_, cmds) => cmds }))
         .FlatMap((cmds) => cmds.Map(resolve))
@@ -207,11 +211,18 @@ func Partition(sets Array[atn.IntervalSet]) Array[atn.IntervalSet] {
 // ClassRange is a run of code points Lo..Hi that all belong to class Class.
 struct ClassRange(Lo int, Hi int, Class int)
 
-// ClassRanges lists the classes as ascending, disjoint runs covering every code point.
+// ClassRanges lists the classes as ascending, disjoint runs covering every code
+// point (the EOF class, which holds no code point, is not one of them).
 func (m Model) ClassRanges() Array[ClassRange] =
     m.Classes.ZipWithIndex()
         .FlatMap((ci) => ci.V1.Ranges.Map((r) => ClassRange(r.Lo, r.Hi, ci.V2)))
+        .Filter(_.Lo >= 0)
         .SortWith((a, b) => a.Lo < b.Lo)
 
 // TokenType is the token type of the rule that owns stop state s.
 func (m Model) TokenType(s int) int = m.ATN.RuleTokenType.Get(m.ATN.State(s).Rule).GetOrElse(TypeInvalid)
+
+// EOFClass is the input class of the end of the input, -1 when no rule
+// matches EOF. ANTLR's lexer tries EOF once the input runs out (see MatchDFA).
+func (m Model) EOFClass() int =
+    m.Classes.LastOption().Filter(_.Contains(atn.TokenEOF)).Map((_) => m.Classes.Size() - 1).GetOrElse(-1)
