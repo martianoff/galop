@@ -3,7 +3,7 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
-## Unreleased
+## 0.7.0
 
 - **Added:** a Python target, `-Dlanguage=Python3`, which writes lexers so
   far: `<grammar>GalopLexer.py` subclasses the ANTLR Python runtime's `Lexer`
