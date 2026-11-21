@@ -106,3 +106,79 @@ def py_lexer_test(name, grammar, grammar_name, sample_flags = None, inputs = Non
             "@rules_python//python/runfiles",
         ],
     )
+
+def py_parser_test(name, grammar, grammar_name, start, sample_flags, imports = []):
+    """Generates ANTLR's Python parser and galop's native one and compares them.
+
+    It generates ANTLR 4.13.1's Python lexer and parser, galop's native lexer
+    and parser, and sentences from galop-sample, and runs parser_test.py over
+    them as `<name>_test`: where ANTLR parses an input without a syntax error,
+    galop must build the same tree; where ANTLR reports one, galop must raise
+    ParseError.
+
+    Args:
+      name: the test's name, also the prefix of the generated targets.
+      grammar: the combined grammar's label.
+      grammar_name: the name the grammar declares (`grammar Expr;`).
+      start: the entry rule the sentences start from.
+      sample_flags: galop-sample's flags (count, seed, nesting, length).
+      imports: the grammars the grammar imports, next to it.
+    """
+    base = grammar_name.lower()
+
+    native.genrule(
+        name = name + "_antlr_py",
+        srcs = [grammar] + imports,
+        outs = [name + "/" + grammar_name + f + ".py" for f in ["Lexer", "Parser"]],
+        cmd = """
+            set -e
+            out=$(RULEDIR)/{name}_antlr_out
+            "$(JAVA)" -jar $(location @antlr4_tool//jar) -Dlanguage=Python3 -no-listener \
+                -Xexact-output-dir -o "$$out" $(location {grammar})
+            cp "$$out"/{g}Lexer.py "$$out"/{g}Parser.py $(RULEDIR)/{name}/
+            rm -rf "$$out"
+        """.format(name = name, grammar = grammar, g = grammar_name),
+        toolchains = ["@bazel_tools//tools/jdk:current_host_java_runtime"],
+        tools = ["@antlr4_tool//jar"],
+    )
+
+    native.genrule(
+        name = name + "_native_py",
+        srcs = ["//cmd/galop", grammar] + imports,
+        outs = [name + "/" + base + f + ".py" for f in ["_lexer", "_parser"]],
+        cmd = "$(location //cmd/galop) -Dlanguage=Python3 -Dflavor=native -Xexact-output-dir -o $(RULEDIR)/{name} $(location {grammar})".format(
+            name = name,
+            grammar = grammar,
+        ),
+    )
+
+    native.genrule(
+        name = name + "_samples",
+        srcs = ["//cmd/galop-sample", grammar] + imports,
+        outs = [name + "_samples.txt"],
+        cmd = "$(location //cmd/galop-sample) {flags} -start {start} -o $@ $(location {grammar})".format(
+            flags = sample_flags,
+            start = start,
+            grammar = grammar,
+        ),
+    )
+
+    py_library(
+        name = name + "_parsers",
+        srcs = [":" + name + "_antlr_py", ":" + name + "_native_py"],
+        imports = [name],
+    )
+
+    py_test(
+        name = name + "_test",
+        size = "small",
+        srcs = ["parser_test.py"],
+        main = "parser_test.py",
+        args = [grammar_name, base, start, "$(rlocationpath :" + name + "_samples)"],
+        data = [":" + name + "_samples"],
+        deps = [
+            ":" + name + "_parsers",
+            requirement("antlr4-python3-runtime"),
+            "@rules_python//python/runfiles",
+        ],
+    )

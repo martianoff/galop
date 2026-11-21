@@ -2,7 +2,11 @@ load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
 
 gala_library(
     name = "python",
-    srcs = ["target.gala"],
+    srcs = [
+        "native_runtime.gala",
+        "parser_emit.gala",
+        "target.gala",
+    ],
     importpath = "github.com/martianoff/galop/python",
     visibility = ["//visibility:public"],
     deps = [
@@ -28,7 +32,11 @@ gala_test(
     name = "python_test",
     srcs = ["target_test.gala"],
     importpath = "github.com/martianoff/galop/python",
-    lib_srcs = ["target.gala"],
+    lib_srcs = [
+        "native_runtime.gala",
+        "parser_emit.gala",
+        "target.gala",
+    ],
     pkg = "python",
     deps = [
         "//analysis",

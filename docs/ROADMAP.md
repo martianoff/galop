@@ -221,7 +221,7 @@ flowchart LR
 1. **Native lexer** (`-Dflavor=native`, done): the token list as parallel arrays, the
    off-channel tokens and token recognition errors, as the Go native lexer has them.
 2. **Parser**: the native tree, rule functions with the decisions the analysis
-   settles statically, and ANTLR's prediction (SLL, then LL from the start on a
+   settles statically (done: grammars that need nothing else), and ANTLR's prediction (SLL, then LL from the start on a
    failure) over tables in the generated file for the rest. Valid input gives
    ANTLR's tree.
 3. **First syntax error**: ANTLR's message, line and column for invalid input.

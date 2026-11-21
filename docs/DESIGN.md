@@ -1081,6 +1081,39 @@ same differential test checks it on every input against ANTLR's tokens,
 split into default-channel and hidden ones; on the GALA corpus it lexes in
 about a sixth of ANTLR's time.
 
+### The native Python parser
+
+For a combined grammar the native flavor also writes `<base>_parser.py`
+(`python/parser_emit.gala`). It is built in the steps of the
+[roadmap](ROADMAP.md#the-python-parser); so far it parses grammars whose every
+decision the analysis settles ahead of time. A grammar with a decision left to
+runtime prediction, a left-recursive rule, an action or a predicate gets a
+module that raises `NotImplementedError`, with the reasons, when imported, so
+that its lexer module is still written.
+
+- `parse_<rule>(tokens)` takes the lexer's `Tokens` (or a string, which it
+  lexes) and returns the rule's `Node`. The tree keeps its nodes in parallel
+  lists (rule, labeled alternative, first and last token, children, label);
+  a child is a node index, or a token as `-1 - index`. `Node` and `Terminal`
+  are handles on it, with `children`, `get_text()` (ANTLR's `getText`, EOF
+  as `<EOF>`) and `to_string_tree()` (ANTLR's `toStringTree`).
+- Each rule is a method that appends its children and finishes its node; each
+  decision is a method that reads the lookahead the analysis computed:
+  comparisons and `frozenset` tests on the next tokens, or a lookahead
+  automaton as dicts. Labels are recorded as in the Go native tree: a rule
+  label's number on the child, a token label as (node, token, number).
+- A syntax error raises `ParseError` at the token where the parse stopped,
+  with a message in ANTLR's words (`mismatched input`, `no viable
+  alternative at input`) that is not yet ANTLR's own error, which may be
+  elsewhere; step 3 makes it ANTLR's.
+
+`//differential/python` runs ANTLR's Python parser (LL prediction, default
+error strategy) and the native parser on galop-sample sentences, mutants of
+them and pairs of them joined, for the test grammars the native parser
+handles (Expr, Labels, Lines, Recovery, Text, Errors): where ANTLR reports no
+syntax error the trees must be equal, and where it reports one the native
+parser must raise `ParseError`.
+
 ## Code generation (`codegen`, `golang`)
 
 `codegen.Target` (in `codegen/target.gala`) is the extension point for languages:

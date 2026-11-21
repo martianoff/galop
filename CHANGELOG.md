@@ -5,6 +5,12 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Added:** the native Python parser, for grammars whose every decision
+  galop settles ahead of time (no runtime prediction, no left recursion):
+  `-Dflavor=native` writes `<grammar>_parser.py` next to the lexer, whose
+  `parse_<rule>(tokens)` builds ANTLR's tree with no runtime. Syntax errors
+  raise `ParseError`, not yet with ANTLR's message. Other grammars get a
+  parser module that raises `NotImplementedError`, saying why, when imported.
 - **Added:** the Python target's `native` flavor lexer (`-Dflavor=native`):
   `<grammar>_lexer.py`, a module with no dependency whose `lex(src)` returns
   ANTLR's tokens as arrays, with off-channel tokens and token recognition
