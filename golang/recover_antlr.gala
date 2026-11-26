@@ -63,6 +63,7 @@ func (p *PARSER) recoverParse(rule int) (antlr.ParserRuleContext, int) {
 	p.ll, p.group, p.peek = true, false, 0
 	r := &PFXRecovery{e: PFXEmu{p: p}, lastIndex: -1}
 	r.parse(rule)
+	p.flushLexErrors(r.read())
 	p.input.Seek(p.toks[p.pos].GetTokenIndex())
 	p.SetParserRuleContext(nil)
 	p.SetState(-1)
@@ -276,6 +277,8 @@ func (r *PFXRecovery) notify(err *PFXEmuError, exc antlr.RecognitionException) {
 	p.syntaxErrors++
 	p.expected = p.expectedSet(r.e.expected(r.state).types())
 	tok := p.toks[err.at]
+	// The token recognition errors ANTLR's parse has lexed come first.
+	p.flushLexErrors(r.read())
 	p.GetErrorListenerDispatch().SyntaxError(p, tok, tok.GetLine(), tok.GetColumn(), err.msg, exc)
 }
 

@@ -184,3 +184,68 @@ func TestTokenTypeOutsideTheVocabulary(t *testing.T) {
 		}
 	}
 }
+
+// reports records every error an error listener gets, lexer's and parser's, in
+// order.
+type reports struct {
+	antlr.DefaultErrorListener
+	all []string
+}
+
+func (r *reports) SyntaxError(_ antlr.Recognizer, _ any, line, column int, msg string, _ antlr.RecognitionException) {
+	r.all = append(r.all, fmt.Sprintf("%d:%d %s", line, column, msg))
+}
+
+// junk is text the lexer has no token for.
+var junk = []string{"@", "$", "?", "`", `"open`}
+
+// TestLexerErrorsWhereANTLRReportsThem checks when the antlr flavor reports
+// token recognition errors. ANTLR's token stream lexes as its parser reads, so
+// a lexer error reaches the listeners when the parse first reads past it,
+// among the syntax errors, and never past where the parse stops (snippet does
+// not end with EOF); the antlr flavor's parser reads every token first and
+// holds those errors back until then. One listener on the lexer and the parser
+// must see the same calls, in the same order, from both.
+func TestLexerErrorsWhereANTLRReportsThem(t *testing.T) {
+	r := rand.New(rand.NewSource(2))
+	lexical := 0
+	for i := 0; i < 1500; i++ {
+		src := mutate(r, programs[r.Intn(len(programs))])
+		for k := r.Intn(3); k >= 0; k-- {
+			at := r.Intn(len(src) + 1)
+			src = src[:at] + junk[r.Intn(len(junk))] + src[at:]
+		}
+		for _, entry := range []string{"prog", "snippet"} {
+			want, got := &reports{}, &reports{}
+			lexer := ea.NewErrorsLexer(antlr.NewInputStream(src))
+			lexer.RemoveErrorListeners()
+			lexer.AddErrorListener(want)
+			p := ea.NewErrorsParser(antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel))
+			p.RemoveErrorListeners()
+			p.AddErrorListener(want)
+			p.GetInterpreter().SetPredictionMode(antlr.PredictionModeLL)
+			glexer := ea.NewErrorsGalopLexer(antlr.NewInputStream(src))
+			glexer.RemoveErrorListeners()
+			glexer.AddErrorListener(got)
+			gp := ea.NewErrorsGalopParser(antlr.NewCommonTokenStream(glexer, antlr.TokenDefaultChannel))
+			gp.RemoveErrorListeners()
+			gp.AddErrorListener(got)
+			if entry == "prog" {
+				p.Prog()
+				gp.Prog()
+			} else {
+				p.Snippet()
+				gp.Snippet()
+			}
+			if fmt.Sprint(got.all) != fmt.Sprint(want.all) {
+				t.Errorf("mutant %d as %s:\n galop %q\n ANTLR %q\n%s", i, entry, got.all, want.all, src)
+			}
+			if strings.Contains(fmt.Sprint(want.all), "token recognition error") {
+				lexical++
+			}
+		}
+	}
+	if lexical < 1000 {
+		t.Errorf("only %d parses report a token recognition error, want at least 1000", lexical)
+	}
+}

@@ -955,6 +955,22 @@ and position, and recovery skips the same characters.
 
 A standalone token source is not an option: `antlr.TokenSource` has an unexported
 method, so only a type embedding an antlr type can implement it.
+
+ANTLR's token stream lexes as its parser reads, so a token recognition error
+reaches the error listeners when the parse first reads past it, and not at all
+past where the parse stops; the antlr flavor's parser reads every token before
+it parses. Under a `CommonTokenStream`, the parser asks galop's lexer to hand
+it each error's report instead (`galopDeferErrors`) and notes the first
+on-channel token lexed after it, as the native lexer's `ErrorAt` does. It runs
+each report as the native flavor places lexical errors (see
+[Lexical errors among syntax errors](#recovering-from-syntax-errors-as-antlr-does)):
+before the first syntax error reported once the parse has read that token,
+and at the end of a recovering parse up to how far it read. A parse without
+syntax errors reports them all if they come before the token after it, which
+every parse reads, and otherwise runs the recovering replay for how far
+ANTLR's parse read. `Parse<Rule>` reports them all first. Another token source
+(GALA's line-break rule wraps the lexer) reports its errors as it lexes, while
+the parser reads the tokens.
 As in ANTLR's lexer, the line and column live in `Interpreter`, a
 `*antlr.LexerATNSimulator`; callers may set its `Line` and `CharPositionInLine`
 before the first token (GALA does for `ParseExpressionAt`). That simulator only

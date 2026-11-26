@@ -5,6 +5,12 @@ lists every merged pull request.
 
 ## Unreleased
 
+- **Fixed:** the Go `antlr` flavor reported every token recognition error
+  before parsing, because its parser reads all the tokens first. ANTLR's
+  token stream lexes as its parser reads, so it reports a lexer error when
+  the parse first reads past it, among the syntax errors, and none past
+  where the parse stops. With galop's lexer under a `CommonTokenStream`, the
+  parser now holds those errors back and reports them when ANTLR does.
 - **Added:** the native Python parser's `ParseError` is ANTLR's first syntax
   error: the line, column and message ANTLR's Python parser reports first for
   the same tokens (`mismatched input`, `extraneous input`, `missing`, `no

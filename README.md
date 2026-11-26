@@ -247,7 +247,9 @@ constructors. `NewExprGalopParser` embeds ANTLR's `ExprParser`, so error
 listeners and the rest of ANTLR's parser API work as before; its rule methods
 return ANTLR's contexts and, on input with syntax errors, report every error
 ANTLR reports to the error listeners and return the tree ANTLR's error
-recovery builds:
+recovery builds. Token recognition errors reach the lexer's listeners where
+ANTLR's would, among the syntax errors, though the parser reads every token
+before it parses:
 
 ```go
 lexer := parser.NewExprGalopLexer(antlr.NewInputStream(src)) // was NewExprLexer
