@@ -3,7 +3,7 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
-## Unreleased
+## 0.8.0
 
 - **Added:** the native Python parser: `-Dflavor=native` writes
   `<grammar>_parser.py` next to the lexer, whose `parse_<rule>(tokens)` builds
