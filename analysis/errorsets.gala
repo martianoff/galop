@@ -43,3 +43,105 @@ func DecisionLookahead(a atn.ATN, an Analysis) Array[Array[atn.IntervalSet]] {
 func GeneratesSwitch(looks Array[atn.IntervalSet]) bool =
     looks.ForAll(_.NonEmpty()) &&
         looks.FoldLeft(Tuple(atn.EmptySet(), true), (acc, l) => (acc.V1.Union(l), acc.V2 && acc.V1.Intersect(l).IsEmpty())).V2
+
+// Sync kinds: where ANTLR's generated code calls its error strategy's sync at
+// a state that is not a decision, and as which kind of state.
+val SyncNone = 0
+val SyncBlockStart = 1
+val SyncLoopBack = 2
+
+// ErrorModel is how ANTLR's code generator makes each decision and where its
+// code syncs, with the token sets ANTLR's default error strategy reads: what
+// a generated parser needs to report syntax errors as ANTLR does. Token sets
+// are indexes into Sets.
+struct ErrorModel(
+    Sets Array[atn.IntervalSet],
+    // By state: the set of ATN.nextTokens, whether its path can reach the
+    // rule's end, and the sync kind there.
+    StateNext Array[int],
+    StateReachesEnd Array[bool],
+    StateSync Array[int],
+    // By decision: for a set decision, the state its token leads to (-1 for
+    // others); whether the generated code makes it an LL(1) switch; for a
+    // loop, the alternative that runs its body again (0 for others); and
+    // each alternative's lookahead set.
+    DecisionSetAfter Array[int],
+    DecisionLL1 Array[bool],
+    DecisionLoopAlt Array[int],
+    AltLook Array[Array[int]],
+)
+
+// ErrorTables is the ErrorModel of a's parser, whose rules are rules.
+func ErrorTables(a atn.ATN, an Analysis, rules Array[atn.RuleIR]) ErrorModel {
+    val next = NextTokens(a, an)
+    val looks = DecisionLookahead(a, an)
+    val byDecision = DecisionRules(rules)
+    val loopAlts = HashMapFromSlice(rules.FlatMap((r) => r.Alts.FlatMap((alt) => loopsIn(alt.Steps))).ToGoSlice())
+    // ANTLR's code generator never makes a non-greedy decision a switch.
+    // Nor one whose lookahead meets a precedence predicate.
+    val leftRecursive = a.Decisions.Exists(_.Precedence)
+    val ll1 = a.Decisions.Map((d) => d.Greedy && GeneratesSwitch(looks.Get(d.Id)) &&
+        !(leftRecursive && a.State(d.State).Out.Exists((t) => HitsPrecedencePredicate(a, t.Target()))))
+    val sets = next.Map(_.Tokens).AppendAll(looks.FlatMap((l) => l)).Distinct()
+    // The first state of every `+` loop's body: ANTLR syncs there before the
+    // first iteration.
+    val plusStarts = HashSetFromSlice(a.States.Filter((s) => s.Kind == atn.PlusLoopBackState())
+        .FlatMap((s) => s.Out.Map(_.Target()).Filter((t) => a.State(t).Kind != atn.LoopEndState())).ToGoSlice())
+    ErrorModel(
+        Sets = sets,
+        StateNext = next.Map((l) => sets.IndexOf(l.Tokens)),
+        StateReachesEnd = next.Map(_.ReachesEnd),
+        StateSync = a.States.Map((s) => s.Kind match {
+            case atn.StarLoopBackState() => SyncLoopBack
+            case _ if plusStarts.Contains(s.Id) => SyncBlockStart
+            case _ => SyncNone
+        }),
+        DecisionSetAfter = a.Decisions.Map((d) => if (IsSetDecision(byDecision.Get(d.Id))) setAfter(a, d.State) else -1),
+        DecisionLL1 = ll1,
+        DecisionLoopAlt = a.Decisions.Map((d) => loopAlts.Get(d.Id).GetOrElse(0)),
+        AltLook = looks.Map((l) => l.Map((set) => sets.IndexOf(set))),
+    )
+}
+
+// DecisionKindCode numbers a decision's kind in generated error tables:
+// 0 an alternative block, 1 an optional block, 2 a `*` loop's entry, 3 a `+`
+// loop's back.
+func DecisionKindCode(k atn.DecisionKind) int = k match {
+    case atn.AltBlock() => 0
+    case atn.OptionalBlock() => 1
+    case atn.StarEntry() => 2
+    case atn.PlusBack() => 3
+}
+
+// DecisionRules maps each rule's top-level decision to the rule.
+func DecisionRules(rules Array[atn.RuleIR]) HashMap[int, atn.RuleIR] =
+    HashMapFromSlice(rules.Collect({ case r if r.Decision.IsDefined() => (r.Decision.Get(), r) }).ToGoSlice())
+
+// IsSetDecision reports whether ruleOf, the rule whose top-level decision a
+// decision is (if any), has alternatives that ANTLR's tool turns into one set
+// match (its BlockSetTransformer): more than one alternative, each a single
+// unlabeled token, the first without an alternative label.
+func IsSetDecision(ruleOf Option[atn.RuleIR]) bool = ruleOf match {
+    case Some(r) => r.Alts.Size() > 1 && r.Alts.Head().Label.IsEmpty() && r.Alts.ForAll((a) => a.Steps.Size() == 1 && (a.Steps.Head() match {
+        case atn.MatchToken(_, None()) => true
+        case _ => false
+    }))
+    case None() => false
+}
+
+// setAfter is, for a set decision at state s, the state its tokens lead to:
+// past the epsilon steps into the first alternative and its one token.
+func setAfter(a atn.ATN, s int) int = tokenTarget(a, a.State(s).Out.Head().Target())
+
+func tokenTarget(a atn.ATN, s int) int = a.State(s).Out.Head() match {
+    case atn.Epsilon(target) => tokenTarget(a, target)
+    case t => t.Target()
+}
+
+// loopsIn lists each `*` or `+` loop in steps as its decision and the
+// alternative that runs the body again.
+func loopsIn(steps Array[atn.Step]) Array[Tuple[int, int]] = steps.FlatMap((s) => s match {
+    case atn.Loop(_, d, cont, body) => ArrayOf((d, cont)).AppendAll(loopsIn(body))
+    case atn.Choose(_, alts, _) => alts.FlatMap((a) => loopsIn(a))
+    case _ => EmptyArray[Tuple[int, int]]()
+})

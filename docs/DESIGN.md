@@ -1085,8 +1085,8 @@ about a sixth of ANTLR's time.
 
 For a combined grammar the native flavor also writes `<base>_parser.py`
 (`python/parser_emit.gala`). It is built in the steps of the
-[roadmap](ROADMAP.md#the-python-parser); its syntax errors are not ANTLR's yet.
-A grammar with an action or a predicate (code in another language) gets a
+[roadmap](ROADMAP.md#the-python-parser); it reports ANTLR's first syntax
+error, and does not recover from errors yet. A grammar with an action or a predicate (code in another language) gets a
 module that raises `NotImplementedError`, with the reasons, when imported, so
 that its lexer module is still written.
 
@@ -1122,10 +1122,31 @@ that its lexer module is still written.
   a rule that does not end with EOF can stop early, as ANTLR's does), or
   fails where ANTLR's does. Every parser module carries the predictor for
   this, and so keeps its call stack.
-- A syntax error raises `ParseError` at the token where the parse stopped,
-  with a message in ANTLR's words (`mismatched input`, `no viable
-  alternative at input`) that is not yet ANTLR's own error, which may be
-  elsewhere; step 3 makes it ANTLR's.
+- A syntax error raises `ParseError` with the first error ANTLR's Python
+  parser reports: its line, column and message (`errors_runtime.gala`).
+  ANTLR's first error depends on where its generated code calls the error
+  strategy and on how its prediction fails, so when the parse stops, the
+  module replays ANTLR's generated parser from the first token over its ATN
+  tables, as the Go target's error emulator does: LL(1) switches where
+  ANTLR's code generator makes them, adaptive prediction (the module's
+  predictor) elsewhere, sync where the generated code calls it, and the
+  default strategy's single-token deletion and insertion. The tables of how
+  ANTLR decides and syncs are shared with the Go target
+  (`analysis.ErrorTables`). The Python runtime raises or reports every error
+  at once, where the Go runtime leaves some pending until its next error
+  check, so the replay stops at the first one it meets. A valid parse never
+  runs it.
+- **Difference:** ANTLR's Python runtime (4.13.1) carries a change from a
+  parse with a syntax error into later parses. Its sync at a loop back adds
+  the error-recovery set to `getExpectedTokens`' result, which for a state
+  whose next tokens do not reach the rule's end is the ATN's cached
+  `nextTokens` set itself (`IntervalSet.addSet` changes it in place and
+  ignores `readonly`; Java's `or` returns a new set). Later syncs at that
+  state then let more tokens pass, and later messages list them. It cannot
+  change a parse's first error, only those of later parses in the same
+  process; galop reports what ANTLR reports without it, as a fresh process
+  does. The differential test clears that cache after each input ANTLR
+  reports an error on.
 
 `//differential/python` runs ANTLR's Python parser (LL prediction, default
 error strategy) and the native parser on galop-sample sentences, mutants of
@@ -1133,7 +1154,8 @@ them and pairs of them joined, for every grammar the Go target's differential
 tests
 has (the test grammars, the corpus grammars, and `gala.g4` on the GALA
 corpus too): where ANTLR reports no syntax error the trees must be equal, and
-where it reports one the native parser must raise `ParseError`.
+where it reports one the native parser must raise `ParseError` with ANTLR's
+first error, at the same line and column.
 
 ## Code generation (`codegen`, `golang`)
 

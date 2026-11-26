@@ -404,7 +404,7 @@ class _Predictor:
                 s.edges[t] = nxt
             if nxt is _ERROR:
                 alt = _finished_entry_rule(s.configs.items)
-                return alt if alt else self._dead_end(d)
+                return alt if alt else self._dead_end(d, i)
             if nxt.full:
                 return self._predict_full(pr)
             if nxt.alt:
@@ -423,7 +423,7 @@ class _Predictor:
             reach = _reach(pr, prev, t, True)
             if reach is None:
                 alt = _finished_entry_rule(prev.items)
-                return alt if alt else self._dead_end(pr.decision)
+                return alt if alt else self._dead_end(pr.decision, i)
             alt = _unique_alt(reach.items) or _single_viable(reach.items)
             if alt:
                 return alt

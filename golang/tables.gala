@@ -198,79 +198,20 @@ func bracketTables(e env, transitions int, starts Array[int]) Array[string] {
     )
 }
 
-// decisionKindCode numbers a decision's kind for the error emulator's tables.
-func decisionKindCode(k atn.DecisionKind) int = k match {
-    case atn.AltBlock() => 0
-    case atn.OptionalBlock() => 1
-    case atn.StarEntry() => 2
-    case atn.PlusBack() => 3
-}
-
-// decisionRules maps each rule's top-level decision to the rule.
-func decisionRules(rules Array[atn.RuleIR]) HashMap[int, atn.RuleIR] =
-    HashMapFromSlice(rules.Collect({ case r if r.Decision.IsDefined() => (r.Decision.Get(), r) }).ToGoSlice())
-
-// isSetDecision reports whether ruleOf, the rule whose top-level decision a
-// decision is (if any), has alternatives that ANTLR's tool turns into one set
-// match (its BlockSetTransformer): more than one alternative, each a single
-// unlabeled token, the first without an alternative label.
-func isSetDecision(ruleOf Option[atn.RuleIR]) bool = ruleOf match {
-    case Some(r) => r.Alts.Size() > 1 && r.Alts.Head().Label.IsEmpty() && r.Alts.ForAll((a) => a.Steps.Size() == 1 && (a.Steps.Head() match {
-        case atn.MatchToken(_, None()) => true
-        case _ => false
-    }))
-    case None() => false
-}
-
-// setAfter is, for a set decision at state s, the state its tokens lead to:
-// past the epsilon steps into the first alternative and its one token.
-func setAfter(a atn.ATN, s int) int = tokenTarget(a, a.State(s).Out.Head().Target())
-
-func tokenTarget(a atn.ATN, s int) int = a.State(s).Out.Head() match {
-    case atn.Epsilon(target) => tokenTarget(a, target)
-    case t => t.Target()
-}
-
-// Sync kinds: where ANTLR's generated code calls its error strategy's Sync at
-// a state that is not a decision, and as which kind of state.
-val syncNone = 0
-val syncBlockStart = 1
-val syncLoopBack = 2
-
 // errorTables emits what the error emulator (errors_go.gala) needs beyond the
 // predictor's tables: decision kinds, how ANTLR's code generator makes each
 // decision, where it syncs, and the token sets ANTLR's error strategy reads.
 func errorTables(e env) string {
     val a = e.parser
-    val states = a.States
-    val next = analysis.NextTokens(a, e.analysis)
-    val looks = analysis.DecisionLookahead(a, e.analysis)
-    val byDecision = decisionRules(e.rules)
-    val loopAlts = HashMapFromSlice(e.rules.FlatMap((r) => r.Alts.FlatMap((alt) => loopsIn(alt.Steps))).ToGoSlice())
-    // ANTLR's code generator never makes a non-greedy decision a switch.
-    // Nor one whose lookahead meets a precedence predicate.
-    val leftRecursive = a.Decisions.Exists(_.Precedence)
-    val ll1 = a.Decisions.Map((d) => d.Greedy && analysis.GeneratesSwitch(looks.Get(d.Id)) &&
-        !(leftRecursive && a.State(d.State).Out.Exists((t) => analysis.HitsPrecedencePredicate(a, t.Target()))))
-    val sets = next.Map(_.Tokens).AppendAll(looks.FlatMap((l) => l)).Distinct()
-    val lookIds = looks.Map((l) => l.Map((set) => sets.IndexOf(set)))
-    // The first state of every `+` loop's body: ANTLR syncs there before the
-    // first iteration.
-    val plusStarts = HashSetFromSlice(a.States.Filter((s) => s.Kind == atn.PlusLoopBackState())
-        .FlatMap((s) => s.Out.Map(_.Target()).Filter((t) => a.State(t).Kind != atn.LoopEndState())).ToGoSlice())
-    val syncs = states.Map((s) => s.Kind match {
-        case atn.StarLoopBackState() => syncLoopBack
-        case _ if plusStarts.Contains(s.Id) => syncBlockStart
-        case _ => syncNone
-    })
+    val m = analysis.ErrorTables(a, e.analysis, e.rules)
     val x = e.pfx
     ArrayOf(
         "// How ANTLR's generated parser decides and syncs, and the token sets its",
         "// error strategy reads, for reporting syntax errors as ANTLR does.",
-        goSlice(s"${x}StateDecision", "int16", states.Map((s) => s"${s.Decision.GetOrElse(-1)}")),
-        goSlice(s"${x}StateSync", "uint8", syncs.Map((k) => s"$k")),
-        goSlice(s"${x}StateNext", "int32", next.Map((l) => s"${sets.IndexOf(l.Tokens)}")),
-        goSlice(s"${x}StateReachesEnd", "bool", next.Map((l) => s"${l.ReachesEnd}")),
+        goSlice(s"${x}StateDecision", "int16", a.States.Map((s) => s"${s.Decision.GetOrElse(-1)}")),
+        goSlice(s"${x}StateSync", "uint8", m.StateSync.Map((k) => s"$k")),
+        goSlice(s"${x}StateNext", "int32", m.StateNext.Map((n) => s"$n")),
+        goSlice(s"${x}StateReachesEnd", "bool", m.StateReachesEnd.Map((b) => s"$b")),
         goSlice(s"${x}RuleStartState", "int32", a.RuleStart.Map((n) => s"$n")),
         // The precedence each state's rule call passes (0 for other states).
         goSlice(s"${x}StateCallPrec", "int32", a.CallPrecedence.Map((n) => s"$n")),
@@ -283,14 +224,14 @@ func errorTables(e env) string {
         // Whether each rule ends by matching EOF; a parse of one that does not
         // runs in LL mode from its first pass (see llFirst).
         goSlice(s"${x}RuleEndsWithEOF", "bool", e.rules.Map((r) => s"${repair.EndsWithEOF(e.rules, r)}")),
-        goSlice(s"${x}DecisionKind", "uint8", a.Decisions.Map((d) => s"${decisionKindCode(d.Kind)}")),
-        goSlice(s"${x}DecisionSetAfter", "int32", a.Decisions.Map((d) => s"${if (isSetDecision(byDecision.Get(d.Id))) setAfter(a, d.State) else -1}")),
-        goSlice(s"${x}DecisionLL1", "bool", ll1.Map((b) => s"$b")),
-        goSlice(s"${x}DecisionLoopAlt", "uint8", a.Decisions.Map((d) => s"${loopAlts.Get(d.Id).GetOrElse(0)}")),
-        goSlice(s"${x}AltLookStart", "int32", codegen.Offsets(lookIds.Map(_.Size())).Map((n) => s"$n")),
-        goSlice(s"${x}AltLook", "int32", lookIds.FlatMap((l) => l).Map((n) => s"$n")),
+        goSlice(s"${x}DecisionKind", "uint8", a.Decisions.Map((d) => s"${analysis.DecisionKindCode(d.Kind)}")),
+        goSlice(s"${x}DecisionSetAfter", "int32", m.DecisionSetAfter.Map((n) => s"$n")),
+        goSlice(s"${x}DecisionLL1", "bool", m.DecisionLL1.Map((b) => s"$b")),
+        goSlice(s"${x}DecisionLoopAlt", "uint8", m.DecisionLoopAlt.Map((n) => s"$n")),
+        goSlice(s"${x}AltLookStart", "int32", codegen.Offsets(m.AltLook.Map(_.Size())).Map((n) => s"$n")),
+        goSlice(s"${x}AltLook", "int32", m.AltLook.FlatMap((l) => l).Map((n) => s"$n")),
         goSlice(s"${x}TokenDisplay", "string", ArrayTabulate(e.vocab.MaxType() + 1, (t) => strconv.Quote(if (t == 0) "<INVALID>" else e.vocab.Display(t)))),
-        goSets(s"${x}TokenSets", sets),
+        goSets(s"${x}TokenSets", m.Sets),
     ).MkString("\n") + "\n"
 }
 
@@ -301,11 +242,3 @@ func goSets(name string, sets Array[atn.IntervalSet]) string = sets match {
     case _ => s"var $name = [][]int32{\n" +
         sets.Map((set) => "\t{" + set.Ranges.Map((r) => s"${r.Lo}, ${r.Hi}").MkString(", ") + "},").MkString("\n") + "\n}"
 }
-
-// loopsIn lists each `*` or `+` loop in steps as its decision and the
-// alternative that runs the body again, which the error emulator reads.
-func loopsIn(steps Array[atn.Step]) Array[Tuple[int, int]] = steps.FlatMap((s) => s match {
-    case atn.Loop(_, d, cont, body) => ArrayOf((d, cont)).AppendAll(loopsIn(body))
-    case atn.Choose(_, alts, _) => alts.FlatMap((a) => loopsIn(a))
-    case _ => EmptyArray[Tuple[int, int]]()
-})

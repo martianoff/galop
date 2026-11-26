@@ -6,11 +6,19 @@ ANTLR's modules are <grammar name>Lexer and <grammar name>Parser; galop's are
 <native base>_lexer and <native base>_parser. The inputs are the galop-sample
 sentences in <samples>, mutants of them (tokens' text inserted, removed or
 swapped), the sentences joined in pairs and, with a manifest, every file it
-lists. For each input ANTLR's parser
-runs as it does by default (LL prediction, the default error strategy):
-where it reports no syntax error, galop's parse_<start rule> must give the
-same tree (ANTLR's toStringTree); where it reports one, galop's must raise
-ParseError (its message is not ANTLR's yet).
+lists. For each input ANTLR's parser runs as it does by default (LL
+prediction, the default error strategy): where it reports no syntax error,
+galop's parse_<start rule> must give the same tree (ANTLR's toStringTree);
+where it reports one, galop's must raise ParseError with ANTLR's first error:
+its line, column and message.
+
+ANTLR's Python runtime leaks one thing from a parse with a syntax error into
+later parses: a sync at a loop back adds its recovery set to the ATN's cached
+nextTokens set of that state (getExpectedTokens returns the cached set, and
+IntervalSet.addSet changes it in place), which changes later syncs and
+messages. galop reports what ANTLR reports without that leak, so the test
+clears the cache after each input ANTLR reports an error on (see the Python
+target's differences in galop's docs/DESIGN.md).
 """
 
 import importlib
@@ -24,10 +32,15 @@ from python.runfiles import runfiles
 
 
 class Counter(ErrorListener):
+    """Counts the parser's syntax errors and keeps the first."""
+
     def __init__(self):
         self.errors = 0
+        self.first = None
 
     def syntaxError(self, recognizer, symbol, line, column, msg, e):
+        if self.first is None:
+            self.first = (line, column, msg)
         self.errors += 1
 
 
@@ -112,6 +125,13 @@ def main(argv):
                 problems.append("%s %r:\n  ANTLR %s\n  galop %s" % (name, text[:80], want, got if error is None else error))
         elif error is None:
             problems.append("%s %r: ANTLR reports %d syntax errors, galop none:\n  galop %s" % (name, text[:80], counter.errors, got))
+        elif (error.line, error.column, error.msg) != counter.first:
+            problems.append("%s %r: different first errors:\n  ANTLR %d:%d %s\n  galop %d:%d %s"
+                            % ((name, text[:80]) + counter.first + (error.line, error.column, error.msg)))
+        if counter.errors:
+            # Undo the runtime's leak (see the module's docstring).
+            for st in parser.atn.states:
+                st.nextTokenWithinRule = None
     print("%d inputs (%d valid), %d problems; ANTLR %.2fs, galop %.2fs"
           % (len(inputs), valid, len(problems), times[0], times[1]))
     for p in problems[:10]:

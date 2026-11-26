@@ -1,0 +1,250 @@
+package python
+
+// errorsTemplate reports a failed parse's syntax error as ANTLR 4.13.1's
+// Python runtime does: its first error, at the same token, with the same
+// message.
+//
+// ANTLR's first error depends on where its generated code calls the default
+// error strategy and on how its prediction fails, not only on the token
+// where the input stops making sense. So after the native parse fails,
+// _Replay replays ANTLR's generated parser from the first token over the
+// module's ATN, up to the first error ANTLR reports, as the Go target's
+// error emulator does:
+//
+//   - each decision is made the way ANTLR's code generator makes it: an
+//     LL(1) switch where the alternatives' lookahead sets are disjoint (with
+//     ANTLR's "no viable alternative" for an alternative block none of whose
+//     alternatives takes the token), adaptive prediction otherwise, by the
+//     module's predictor, which is ANTLR's;
+//   - sync runs where the generated code calls it (choice blocks, loop
+//     entries, loop backs, a `+` loop's first iteration), with ANTLR's
+//     single-token deletion and its mismatch;
+//   - a token match recovers as ANTLR's recoverInline does (extraneous
+//     input, missing token, mismatched input);
+//   - a failed prediction is ANTLR's "no viable alternative", from the
+//     decision's first token to the token where prediction found no viable
+//     configuration;
+//   - a failed precedence predicate is ANTLR's failed-predicate error.
+//
+// Unlike the Go runtime, which leaves some errors pending until its next
+// error check, the Python runtime raises or reports every error at once, so
+// the first error the replay meets is the one ANTLR reports.
+val errorsTemplate = `
+class _Stop(Exception):
+    """The native parse stopped at a syntax error; _parse reports ANTLR's."""
+
+
+class _Report(Exception):
+    """The error ANTLR reports: its message, at token at."""
+
+    def __init__(self, at, msg):
+        super().__init__(msg)
+        self.at = at
+        self.msg = msg
+
+
+class _NoViable(Exception):
+    """A prediction found no viable alternative at token at."""
+
+    def __init__(self, at):
+        super().__init__()
+        self.at = at
+
+
+def _quote(s):
+    """ANTLR's escapeWSAndQuote."""
+    return "'" + s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t") + "'"
+
+
+def _set_str(types):
+    """A set of token types as ANTLR's IntervalSet.toString names them: one
+    name, or names in type order between braces."""
+    names = ["<EOF>" if t == EOF else _DISPLAY[t] for t in sorted(types)]
+    return names[0] if len(names) == 1 else "{" + ", ".join(names) + "}"
+
+
+class _Replay(_Predictor):
+    """A replay of ANTLR's generated parser over the tokens of a parse; see
+    errorsTemplate in galop's python/errors_runtime.gala. stack holds the
+    follow states of the rule calls being parsed, as the parser's does, and
+    precs the precedences they were called with."""
+
+    __slots__ = ("ts", "types", "pos", "stack", "precs")
+
+    def __init__(self, ts):
+        self.ts = ts
+        self.types = ts.types
+        self.pos = 0
+        self.stack = []
+        self.precs = []
+
+    def _dead_end(self, decision, at):
+        raise _NoViable(at)
+
+    def _la(self, i):
+        j = self.pos + i - 1
+        types = self.types
+        return types[j] if j < len(types) else types[-1]
+
+    def _prec(self):
+        return self.precs[-1] if self.precs else 0
+
+    def _consume(self):
+        if self.types[self.pos] != EOF:
+            self.pos += 1
+
+    def _expected(self, s):
+        """ANTLR's getExpectedTokens at state s: what can follow s, through
+        the rules being parsed while their ends can be reached, and EOF past
+        the outermost."""
+        x = set(_ESETS[_S_NEXT[s]])
+        reaches = _S_END[s]
+        for f in reversed(self.stack):
+            if not reaches:
+                break
+            x |= _ESETS[_S_NEXT[f]]
+            reaches = _S_END[f]
+        if reaches:
+            x.add(EOF)
+        return x
+
+    def _report(self, what, exp):
+        """ANTLR's "<what> input <token> expecting <set>" at the current token."""
+        return _Report(self.pos, "%s input %s expecting %s" % (what, _quote(self.ts.text(self.pos)), _set_str(exp)))
+
+    def _no_viable(self, start, at):
+        ts = self.ts
+        if self.types[start] == EOF:
+            text = "<EOF>"
+        else:
+            # The tokens' text with the off-channel tokens between them, as
+            # ANTLR's token stream gives it.
+            parts = []
+            for i in range(start, at + 1):
+                if i > start:
+                    parts.extend(ts.src[h.start:h.end] for h in ts.hidden_before(i))
+                if ts.types[i] == EOF:
+                    break
+                parts.append(ts.text(i))
+            text = "".join(parts)
+        return _Report(at, "no viable alternative at input " + _quote(text))
+
+    def _recover_inline(self, s, nxt):
+        """ANTLR's recoverInline at match state s, whose transition leads to
+        nxt: single-token deletion, then insertion, else a mismatch."""
+        exp = self._expected(s)
+        if self._la(2) in exp:
+            raise self._report("extraneous", exp)
+        if self.types[self.pos] in self._expected(nxt):
+            raise _Report(self.pos, "missing %s at %s" % (_set_str(exp), _quote(self.ts.text(self.pos))))
+        raise self._report("mismatched", exp)
+
+    def _sync(self, s, block_start):
+        """ANTLR's sync at s, a block start or (block_start false) a loop back."""
+        if _S_END[s] or self.types[self.pos] in _ESETS[_S_NEXT[s]]:
+            return
+        exp = self._expected(s)
+        if block_start and self._la(2) not in exp:
+            raise self._report("mismatched", exp)
+        raise self._report("extraneous", exp)
+
+    def _ll1_alt(self, d):
+        """The alternative of decision d whose lookahead has the current
+        token, or 0."""
+        t = self.types[self.pos]
+        for i, k in enumerate(_ALT_LOOK[d]):
+            if t in _ESETS[k]:
+                return i + 1
+        return 0
+
+    def _decide(self, d, s, from_back):
+        """Makes decision d at state s as ANTLR's generated code does;
+        from_back says the walk came from the loop back of a star loop, which
+        synced already."""
+        ll1 = _DEC_LL1[d]
+        # A token an alternative takes passes sync too.
+        if ll1:
+            alt = self._ll1_alt(d)
+            if alt:
+                return alt
+        kind = _DEC_KIND[d]
+        if kind == 3:
+            self._sync(s, False)
+        elif kind != 2 or not from_back:
+            self._sync(s, True)
+        pos = self.pos
+        if not ll1:
+            try:
+                return self._adaptive(d, self._prec())
+            except _NoViable as e:
+                raise self._no_viable(pos, e.at) from None
+        # An LL(1) choice fails; an optional block or a loop exits.
+        if kind == 0:
+            raise self._no_viable(pos, pos)
+        return len(_ALT_LOOK[d])
+
+    def run(self, s):
+        """Replays ANTLR from state s, a rule's start; raises the first error
+        ANTLR reports as a _Report, and returns if it reports none."""
+        types = self.types
+        stack = self.stack
+        # back says the walk just left a loop back, which synced already: a
+        # loop's next iteration does not sync at its start.
+        back = False
+        while True:
+            from_back = back
+            back = False
+            if _S_STOP[s]:
+                if not stack:
+                    return
+                s = stack.pop()
+                self.precs.pop()
+                continue
+            d = _S_DEC[s]
+            if d >= 0:
+                after = _DEC_SET_AFTER[d]
+                if after >= 0:
+                    # ANTLR matches the alternatives of a set decision as one set.
+                    if self._ll1_alt(d):
+                        self._consume()
+                    else:
+                        self._recover_inline(s, after)
+                    s = after
+                    continue
+                alt = self._decide(d, s, from_back)
+                back = _DEC_KIND[d] == 3 and alt == _DEC_LOOP_ALT[d]
+                s = _TRANS[s][alt - 1][1]
+                continue
+            sync = _S_SYNC[s]
+            if sync == 2:
+                self._sync(s, False)
+                back = True
+            elif sync == 1 and not from_back:
+                self._sync(s, True)
+            kind, target, arg = _TRANS[s][0]
+            if kind == 1:
+                stack.append(arg)
+                self.precs.append(_S_CALL_PREC[s])
+            elif kind == 4:
+                # The generated code checks precpred and fails the rule.
+                if arg < self._prec():
+                    raise _Report(self.pos, "rule %s failed predicate: {self.precpred(self._ctx, %d)}?" % (RULE_NAMES[_S_RULE[s]], arg))
+            elif kind == 2 or kind == 3:
+                t = types[self.pos]
+                if t == arg if kind == 2 else t in _TSETS[arg]:
+                    self._consume()
+                else:
+                    self._recover_inline(s, target)
+            s = target
+
+
+def _syntax_error(tokens, rule):
+    """The ParseError of ANTLR's first syntax error parsing tokens as rule."""
+    try:
+        _Replay(tokens).run(_RULE_START[rule])
+    except _Report as e:
+        return ParseError(tokens.lines[e.at], tokens.columns[e.at], e.msg)
+    # The replay found no error where the native parse found one: a bug.
+    return ParseError(1, 0, "galop: no syntax error found where the parse failed")
+
+`
