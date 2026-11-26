@@ -27,9 +27,9 @@ else:
 // treeTemplate is the parse tree: nodes in parallel lists, and handles on them.
 val treeTemplate = `
 class ParseError(Exception):
-    """A syntax error at a line (from 1) and column (in code points, from 0).
-    So far its message is galop's, at the token where the parse stopped, not
-    yet the one ANTLR reports."""
+    """A syntax error at a line (from 1) and column (in code points, from 0):
+    the first one ANTLR's parser reports for the same tokens, with its
+    message, msg."""
 
     def __init__(self, line, column, msg):
         super().__init__("line %d:%d %s" % (line, column, msg))
@@ -203,22 +203,18 @@ class _Parser(_Predictor):
 
     def _match(self, ttype):
         if self.types[self.pos] != ttype:
-            self._fail("mismatched input ")
+            raise _Stop
         return self._consume()
 
     def _match_in(self, types):
         if self.types[self.pos] not in types:
-            self._fail("mismatched input ")
+            raise _Stop
         return self._consume()
 
-    def _dead_end(self, decision):
-        self._fail("no viable alternative at input ")
-
-    def _fail(self, msg):
-        ts = self.ts
-        i = self.pos
-        text = "<EOF>" if ts.types[i] == EOF else "'" + ts.text(i) + "'"
-        raise ParseError(ts.lines[i], ts.columns[i], msg + text)
+    def _dead_end(self, decision, at):
+        """No alternative of decision takes the input (prediction failed at
+        token at): the parse stops, and _parse reports ANTLR's error."""
+        raise _Stop
 
     def _automaton(self, decision, states, prec=0):
         """Runs a lookahead automaton: each state maps a token type to the
@@ -264,6 +260,9 @@ def _parse(tokens, rule):
     if not tokens.types or tokens.types[-1] != EOF:
         raise ParseError(1, 0, "the tokens do not end with EOF")
     p = _Parser(tokens)
-    root = _RULE_FUNCS[rule](p)
+    try:
+        root = _RULE_FUNCS[rule](p)
+    except _Stop:
+        raise _syntax_error(tokens, rule) from None
     return Node(p._tree(), root)
 `

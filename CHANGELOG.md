@@ -3,6 +3,18 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
+## Unreleased
+
+- **Added:** the native Python parser's `ParseError` is ANTLR's first syntax
+  error: the line, column and message ANTLR's Python parser reports first for
+  the same tokens (`mismatched input`, `extraneous input`, `missing`, `no
+  viable alternative at input`, a failed precedence predicate). After a
+  failed parse it replays ANTLR's generated parser over the tokens, so a
+  valid parse costs nothing more. One documented difference: ANTLR's Python
+  runtime carries a change from a failed parse's loop-back sync into later
+  parses, which galop does not (see the
+  [design](docs/DESIGN.md#the-python-parser)).
+
 ## 0.8.0
 
 - **Added:** the native Python parser: `-Dflavor=native` writes

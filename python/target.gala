@@ -95,6 +95,7 @@ func nativeParserFile(in codegen.Input, opts codegen.Options, lexerModule string
                     parser = in.Compiled.Parser.Get(),
                     rules = in.Compiled.Rules,
                     plans = an.Plans,
+                    analysis = an,
                 ))
                 case problems => unsupportedModule(in.Grammar.Name, problems)
             }

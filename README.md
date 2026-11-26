@@ -191,9 +191,11 @@ galop options:
   ANTLR's time, and for a combined grammar `<grammar>_parser.py`, whose
   `parse_<rule>(tokens)` builds ANTLR's tree with no runtime, left-recursive
   rules and ANTLR's runtime prediction included, several times faster than
-  ANTLR's Python parser. It does not read grammars with actions or
-  predicates, and its syntax errors are not yet ANTLR's messages (see the
-  [roadmap](docs/ROADMAP.md#the-python-parser)). Python 3.10 or later.
+  ANTLR's Python parser. A syntax error raises `ParseError` with the first
+  error ANTLR reports: same line, column and message. It does not read
+  grammars with actions or predicates, and does not recover from errors yet
+  (see the [roadmap](docs/ROADMAP.md#the-python-parser)). Python 3.10 or
+  later.
 - **Output layout** follows ANTLR: files go next to the grammar; with `-o dir`
   they go to `dir` plus the grammar's relative directory (`-o gen sub/T.g4`
   writes to `gen/sub/`), unless `-Xexact-output-dir` is given.

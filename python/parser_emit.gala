@@ -19,10 +19,9 @@ import (
 // decision meets a token none of its cases takes, runtime prediction decides
 // too: it finds the alternative ANTLR falls back on (one that left the
 // decision's rule, so that an entry rule without EOF can stop early) or fails
-// where ANTLR's prediction does. Grammars with
-// actions or predicates are not supported (see unsupported). On a syntax
-// error it raises ParseError at the token where the parse stopped, which is
-// not yet ANTLR's message (see the roadmap's Python parser steps).
+// where ANTLR's prediction does. Grammars with actions or predicates are not
+// supported (see unsupported). On a syntax error it raises ParseError with
+// the first error ANTLR reports (errorsTemplate).
 
 // penv is what emitting one grammar's parser needs.
 struct penv(
@@ -32,6 +31,7 @@ struct penv(
     parser atn.ATN,
     rules Array[atn.RuleIR],
     plans Array[analysis.DecisionPlan],
+    analysis analysis.Analysis,
 )
 
 // recursive says whether rule index is a rewritten left-recursive rule, whose
@@ -92,7 +92,7 @@ func nativeParser(e penv) string {
         "@GRAMMARFILE@", e.grammar + ".g4",
         "@LEXER@", e.lexerModule,
     ) + ruleConsts + "\n\n" + ruleNames + "\n" + treeTemplate +
-        atnTables(e) + predictTemplate + parserTemplate + rulesCode + "\n" + decisionsCode + "\n\n" + ruleFuncs + "\n" + setCode + "\n\n" + automatonTables(e.plans) + parseTemplate + entries
+        atnTables(e) + errorTables(e) + predictTemplate + parserTemplate + rulesCode + "\n" + decisionsCode + "\n\n" + ruleFuncs + "\n" + setCode + "\n\n" + automatonTables(e.plans) + errorsTemplate + parseTemplate + entries
 }
 
 // stepSets are the token sets steps match with MatchSet.
@@ -181,7 +181,7 @@ func step(e penv, s atn.Step, sc scope, ind string) Array[string] = s match {
     // them: precpred(_p, level) at the start of a loop alternative; a new
     // node whose first child is the rule's node so far (ANTLR's
     // pushNewRecursionContext); a labeled primary alternative's number.
-    case atn.CheckPrecedence(level) => ArrayOf(s"${ind}if $level < _p:", s"$ind    self._dead_end(-1)")
+    case atn.CheckPrecedence(level) => ArrayOf(s"${ind}if $level < _p:", s"$ind    raise _Stop")
     case atn.RecursionStart(label, left) => {
         val altArg = if (sc.AltLabels.NonEmpty()) "alt" else "0"
         val store = left.Map((l) => ArrayOf(s"${ind}self.node_label[prev] = ${sc.Labels.IndexOf(l.Name) + 1}")).GetOrElse(EmptyArray[string]())
@@ -349,3 +349,38 @@ func isAutomaton(l analysis.Lookahead) bool = l match {
 // fill replaces each placeholder in template with its value; pairs alternate
 // placeholder and value.
 func fill(template string, pairs ...string) string = strings.NewReplacer(pairs...).Replace(template)
+
+// errorTables renders what reporting ANTLR's syntax errors needs beyond the
+// prediction tables (see errorsTemplate and analysis.ErrorModel): by state
+// its decision, sync kind, next-token set, whether it can reach its rule's
+// end and the precedence its rule call passes; by rule its start state; by
+// decision its kind, the state a set decision's token leads to, whether it
+// is an LL(1) switch, the alternative that runs a loop again and each
+// alternative's lookahead set; the sets; and each token type's name in
+// ANTLR's error messages.
+func errorTables(e penv) string {
+    val a = e.parser
+    val m = analysis.ErrorTables(a, e.analysis, e.rules)
+    // ANTLR's Python parser writes a literal name between double quotes as
+    // its code generator renders it (atn.LiteralName), so Python reads its
+    // escapes as this module does.
+    val display = ArrayTabulate(e.vocab.MaxType() + 1, (t) => if (t == 0) "\"<INVALID>\"" else e.vocab.LiteralName(t).Map((l) => "\"" + l + "\"").GetOrElse(strconv.Quote(e.vocab.Name(t))))
+    ArrayOf(
+        "",
+        "# How ANTLR's generated parser decides and syncs, and the token sets its error",
+        "# strategy reads (see errorTables in galop's python/parser_emit.gala).",
+        pyInts("_S_DEC", a.States.Map(_.Decision.GetOrElse(-1))),
+        pyInts("_S_SYNC", m.StateSync),
+        pyInts("_S_NEXT", m.StateNext),
+        pyInts("_S_END", m.StateReachesEnd.Map((b) => if (b) 1 else 0)),
+        pyInts("_S_CALL_PREC", a.CallPrecedence),
+        pyInts("_RULE_START", a.RuleStart),
+        pyInts("_DEC_KIND", a.Decisions.Map((d) => analysis.DecisionKindCode(d.Kind))),
+        pyInts("_DEC_SET_AFTER", m.DecisionSetAfter),
+        pyInts("_DEC_LL1", m.DecisionLL1.Map((b) => if (b) 1 else 0)),
+        pyInts("_DEC_LOOP_ALT", m.DecisionLoopAlt),
+        "_ALT_LOOK = (\n" + m.AltLook.Map((l) => "    (" + l.Map((n) => s"$n, ").MkString("") + "),").MkString("\n") + "\n)\n",
+        "_ESETS = (\n" + m.Sets.Map((set) => s"    frozenset([${set.Values().MkString(", ")}]),").MkString("\n") + "\n)\n",
+        "_DISPLAY = (\n" + display.Grouped(8).Map((row) => "    " + row.MkString(", ") + ",").MkString("\n") + "\n)\n",
+    ).MkString("\n")
+}

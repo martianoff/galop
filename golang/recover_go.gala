@@ -5,6 +5,7 @@ import (
 
     . "martianoff/gala/collection_immutable"
 
+    "github.com/martianoff/galop/analysis"
     "github.com/martianoff/galop/atn"
     "github.com/martianoff/galop/codegen"
 )
@@ -916,7 +917,7 @@ func recoveryTables(e env, align bool) string {
     val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => labelCode(l, byRule.Get(s.Rule))).GetOrElse(0))
     // The alternatives of each labeled rule's top-level decision, as node Alts.
     val altLabels = e.rules.Map(altLabelsOf)
-    val byDecision = decisionRules(e.rules)
+    val byDecision = analysis.DecisionRules(e.rules)
     val outer = a.Decisions.Map((d) => byDecision.Get(d.Id).Filter((r) => altLabels.Get(r.Index).NonEmpty()).Map((r) =>
         r.Alts.Map((alt) => altLabels.Get(r.Index).IndexOf(alt.Label.GetOrElse("")) + 1)
     ))

@@ -103,6 +103,17 @@ func TestNativeParserLeftRecursion(t T) T {
     IsTrue(t2, strings.Contains(code, "child = self._r1(0)"))
 }
 
+// TestNativeParserErrors checks that a failed parse reports ANTLR's error:
+// the parse stops, and _parse replays ANTLR's parser over the error tables,
+// which name a literal token as ANTLR's Python parser does.
+func TestNativeParserErrors(t T) T {
+    val files = nativeFiles("grammar E;\ns : ID '=' ID EOF ;\nID : [a-z]+ ;\n")
+    val code = files.Find(_.Name == "e_parser.py").Map(_.Content).GetOrElse("")
+    val t1 = IsTrue(t, strings.Contains(code, "    except _Stop:\n        raise _syntax_error(tokens, rule) from None\n"))
+    val t2 = IsTrue(t1, strings.Contains(code, "class _Replay(_Predictor):"))
+    IsTrue(t2, strings.Contains(code, "_DISPLAY = (\n    \"<INVALID>\", \"'='\", \"ID\",\n)\n"))
+}
+
 // TestNativeParserNotSupported checks that a grammar with actions still gets
 // its lexer, and a parser module that says why it has no parser.
 func TestNativeParserNotSupported(t T) T {

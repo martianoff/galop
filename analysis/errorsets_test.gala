@@ -5,6 +5,8 @@ import (
     . "martianoff/gala/test"
 
     "github.com/martianoff/galop/atn"
+    "github.com/martianoff/galop/grammartest"
+    "github.com/martianoff/galop/repair"
 )
 
 // lookaheadOf is DecisionLookahead's sets for the first decision of src's
@@ -46,4 +48,23 @@ func TestDecisionLookaheadAtTheEndOfAStartRule(t T) T {
     val t1 = Eq(t, lookaheadOf("grammar L;\ns : A (P | M) B? ;\nA : 'a' ; B : 'b' ; P : '+' ; M : '-' ;\n", "s"),
         ArrayOf(ArrayOf("B"), ArrayOf("EOF")))
     Eq(t1, lookaheadOf("grammar L;\ns : A s? ;\nA : 'a' ;\n", "s"), ArrayOf(ArrayOf("A"), EmptyArray[string]()))
+}
+
+// TestErrorTables checks how ErrorTables says ANTLR's generated code decides
+// and syncs: v's alternatives are one set match, which leads to v's end; the
+// `*` loop is an LL(1) switch whose first alternative runs the body again,
+// and its loop back syncs.
+func TestErrorTables(t T) T {
+    val (g, c) = grammartest.Compile("grammar L;\ns : v e* EOF ;\nv : X | Y ;\ne : Z ;\nX : 'x' ; Y : 'y' ; Z : 'z' ;\n")
+    val a = c.Parser.Get()
+    val an = Analyze(a, repair.PlanFor(g, c), false)
+    val m = ErrorTables(a, an, c.Rules)
+    val loop = a.Decisions.Find((d) => d.Kind == atn.StarEntry()).Get()
+    val set = a.Decisions.Find((d) => d.Kind == atn.AltBlock()).Get()
+    val t1 = Eq(t, m.DecisionLL1.Get(loop.Id), true)
+    val t2 = Eq(t1, m.DecisionLoopAlt.Get(loop.Id), 1)
+    val t3 = Eq(t2, m.AltLook.Get(loop.Id).Map((i) => m.Sets.Get(i)), ArrayOf(atn.SetOf(3), atn.SetOf(atn.TokenEOF)))
+    val t4 = IsTrue(t3, m.StateSync.Exists(_ == SyncLoopBack))
+    val after = m.DecisionSetAfter.Get(set.Id)
+    IsTrue(t4, after >= 0 && a.State(after).Rule == set.Rule && NextTokens(a, an).Get(after).ReachesEnd)
 }

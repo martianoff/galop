@@ -3,6 +3,7 @@ load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
 gala_library(
     name = "python",
     srcs = [
+        "errors_runtime.gala",
         "native_runtime.gala",
         "parser_emit.gala",
         "predict_runtime.gala",
@@ -38,6 +39,7 @@ gala_test(
         "parser_emit.gala",
         "predict_runtime.gala",
         "target.gala",
+        "errors_runtime.gala",
     ],
     pkg = "python",
     deps = [
