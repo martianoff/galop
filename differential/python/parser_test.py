@@ -1,10 +1,12 @@
 """Checks galop's native Python parser against ANTLR's Python parser.
 
-Usage: parser_test.py <grammar name> <native base> <start rule> <samples>.
+Usage: parser_test.py <grammar name> <native base> <start rule> <samples>
+[<corpus manifest>].
 ANTLR's modules are <grammar name>Lexer and <grammar name>Parser; galop's are
 <native base>_lexer and <native base>_parser. The inputs are the galop-sample
 sentences in <samples>, mutants of them (tokens' text inserted, removed or
-swapped) and the sentences joined in pairs. For each input ANTLR's parser
+swapped), the sentences joined in pairs and, with a manifest, every file it
+lists. For each input ANTLR's parser
 runs as it does by default (LL prediction, the default error strategy):
 where it reports no syntax error, galop's parse_<start rule> must give the
 same tree (ANTLR's toStringTree); where it reports one, galop's must raise
@@ -65,7 +67,7 @@ def mutants(sentences, native, rnd):
 
 def main(argv):
     r = runfiles.Create()
-    grammar, base, start, sample_path = argv
+    grammar, base, start, sample_path = argv[:4]
     lexer_cls = getattr(importlib.import_module(grammar + "Lexer"), grammar + "Lexer")
     parser_cls = getattr(importlib.import_module(grammar + "Parser"), grammar + "Parser")
     native_lexer = importlib.import_module(base + "_lexer")
@@ -76,6 +78,12 @@ def main(argv):
     inputs = [("sample %d" % i, s) for i, s in enumerate(sentences)]
     inputs += [("mutant %d" % i, s) for i, s in enumerate(mutants(sentences, native_lexer, random.Random(1)))]
     inputs += [("pair %d" % i, a + "\n" + b) for i, (a, b) in enumerate(zip(sentences[::2], sentences[1::2]))]
+    if len(argv) > 4:
+        with open(r.Rlocation(argv[4]), encoding="utf-8") as f:
+            for line in f:
+                name, location = line.rstrip("\n").split("\t")
+                with open(r.Rlocation(location), encoding="utf-8") as src:
+                    inputs.append((name, src.read()))
 
     problems = []
     times = [0.0, 0.0]
@@ -86,7 +94,9 @@ def main(argv):
         parser.removeErrorListeners()
         counter = Counter()
         parser.addErrorListener(counter)
-        tree = getattr(parser, start)()
+        # ANTLR's Python target escapes a rule named like a reserved word
+        # (input_).
+        tree = getattr(parser, start + "_" if hasattr(parser, start + "_") else start)()
         want = tree.toStringTree(recog=parser)
         t1 = time.perf_counter()
         try:

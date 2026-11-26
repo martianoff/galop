@@ -1,0 +1,434 @@
+package python
+
+// predictTemplate is the runtime predictor of the native Python parser, for
+// grammars whose analysis leaves decisions to runtime prediction. It
+// reproduces the prediction of ANTLR's Python runtime 4.13.1 in its default
+// LL mode (ParserATNSimulator.adaptivePredict: execATN over an SLL DFA cached
+// across parses; execATNWithFullContext with the parser's call stack when SLL
+// meets a conflict; closure, computeReachSet, the conflict checks of
+// PredictionMode, and PredictionContext merging) over the ATN tables the
+// module carries.
+//
+// Precedence predicates of a left-recursive rule are evaluated while a start
+// state is computed, in the decision's own rule invocation, as the Go target
+// does: a path whose predicate fails stops there, and the start states of
+// that rule's decisions are cached per precedence.
+val predictTemplate = `
+_EMPTY_RET = 0x7FFFFFFF
+
+# Prediction contexts are graph-structured stacks, interned so that equal
+# contexts have equal ids: _CTX[id] is a tuple of (return state, parent id)
+# pairs in ascending order of return state. Context 0 is EMPTY, whose only
+# pair is (_EMPTY_RET, -1). They are shared by every parse, as ANTLR's
+# context cache is, so that the cached DFA states keep their meaning.
+_CTX = [((_EMPTY_RET, -1),)]
+_CTX_ID = {_CTX[0]: 0}
+_MERGED = {}
+
+
+def _intern(pairs):
+    i = _CTX_ID.get(pairs)
+    if i is None:
+        i = len(_CTX)
+        _CTX.append(pairs)
+        _CTX_ID[pairs] = i
+    return i
+
+
+def _singleton(parent, ret):
+    if parent == -1 and ret == _EMPTY_RET:
+        return 0
+    return _intern(((ret, parent),))
+
+
+def _has_empty_path(ctx):
+    return _CTX[ctx][-1][0] == _EMPTY_RET
+
+
+def _merge(a, b, wildcard):
+    """ANTLR's PredictionContext.merge; wildcard is rootIsWildcard (SLL)."""
+    if a == b:
+        return a
+    key = (a, b, wildcard)
+    m = _MERGED.get(key)
+    if m is None:
+        m = _merge_uncached(a, b, wildcard)
+        _MERGED[key] = m
+    return m
+
+
+def _merge_uncached(a, b, wildcard):
+    pa, pb = _CTX[a], _CTX[b]
+    if len(pa) == 1 and len(pb) == 1:
+        return _merge_singletons(a, b, pa[0], pb[0], wildcard)
+    if wildcard:
+        if a == 0:
+            return a
+        if b == 0:
+            return b
+    return _merge_arrays(a, b, pa, pb, wildcard)
+
+
+def _merge_singletons(a, b, sa, sb, wildcard):
+    if wildcard:
+        if a == 0 or b == 0:
+            return 0
+    else:
+        if a == 0:
+            return _intern((sb, (_EMPTY_RET, -1)))
+        if b == 0:
+            return _intern((sa, (_EMPTY_RET, -1)))
+    (ra, parent_a), (rb, parent_b) = sa, sb
+    if ra == rb:
+        parent = _merge(parent_a, parent_b, wildcard)
+        if parent == parent_a:
+            return a
+        if parent == parent_b:
+            return b
+        return _singleton(parent, ra)
+    if ra > rb:
+        sa, sb = sb, sa
+    return _intern((sa, sb))
+
+
+def _merge_arrays(a, b, pa, pb, wildcard):
+    i = j = 0
+    merged = []
+    while i < len(pa) and j < len(pb):
+        (ra, parent_a), (rb, parent_b) = pa[i], pb[j]
+        if ra == rb:
+            if parent_a == parent_b:
+                merged.append((ra, parent_a))
+            else:
+                merged.append((ra, _merge(parent_a, parent_b, wildcard)))
+            i += 1
+            j += 1
+        elif ra < rb:
+            merged.append(pa[i])
+            i += 1
+        else:
+            merged.append(pb[j])
+            j += 1
+    merged.extend(pa[i:])
+    merged.extend(pb[j:])
+    if len(merged) == 1:
+        return _singleton(merged[0][1], merged[0][0])
+    m = _intern(tuple(merged))
+    return m
+
+
+class _Configs:
+    """An ATN configuration set (ANTLR's ATNConfigSet): configurations are
+    [state, alt, context, reachesIntoOuterContext, precedenceFilterSuppressed],
+    one per (state, alt), their contexts merged."""
+
+    __slots__ = ("items", "index", "full")
+
+    def __init__(self, full):
+        self.items = []
+        self.index = {}
+        self.full = full
+
+    def add(self, state, alt, ctx, outer, sup):
+        key = (state, alt)
+        i = self.index.get(key)
+        if i is None:
+            self.index[key] = len(self.items)
+            self.items.append([state, alt, ctx, outer, sup])
+            return
+        c = self.items[i]
+        c[2] = _merge(c[2], ctx, not self.full)
+        if outer > c[3]:
+            c[3] = outer
+        if sup:
+            c[4] = True
+
+
+class _Prediction:
+    """One prediction's fixed facts: the decision, the precedence its rule was
+    called with, and whether its DFA is a precedence DFA (a left-recursive
+    rule's loop entry)."""
+
+    __slots__ = ("decision", "prec", "loop_entry", "rule")
+
+    def __init__(self, decision, prec):
+        self.decision = decision
+        self.prec = prec
+        self.loop_entry = _DEC_LOOP_ENTRY[decision]
+        self.rule = _S_RULE[_DEC_STATE[decision]]
+
+
+def _closure(pr, st, alt, ctx, outer, sup, out, busy, collect, full, depth, eof):
+    """ANTLR's closureCheckingStopState."""
+    if _S_STOP[st]:
+        if ctx != 0:
+            for ret, parent in _CTX[ctx]:
+                if ret == _EMPTY_RET:
+                    if full:
+                        out.add(st, alt, 0, outer, sup)
+                    else:
+                        _closure_work(pr, st, alt, ctx, outer, sup, out, busy, collect, full, depth, eof)
+                    continue
+                _closure(pr, ret, alt, parent, outer, sup, out, busy, collect, full, depth - 1, eof)
+            return
+        if full:
+            out.add(st, alt, ctx, outer, sup)
+            return
+    _closure_work(pr, st, alt, ctx, outer, sup, out, busy, collect, full, depth, eof)
+
+
+def _closure_work(pr, st, alt, ctx, outer, sup, out, busy, collect, full, depth, eof):
+    """ANTLR's closure_."""
+    if not _S_EPS[st]:
+        out.add(st, alt, ctx, outer, sup)
+    if _S_STOP[st]:
+        # A rule's end goes on after every call of the rule (ANTLR's rule
+        # stop state's follow links), into the outer context.
+        rule = _S_RULE[st]
+        for follow, outermost in _FOLLOW[rule]:
+            s = sup or (outermost and pr.loop_entry and rule == pr.rule)
+            key = (follow, alt, ctx, s)
+            if key in busy:
+                continue
+            busy.add(key)
+            _closure(pr, follow, alt, ctx, outer + 1, s, out, busy, collect, full, depth - 1, eof)
+        return
+    first = True
+    for kind, target, arg in _TRANS[st]:
+        if first:
+            first = False
+            if st in _PREC_LOOPS and _can_drop(st, ctx):
+                continue
+        if kind == 0:
+            _closure(pr, target, alt, ctx, outer, sup, out, busy, collect, full, depth, eof)
+        elif kind == 1:
+            _closure(pr, target, alt, _singleton(ctx, arg), outer, sup, out, busy, collect, full,
+                     depth + 1 if depth >= 0 else depth, eof)
+        elif kind == 4:
+            # A precedence predicate, precpred(_p, arg): evaluated while a
+            # start state is computed, in the decision's own invocation.
+            if collect and depth == 0 and arg < pr.prec:
+                continue
+            _closure(pr, target, alt, ctx, outer, sup, out, busy, collect, full, depth, eof)
+        elif eof and (arg == -1 if kind == 2 else -1 in _TSETS[arg]):
+            key = (target, alt, ctx, sup)
+            if key in busy:
+                continue
+            busy.add(key)
+            _closure(pr, target, alt, ctx, outer, sup, out, busy, collect, full, depth, eof)
+
+
+def _can_drop(st, ctx):
+    """ANTLR's canDropLoopEntryEdgeInLeftRecursiveRule: every return state of
+    ctx leads straight back to the loop entry st."""
+    if ctx == 0 or _has_empty_path(ctx):
+        return False
+    for ret, _ in _CTX[ctx]:
+        if _LOOP_RETURN.get(ret) != st:
+            return False
+    return True
+
+
+def _start(pr, ctx, full):
+    """ANTLR's computeStartState, with applyPrecedenceFilter for an SLL
+    start state of a precedence DFA."""
+    out = _Configs(full)
+    for i, (kind, target, arg) in enumerate(_TRANS[_DEC_STATE[pr.decision]]):
+        _closure(pr, target, i + 1, ctx, 0, False, out, set(), True, full, 0, False)
+    if full or not pr.loop_entry:
+        return out
+    alt1 = {}
+    kept = _Configs(False)
+    for c in out.items:
+        if c[1] == 1:
+            alt1[c[0]] = c[2]
+            kept.add(*c)
+    for c in out.items:
+        if c[1] != 1 and (c[4] or alt1.get(c[0], -2) != c[2]):
+            kept.add(*c)
+    return kept
+
+
+def _reach(pr, configs, t, full):
+    """ANTLR's computeReachSet: the configurations after token t, or None."""
+    intermediate = _Configs(full)
+    skipped = []
+    for c in configs.items:
+        st = c[0]
+        if _S_STOP[st]:
+            if full or t == EOF:
+                skipped.append(c)
+            continue
+        for kind, target, arg in _TRANS[st]:
+            if (kind == 2 and arg == t) or (kind == 3 and t in _TSETS[arg]):
+                intermediate.add(target, c[1], c[2], c[3], c[4])
+    reach = None
+    if not skipped and t != EOF and intermediate.items:
+        if len(intermediate.items) == 1 or _unique_alt(intermediate.items):
+            reach = intermediate
+    if reach is None:
+        reach = _Configs(full)
+        busy = set()
+        for c in intermediate.items:
+            _closure(pr, c[0], c[1], c[2], c[3], c[4], reach, busy, False, full, 0, t == EOF)
+    if t == EOF:
+        # After EOF only configurations at the end of a rule matter.
+        if not all(_S_STOP[c[0]] for c in reach.items):
+            kept = _Configs(full)
+            for c in reach.items:
+                if _S_STOP[c[0]]:
+                    kept.add(*c)
+            reach = kept
+    if skipped and (not full or not any(_S_STOP[c[0]] for c in reach.items)):
+        for c in skipped:
+            reach.add(*c)
+    return reach if reach.items else None
+
+
+def _unique_alt(items):
+    alt = items[0][1]
+    for c in items:
+        if c[1] != alt:
+            return 0
+    return alt
+
+
+def _alt_subsets(items):
+    """PredictionMode.getConflictingAltSubsets: the alternatives of each
+    (state, context)."""
+    groups = {}
+    for c in items:
+        groups.setdefault((c[0], c[2]), set()).add(c[1])
+    return groups.values()
+
+
+def _sll_conflict(items):
+    """PredictionMode.hasSLLConflictTerminatingPrediction in LL mode."""
+    if all(_S_STOP[c[0]] for c in items):
+        return True
+    if not any(len(alts) > 1 for alts in _alt_subsets(items)):
+        return False
+    by_state = {}
+    for c in items:
+        by_state.setdefault(c[0], set()).add(c[1])
+    return not any(len(alts) == 1 for alts in by_state.values())
+
+
+def _single_viable(items):
+    """PredictionMode.resolvesToJustOneViableAlt: the alternative every
+    conflict subset's lowest is, or 0."""
+    viable = {min(alts) for alts in _alt_subsets(items)}
+    return min(viable) if len(viable) == 1 else 0
+
+
+def _finished_entry_rule(items):
+    """getAltThatFinishedDecisionEntryRule: ANTLR's fallback where no
+    alternative is viable, the lowest one that left the decision's rule."""
+    alts = [c[1] for c in items if c[3] > 0 or (_S_STOP[c[0]] and _has_empty_path(c[2]))]
+    return min(alts) if alts else 0
+
+
+class _DFAState:
+    __slots__ = ("configs", "edges", "alt", "full")
+
+    def __init__(self, configs):
+        self.configs = configs
+        self.edges = {}
+        self.alt = 0
+        self.full = False
+
+
+_ERROR = _DFAState(None)
+
+
+class _DFA:
+    """A decision's SLL DFA, cached across parses as ANTLR caches it: its
+    start states (one per precedence for a left-recursive rule's decision)
+    and its states by configurations."""
+
+    __slots__ = ("starts", "states")
+
+    def __init__(self):
+        self.starts = {}
+        self.states = {}
+
+    def state(self, configs):
+        key = tuple(sorted((c[0], c[1], c[2], c[4]) for c in configs.items))
+        st = self.states.get(key)
+        if st is None:
+            st = _DFAState(configs)
+            items = configs.items
+            alt = _unique_alt(items)
+            if alt:
+                st.alt = alt
+            elif _sll_conflict(items):
+                st.full = True
+            self.states[key] = st
+        return st
+
+
+_DFAS = [_DFA() for _ in _DEC_STATE]
+
+
+class _Predictor:
+    """Runtime prediction for a parser: the methods _Parser gets when the
+    grammar has decisions the analysis leaves to it."""
+
+    __slots__ = ()
+
+    def _outer_ctx(self):
+        ctx = 0
+        for follow in self.stack:
+            ctx = _singleton(ctx, follow)
+        return ctx
+
+    def _adaptive(self, d, prec=0):
+        """ANTLR's adaptivePredict in LL mode for decision d, whose rule was
+        called with precedence prec."""
+        pr = _Prediction(d, prec)
+        dfa = _DFAS[d]
+        s = dfa.starts.get(prec)
+        if s is None:
+            # A start state only gives the configurations to move from: as in
+            # ANTLR, it is never an answer itself.
+            s = _DFAState(_start(pr, 0, False))
+            dfa.starts[prec] = s
+        types = self.types
+        i = self.pos
+        while True:
+            t = types[i]
+            nxt = s.edges.get(t)
+            if nxt is None:
+                reach = _reach(pr, s.configs, t, False)
+                nxt = _ERROR if reach is None else dfa.state(reach)
+                s.edges[t] = nxt
+            if nxt is _ERROR:
+                alt = _finished_entry_rule(s.configs.items)
+                return alt if alt else self._dead_end(d)
+            if nxt.full:
+                return self._predict_full(pr)
+            if nxt.alt:
+                return nxt.alt
+            s = nxt
+            if t != EOF:
+                i += 1
+
+    def _predict_full(self, pr):
+        """ANTLR's execATNWithFullContext, from the parser's call stack."""
+        prev = _start(pr, self._outer_ctx(), True)
+        types = self.types
+        i = self.pos
+        while True:
+            t = types[i]
+            reach = _reach(pr, prev, t, True)
+            if reach is None:
+                alt = _finished_entry_rule(prev.items)
+                return alt if alt else self._dead_end(pr.decision)
+            alt = _unique_alt(reach.items) or _single_viable(reach.items)
+            if alt:
+                return alt
+            prev = reach
+            if t != EOF:
+                i += 1
+
+`

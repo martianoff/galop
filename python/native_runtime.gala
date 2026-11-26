@@ -147,11 +147,12 @@ class Node:
 
 // parserTemplate is the parser's state and the helpers every rule uses.
 val parserTemplate = `
-class _Parser:
-    """The state of one parse."""
+class _Parser(_Predictor):
+    """The state of one parse. stack holds the follow states of the rule
+    calls being parsed, for full-context prediction."""
 
     __slots__ = ("ts", "types", "pos", "kids", "labs", "rule", "alt", "start", "stop",
-                 "node_kids", "node_label", "token_labels")
+                 "node_kids", "node_label", "token_labels", "stack")
 
     def __init__(self, ts):
         self.ts = ts
@@ -166,6 +167,7 @@ class _Parser:
         self.node_kids = []
         self.node_label = []
         self.token_labels = []
+        self.stack = []
 
     def _la(self, i):
         j = self.pos + i - 1
@@ -218,16 +220,17 @@ class _Parser:
         text = "<EOF>" if ts.types[i] == EOF else "'" + ts.text(i) + "'"
         raise ParseError(ts.lines[i], ts.columns[i], msg + text)
 
-    def _automaton(self, decision, states):
+    def _automaton(self, decision, states, prec=0):
         """Runs a lookahead automaton: each state maps a token type to the
-        next state, or to -alt where the decision is made."""
+        next state, or to -alt where the decision is made. A token no edge
+        takes goes to runtime prediction, as in a settled decision."""
         s = 0
         i = 0
         while True:
             i += 1
             nxt = states[s].get(self._la(i))
             if nxt is None:
-                return self._dead_end(decision)
+                return self._adaptive(decision, prec)
             if nxt < 0:
                 return -nxt
             s = nxt

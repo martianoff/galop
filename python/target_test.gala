@@ -92,11 +92,22 @@ func TestNativeParserRules(t T) T {
     IsTrue(t3, strings.Contains(code, "def parse_s(tokens):"))
 }
 
-// TestNativeParserNotYetSupported checks that a grammar the native parser
-// cannot parse yet still gets its lexer, and a parser module that says why.
-func TestNativeParserNotYetSupported(t T) T {
-    val files = nativeFiles("grammar E;\ne : e '+' e | ID ;\nID : [a-z]+ ;\n")
+// TestNativeParserLeftRecursion checks a left-recursive rule's method: it
+// takes the precedence it is called with, and a loop iteration makes the
+// node so far the next one's first child.
+func TestNativeParserLeftRecursion(t T) T {
+    val files = nativeFiles("grammar E;\ns : e EOF ;\ne : e '*' e | e '+' e | ID ;\nID : [a-z]+ ;\n")
+    val code = files.Find(_.Name == "e_parser.py").Map(_.Content).GetOrElse("")
+    val t1 = IsTrue(t, strings.Contains(code, "    def _r1(self, _p):"))
+    val t2 = IsTrue(t1, strings.Contains(code, "prev = self._finish(1, 0, start, mark, labs)\n"))
+    IsTrue(t2, strings.Contains(code, "child = self._r1(0)"))
+}
+
+// TestNativeParserNotSupported checks that a grammar with actions still gets
+// its lexer, and a parser module that says why it has no parser.
+func TestNativeParserNotSupported(t T) T {
+    val files = nativeFiles("grammar E;\ne : ID {print(1)} ;\nID : [a-z]+ ;\n")
     val t1 = Eq(t, files.Map(_.Name), ArrayOf("e_lexer.py", "e_parser.py"))
     val code = files.Find(_.Name == "e_parser.py").Map(_.Content).GetOrElse("")
-    IsTrue(t1, strings.Contains(code, "raise NotImplementedError(") && strings.Contains(code, "left-recursive rules are not supported yet: e"))
+    IsTrue(t1, strings.Contains(code, "raise NotImplementedError(") && strings.Contains(code, "actions and predicates are not supported: e"))
 }
