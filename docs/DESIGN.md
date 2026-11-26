@@ -1085,9 +1085,8 @@ about a sixth of ANTLR's time.
 
 For a combined grammar the native flavor also writes `<base>_parser.py`
 (`python/parser_emit.gala`). It is built in the steps of the
-[roadmap](ROADMAP.md#the-python-parser); so far it parses grammars whose every
-decision the analysis settles ahead of time. A grammar with a decision left to
-runtime prediction, a left-recursive rule, an action or a predicate gets a
+[roadmap](ROADMAP.md#the-python-parser); its syntax errors are not ANTLR's yet.
+A grammar with an action or a predicate (code in another language) gets a
 module that raises `NotImplementedError`, with the reasons, when imported, so
 that its lexer module is still written.
 
@@ -1102,6 +1101,27 @@ that its lexer module is still written.
   comparisons and `frozenset` tests on the next tokens, or a lookahead
   automaton as dicts. Labels are recorded as in the Go native tree: a rule
   label's number on the child, a token label as (node, token, number).
+- A left-recursive rule is parsed as ANTLR rewrites it, as the Go native
+  flavor parses it: its method takes the precedence it is called with, each
+  loop iteration makes the node so far the first child of the next one
+  (ANTLR's `pushNewRecursionContext`), and a decision that picks by
+  precedence reads it.
+- The decisions the analysis leaves to runtime (`predict_runtime.gala`) are
+  predicted as ANTLR's Python runtime predicts them in its default LL mode:
+  SLL prediction over a DFA cached per decision across parses, and on an SLL
+  conflict full-context prediction from the parser's call stack (the follow
+  states of the rule calls being parsed), with ANTLR's closure, reach,
+  conflict checks and prediction-context merging over ATN tables in the
+  module. Contexts are interned, so equal contexts are one id. Precedence
+  predicates are evaluated while a start state is computed, as the Go target
+  does, and a left-recursive rule's decisions keep a start state per
+  precedence; a loop entry's SLL start state gets ANTLR's precedence filter.
+- Where a decision the analysis settled meets a token none of its cases
+  takes, it is predicted at runtime too. That finds the alternative ANTLR's
+  prediction falls back on, one that left the decision's rule (so a parse of
+  a rule that does not end with EOF can stop early, as ANTLR's does), or
+  fails where ANTLR's does. Every parser module carries the predictor for
+  this, and so keeps its call stack.
 - A syntax error raises `ParseError` at the token where the parse stopped,
   with a message in ANTLR's words (`mismatched input`, `no viable
   alternative at input`) that is not yet ANTLR's own error, which may be
@@ -1109,10 +1129,11 @@ that its lexer module is still written.
 
 `//differential/python` runs ANTLR's Python parser (LL prediction, default
 error strategy) and the native parser on galop-sample sentences, mutants of
-them and pairs of them joined, for the test grammars the native parser
-handles (Expr, Labels, Lines, Recovery, Text, Errors): where ANTLR reports no
-syntax error the trees must be equal, and where it reports one the native
-parser must raise `ParseError`.
+them and pairs of them joined, for every grammar the Go target's differential
+tests
+has (the test grammars, the corpus grammars, and `gala.g4` on the GALA
+corpus too): where ANTLR reports no syntax error the trees must be equal, and
+where it reports one the native parser must raise `ParseError`.
 
 ## Code generation (`codegen`, `golang`)
 

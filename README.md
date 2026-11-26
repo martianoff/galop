@@ -189,11 +189,11 @@ galop options:
   `-Dflavor=native` writes `<grammar>_lexer.py`, a module with no dependency
   whose `lex(src)` returns the same tokens as arrays, in about a sixth of
   ANTLR's time, and for a combined grammar `<grammar>_parser.py`, whose
-  `parse_<rule>(tokens)` builds ANTLR's tree with no runtime. The native
-  parser is [being built](docs/ROADMAP.md#the-python-parser): so far it parses
-  grammars whose every decision galop settles ahead of time (no runtime
-  prediction, no left recursion), and its syntax errors are not yet ANTLR's
-  messages. Python 3.10 or later.
+  `parse_<rule>(tokens)` builds ANTLR's tree with no runtime, left-recursive
+  rules and ANTLR's runtime prediction included, several times faster than
+  ANTLR's Python parser. It does not read grammars with actions or
+  predicates, and its syntax errors are not yet ANTLR's messages (see the
+  [roadmap](docs/ROADMAP.md#the-python-parser)). Python 3.10 or later.
 - **Output layout** follows ANTLR: files go next to the grammar; with `-o dir`
   they go to `dir` plus the grammar's relative directory (`-o gen sub/T.g4`
   writes to `gen/sub/`), unless `-Xexact-output-dir` is given.

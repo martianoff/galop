@@ -46,19 +46,48 @@ py_lexer_test(
 )
 
 # galop's native Python parser against ANTLR's Python parser (see
-# parser_test.py), on the test grammars whose decisions the analysis settles
-# ahead of time; runtime prediction comes next.
+# parser_test.py): the test grammars and the corpus grammars the Go target is
+# checked on, with their entry rules.
 [py_parser_test(
     name = name + "_parser",
-    grammar = "//differential/convert:grammars/%s.g4" % grammar_name if grammar_name != "Errors" else "//differential/errors:Errors.g4",
+    grammar = grammar,
     grammar_name = grammar_name,
     sample_flags = flags,
-    start = "prog",
-) for name, grammar_name, flags in [
-    ("expr", "Expr", "-n 300 -seed 1 -nesting 4 -tokens 200"),
-    ("labels", "Labels", "-n 300 -seed 1 -nesting 3 -tokens 200"),
-    ("lines", "Lines", "-n 300 -seed 1 -nesting 4 -tokens 60"),
-    ("recovery", "Recovery", "-n 300 -seed 1 -nesting 3 -tokens 200"),
-    ("text", "Text", "-n 300 -seed 1 -nesting 4 -tokens 60"),
-    ("errors", "Errors", "-n 300 -seed 1 -nesting 3 -tokens 300"),
+    start = start,
+) for name, grammar, grammar_name, start, flags in [
+    ("expr", "//differential/convert:grammars/Expr.g4", "Expr", "prog", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("calc", "//differential/convert:grammars/Calc.g4", "Calc", "prog", "-n 300 -seed 1 -nesting 4 -tokens 300"),
+    ("labels", "//differential/convert:grammars/Labels.g4", "Labels", "prog", "-n 300 -seed 1 -nesting 3 -tokens 200"),
+    ("lines", "//differential/convert:grammars/Lines.g4", "Lines", "prog", "-n 300 -seed 1 -nesting 4 -tokens 60"),
+    ("recovery", "//differential/convert:grammars/Recovery.g4", "Recovery", "prog", "-n 300 -seed 1 -nesting 3 -tokens 200"),
+    ("shapes", "//differential/convert:grammars/Shapes.g4", "Shapes", "prog", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("text", "//differential/convert:grammars/Text.g4", "Text", "prog", "-n 300 -seed 1 -nesting 4 -tokens 60"),
+    ("errors", "//differential/errors:Errors.g4", "Errors", "prog", "-n 300 -seed 1 -nesting 3 -tokens 300"),
+    ("repair", "//differential/repair:Repair.g4", "Repair", "s3", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("plan", "//testdata/grammars:Plan.g4", "Plan", "expr", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("cel", "//testdata/grammars:CEL.g4", "CEL", "start", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("having", "//testdata/grammars:HavingExpression.g4", "HavingExpression", "query", "-n 300 -seed 1 -nesting 4 -tokens 200"),
+    ("grule", "//testdata/grammars:grulev3.g4", "grulev3", "grl", "-n 200 -seed 1 -nesting 3 -tokens 300"),
+    ("fileseq", "//testdata/grammars:fileseq.g4", "fileseq", "input", "-n 300 -seed 1 -nesting 4 -tokens 60"),
 ]]
+
+py_parser_test(
+    name = "jsonquery_parser",
+    grammar = "//testdata/grammars:JsonQuery.g4",
+    grammar_name = "JsonQuery",
+    imports = ["//testdata/grammars:SemverGrammar.g4"],
+    sample_flags = "-n 300 -seed 1 -nesting 4 -tokens 200 -separator ''",
+    start = "query",
+)
+
+# gala.g4 on the GALA corpus too: 723 files, 1.8 MB, with the tokens of the
+# grammar's lexer alone (GALA's line-break rule, which re-types some tokens,
+# is not applied: where ANTLR then reports an error, galop must raise one).
+py_parser_test(
+    name = "gala_parser",
+    corpus = "//differential:corpus",
+    grammar = "//testdata/grammars:gala.g4",
+    grammar_name = "gala",
+    sample_flags = "-n 200 -seed 1 -nesting 3 -tokens 200",
+    start = "sourceFile",
+)

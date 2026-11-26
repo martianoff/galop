@@ -5,6 +5,7 @@ gala_library(
     srcs = [
         "native_runtime.gala",
         "parser_emit.gala",
+        "predict_runtime.gala",
         "target.gala",
     ],
     importpath = "github.com/martianoff/galop/python",
@@ -35,6 +36,7 @@ gala_test(
     lib_srcs = [
         "native_runtime.gala",
         "parser_emit.gala",
+        "predict_runtime.gala",
         "target.gala",
     ],
     pkg = "python",

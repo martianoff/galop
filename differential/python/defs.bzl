@@ -95,7 +95,7 @@ def py_lexer_test(name, grammar, grammar_name, sample_flags = None, inputs = Non
 
     py_test(
         name = name + "_test",
-        size = "medium" if corpus else "small",
+        size = "large" if corpus else "medium",
         srcs = ["lexer_test.py"],
         main = "lexer_test.py",
         args = args,
@@ -107,7 +107,7 @@ def py_lexer_test(name, grammar, grammar_name, sample_flags = None, inputs = Non
         ],
     )
 
-def py_parser_test(name, grammar, grammar_name, start, sample_flags, imports = []):
+def py_parser_test(name, grammar, grammar_name, start, sample_flags, imports = [], corpus = None):
     """Generates ANTLR's Python parser and galop's native one and compares them.
 
     It generates ANTLR 4.13.1's Python lexer and parser, galop's native lexer
@@ -123,6 +123,7 @@ def py_parser_test(name, grammar, grammar_name, start, sample_flags, imports = [
       start: the entry rule the sentences start from.
       sample_flags: galop-sample's flags (count, seed, nesting, length).
       imports: the grammars the grammar imports, next to it.
+      corpus: a corpus_manifest target whose files are parsed too.
     """
     base = grammar_name.lower()
 
@@ -169,13 +170,19 @@ def py_parser_test(name, grammar, grammar_name, start, sample_flags, imports = [
         imports = [name],
     )
 
+    args = [grammar_name, base, start, "$(rlocationpath :" + name + "_samples)"]
+    data = [":" + name + "_samples"]
+    if corpus:
+        args.append("$(rlocationpath " + corpus + ")")
+        data.append(corpus)
+
     py_test(
         name = name + "_test",
-        size = "small",
+        size = "large" if corpus else "medium",
         srcs = ["parser_test.py"],
         main = "parser_test.py",
-        args = [grammar_name, base, start, "$(rlocationpath :" + name + "_samples)"],
-        data = [":" + name + "_samples"],
+        args = args,
+        data = data,
         deps = [
             ":" + name + "_parsers",
             requirement("antlr4-python3-runtime"),
