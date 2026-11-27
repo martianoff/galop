@@ -27,15 +27,25 @@ else:
 // treeTemplate is the parse tree: nodes in parallel lists, and handles on them.
 val treeTemplate = `
 class ParseError(Exception):
-    """A syntax error at a line (from 1) and column (in code points, from 0):
-    the first one ANTLR's parser reports for the same tokens, with its
-    message, msg."""
+    """A syntax error at a line (from 1) and column (in code points, from 0),
+    with ANTLR's message, msg: parse_<rule> raises the first one ANTLR's
+    parser reports for the same tokens. token is the index of the offending
+    token (-1 for none). An error of parse_<rule>_with_recovery also has node,
+    the node of the rule being parsed when ANTLR reported it, and kids, the
+    number of children it had then; read, the furthest token ANTLR's parse had
+    read (it reports the lexer's errors up to there first); and expected, the
+    token types ANTLR's getExpectedTokens() gives then, ascending, EOF first."""
 
-    def __init__(self, line, column, msg):
+    def __init__(self, line, column, msg, token=-1, node=-1, kids=0, read=-1, expected=()):
         super().__init__("line %d:%d %s" % (line, column, msg))
         self.line = line
         self.column = column
         self.msg = msg
+        self.token = token
+        self.node = node
+        self.kids = kids
+        self.read = read
+        self.expected = expected
 
 
 class Tree:
@@ -43,9 +53,16 @@ class Tree:
     parallel lists. A node's kids are node indexes (>= 0) and tokens (-1 - the
     token's index); node_label is the number of the label a node is stored
     under in its parent's rule (0 for none), and token_labels lists the
-    labeled tokens as (node, token index, label number)."""
+    labeled tokens as (node, token index, label number).
 
-    __slots__ = ("tokens", "rule", "alt", "start", "stop", "kids", "node_label", "token_labels")
+    A tree a recovering parse built also has error tokens: error_kids holds
+    (node, child position) for each, and a token index past the tokens is
+    conjured[index - len(tokens)], a token ANTLR's recovery made up, as
+    (type, text, line, column). read is how far ANTLR's parse read (see
+    ParseError), -1 when no lexer error needs it."""
+
+    __slots__ = ("tokens", "rule", "alt", "start", "stop", "kids", "node_label", "token_labels",
+                 "error_kids", "conjured", "read")
 
     def __init__(self, tokens):
         self.tokens = tokens
@@ -56,6 +73,9 @@ class Tree:
         self.kids = []
         self.node_label = []
         self.token_labels = []
+        self.error_kids = ()
+        self.conjured = ()
+        self.read = -1
 
     def node(self, i):
         return Node(self, i)
@@ -66,21 +86,29 @@ def _escape_whitespace(s):
 
 
 class Terminal:
-    """A token in the tree: its index in the tokens."""
+    """A token in the tree: its index in the tokens (past them, one the
+    recovery made up), and whether it is an error token (ANTLR's ErrorNode)."""
 
-    __slots__ = ("tree", "index")
+    __slots__ = ("tree", "index", "is_error")
 
-    def __init__(self, tree, index):
+    def __init__(self, tree, index, is_error=False):
         self.tree = tree
         self.index = index
+        self.is_error = is_error
 
     @property
     def type(self):
-        return self.tree.tokens.types[self.index]
+        tokens = self.tree.tokens
+        if self.index >= len(tokens.types):
+            return self.tree.conjured[self.index - len(tokens.types)][0]
+        return tokens.types[self.index]
 
     def get_text(self):
         """The token's text; "<EOF>" for EOF, as ANTLR gives it."""
-        return self.tree.tokens.text(self.index)
+        tokens = self.tree.tokens
+        if self.index >= len(tokens.types):
+            return self.tree.conjured[self.index - len(tokens.types)][1]
+        return tokens.text(self.index)
 
     def to_string_tree(self):
         return _escape_whitespace(self.get_text())
@@ -126,7 +154,11 @@ class Node:
     @property
     def children(self):
         tree = self.tree
-        return [Node(tree, k) if k >= 0 else Terminal(tree, -1 - k) for k in tree.kids[self.index]]
+        kids = tree.kids[self.index]
+        if not tree.error_kids:
+            return [Node(tree, k) if k >= 0 else Terminal(tree, -1 - k) for k in kids]
+        errs, i = tree.error_kids, self.index
+        return [Node(tree, k) if k >= 0 else Terminal(tree, -1 - k, (i, j) in errs) for j, k in enumerate(kids)]
 
     def get_text(self):
         """The text of the node's tokens, as ANTLR's getText gives it."""
@@ -152,7 +184,7 @@ class _Parser(_Predictor):
     calls being parsed, for full-context prediction."""
 
     __slots__ = ("ts", "types", "pos", "kids", "labs", "rule", "alt", "start", "stop",
-                 "node_kids", "node_label", "token_labels", "stack")
+                 "node_kids", "node_label", "token_labels", "stack", "peek", "dfas")
 
     def __init__(self, ts):
         self.ts = ts
@@ -168,6 +200,9 @@ class _Parser(_Predictor):
         self.node_label = []
         self.token_labels = []
         self.stack = []
+        # peek is the furthest token prediction read (see _Recovery.read).
+        self.peek = 0
+        self.dfas = _DFAS
 
     def _la(self, i):
         j = self.pos + i - 1
@@ -265,4 +300,24 @@ def _parse(tokens, rule):
     except _Stop:
         raise _syntax_error(tokens, rule) from None
     return Node(p._tree(), root)
+
+
+def merge_errors(tokens, root, errors):
+    """The lexer's errors (tokens.errors) and the syntax errors of a
+    recovering parse, which returned root and errors, in the order ANTLR
+    reports them: its token stream lexes as its parser reads, so a lexer
+    error comes before the first syntax error whose read reaches its
+    error_at, and one past the tree's read is not reported."""
+    out = []
+    lexed, at, i = tokens.errors, tokens.error_at, 0
+    for e in errors:
+        while i < len(lexed) and at[i] <= e.read:
+            out.append(lexed[i])
+            i += 1
+        out.append(e)
+    read = root.tree.read
+    while i < len(lexed) and at[i] <= read:
+        out.append(lexed[i])
+        i += 1
+    return out
 `

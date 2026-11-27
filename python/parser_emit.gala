@@ -82,7 +82,7 @@ func nativeParser(e penv) string {
     val setCode = setDefs.ZipWithIndex().Map((si) => s"_SET${si.V2} = frozenset((${si.V1.Values().MkString(", ")},))").MkString("\n")
     val ruleConsts = e.rules.Map((r) => s"RULE_${r.Name} = ${r.Index}").MkString("\n")
     val ruleNames = "RULE_NAMES = [\n" + e.rules.Grouped(8).Map((row) => "    " + row.Map((r) => strconv.Quote(r.Name)).MkString(", ") + ",").MkString("\n") + "\n]\n"
-    val entries = e.rules.Map((r) => fill(entryTemplate, "@RULE@", r.Name, "@INDEX@", s"${r.Index}")).MkString("\n")
+    val entries = e.rules.Map((r) => fill(entryTemplate + recoveryEntryTemplate, "@RULE@", r.Name, "@INDEX@", s"${r.Index}")).MkString("\n")
     val ruleFuncs = "_RULE_FUNCS = (\n" + e.rules.Map((r) =>
         if (e.recursive(r.Index)) s"    lambda p: p._r${r.Index}(0)," else s"    _Parser._r${r.Index},"
     ).MkString("\n") + "\n)\n"
@@ -92,7 +92,7 @@ func nativeParser(e penv) string {
         "@GRAMMARFILE@", e.grammar + ".g4",
         "@LEXER@", e.lexerModule,
     ) + ruleConsts + "\n\n" + ruleNames + "\n" + treeTemplate +
-        atnTables(e) + errorTables(e) + predictTemplate + parserTemplate + rulesCode + "\n" + decisionsCode + "\n\n" + ruleFuncs + "\n" + setCode + "\n\n" + automatonTables(e.plans) + errorsTemplate + parseTemplate + entries
+        atnTables(e) + errorTables(e) + recoveryTables(e) + predictTemplate + parserTemplate + rulesCode + "\n" + decisionsCode + "\n\n" + ruleFuncs + "\n" + setCode + "\n\n" + automatonTables(e.plans) + errorsTemplate + recoveryTemplate + parseTemplate + entries
 }
 
 // stepSets are the token sets steps match with MatchSet.
@@ -383,4 +383,57 @@ func errorTables(e penv) string {
         "_ESETS = (\n" + m.Sets.Map((set) => s"    frozenset([${set.Values().MkString(", ")}]),").MkString("\n") + "\n)\n",
         "_DISPLAY = (\n" + display.Grouped(8).Map((row) => "    " + row.MkString(", ") + ",").MkString("\n") + "\n)\n",
     ).MkString("\n")
+}
+
+// recoveryTables renders what a recovering parse reads beyond the error
+// tables (see recoveryTemplate): by state its label's number (as ruleLabels
+// numbers a rule's labels, 0 for none) and whether it matches a wildcard; by
+// decision of a rule with labeled alternatives, the labeled alternative each
+// alternative is; by rule the labeled alternative a rule with one enters at
+// once; by entry state of a left-recursive rule's alternative, what it does
+// to the rule's context, as (push, alternative, left operand's label); and
+// by token type the name ANTLR's Python runtime gives a token its recovery
+// makes up: the literal name up to the last type with one (the parser's
+// literalNames, "<INVALID>" where a type has none), the symbolic name past it.
+func recoveryTables(e penv) string {
+    val a = e.parser
+    val byRule = e.rules.Map(ruleLabels)
+    val altLabels = e.rules.Map((r) => atn.SourceAlts(r).Collect((x) => x.Label).Distinct())
+    val labels = a.States.Map((s) => a.Labels.Get(s.Id).Map((l) => byRule.Get(s.Rule).IndexOf(l.Name) + 1).GetOrElse(0))
+    val byDecision = analysis.DecisionRules(e.rules)
+    val outer = a.Decisions.Map((d) => byDecision.Get(d.Id).Filter((r) => altLabels.Get(r.Index).NonEmpty()).Map((r) =>
+        "(" + r.Alts.Map((alt) => s"${altLabels.Get(r.Index).IndexOf(alt.Label.GetOrElse("")) + 1}, ").MkString("") + ")"
+    ).GetOrElse("None"))
+    val ruleAlt = e.rules.Map((r) => if (r.Decision.IsEmpty() && r.Rewrite.IsEmpty() && altLabels.Get(r.Index).NonEmpty()) 1 else 0)
+    val contexts = a.ContextSteps.ZipWithIndex().Collect({
+        case (Some(step), s) => s"$s: ${contextStep(step, altLabels.Get(a.State(s).Rule), byRule.Get(a.State(s).Rule))}"
+    })
+    val lastLiteral = ArrayTabulate(e.vocab.MaxType() + 1, (t) => t).FindLast((t) => t > 0 && e.vocab.LiteralName(t).IsDefined()).GetOrElse(0)
+    val missing = ArrayTabulate(e.vocab.MaxType() + 1, (t) =>
+        if (t == 0) "\"<INVALID>\""
+        else if (t <= lastLiteral) e.vocab.LiteralName(t).Map((l) => "\"" + l + "\"").GetOrElse("\"<INVALID>\"")
+        else strconv.Quote(e.vocab.Name(t)))
+    ArrayOf(
+        "",
+        "# What a recovering parse reads beyond the error tables (see recoveryTables in",
+        "# galop's python/parser_emit.gala).",
+        pyInts("_S_LABEL", labels),
+        pyInts("_S_WILDCARD", a.Wildcards.Map((w) => if (w) 1 else 0)),
+        "_DEC_OUTER = (\n" + outer.Grouped(8).Map((row) => "    " + row.MkString(", ") + ",").MkString("\n") + "\n)\n",
+        pyInts("_RULE_ALT", ruleAlt),
+        "_S_CONTEXT = {" + contexts.MkString(", ") + "}\n",
+        "_MISSING_NAME = (\n" + missing.Grouped(8).Map((row) => "    " + row.MkString(", ") + ",").MkString("\n") + "\n)\n",
+    ).MkString("\n")
+}
+
+// contextStep is _S_CONTEXT's entry for step, the context step of an
+// alternative of a rule whose labeled alternatives are altLabels and whose
+// labels are labels: (True, alternative, left operand's label) for an op
+// alternative's new recursion context, (False, alternative, 0) for a labeled
+// primary one's.
+func contextStep(step atn.Step, altLabels Array[string], labels Array[string]) string = step match {
+    case atn.RecursionStart(label, left) =>
+        s"(True, ${label.Map((l) => altLabels.IndexOf(l) + 1).GetOrElse(0)}, ${left.Map((l) => labels.IndexOf(l.Name) + 1).GetOrElse(0)})"
+    case atn.ReplaceContext(label) => s"(False, ${altLabels.IndexOf(label) + 1}, 0)"
+    case _ => "(False, 0, 0)"
 }

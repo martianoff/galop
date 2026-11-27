@@ -35,12 +35,14 @@ class _Stop(Exception):
 
 
 class _Report(Exception):
-    """The error ANTLR reports: its message, at token at."""
+    """The error ANTLR reports: its message, at token at. fills says that
+    building the message makes ANTLR's token stream lex the whole input."""
 
-    def __init__(self, at, msg):
+    def __init__(self, at, msg, fills=False):
         super().__init__(msg)
         self.at = at
         self.msg = msg
+        self.fills = fills
 
 
 class _NoViable(Exception):
@@ -69,7 +71,7 @@ class _Replay(_Predictor):
     follow states of the rule calls being parsed, as the parser's does, and
     precs the precedences they were called with."""
 
-    __slots__ = ("ts", "types", "pos", "stack", "precs")
+    __slots__ = ("ts", "types", "pos", "stack", "precs", "peek", "polluted", "dfas")
 
     def __init__(self, ts):
         self.ts = ts
@@ -77,6 +79,16 @@ class _Replay(_Predictor):
         self.pos = 0
         self.stack = []
         self.precs = []
+        # peek is the furthest token prediction read; polluted is what syncs
+        # at loop backs added to their states' next tokens (see _Recovery).
+        self.peek = 0
+        self.polluted = {}
+        # ANTLR's prediction falls back on an alternative by flags its cached
+        # DFA states keep from when they were built, so what it reports can
+        # depend on what the process parsed before. The replay predicts over
+        # DFAs of its own, built from this parse alone, and so reports what
+        # ANTLR reports parsing the tokens in a fresh process.
+        self.dfas = [_DFA() for _ in _DEC_STATE]
 
     def _dead_end(self, decision, at):
         raise _NoViable(at)
@@ -93,11 +105,14 @@ class _Replay(_Predictor):
         if self.types[self.pos] != EOF:
             self.pos += 1
 
-    def _expected(self, s):
+    def _expected(self, s, polluted=True):
         """ANTLR's getExpectedTokens at state s: what can follow s, through
         the rules being parsed while their ends can be reached, and EOF past
-        the outermost."""
+        the outermost; with polluted, what syncs added to s's next tokens
+        (ATN.nextTokens with a context, which reads no cache, has none)."""
         x = set(_ESETS[_S_NEXT[s]])
+        if polluted and self.polluted:
+            x.update(self.polluted.get(s, ()))
         reaches = _S_END[s]
         for f in reversed(self.stack):
             if not reaches:
@@ -127,6 +142,8 @@ class _Replay(_Predictor):
                     break
                 parts.append(ts.text(i))
             text = "".join(parts)
+            # The runtime's BufferedTokenStream.getText fills the stream first.
+            return _Report(at, "no viable alternative at input " + _quote(text), True)
         return _Report(at, "no viable alternative at input " + _quote(text))
 
     def _recover_inline(self, s, nxt):
@@ -178,6 +195,10 @@ class _Replay(_Predictor):
                 return self._adaptive(d, self._prec())
             except _NoViable as e:
                 raise self._no_viable(pos, e.at) from None
+        # Sync may have deleted a token (in a recovering parse).
+        alt = self._ll1_alt(d)
+        if alt:
+            return alt
         # An LL(1) choice fails; an optional block or a loop exits.
         if kind == 0:
             raise self._no_viable(pos, pos)
@@ -243,7 +264,7 @@ def _syntax_error(tokens, rule):
     try:
         _Replay(tokens).run(_RULE_START[rule])
     except _Report as e:
-        return ParseError(tokens.lines[e.at], tokens.columns[e.at], e.msg)
+        return ParseError(tokens.lines[e.at], tokens.columns[e.at], e.msg, token=e.at)
     # The replay found no error where the native parse found one: a bug.
     return ParseError(1, 0, "galop: no syntax error found where the parse failed")
 

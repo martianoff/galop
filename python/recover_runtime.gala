@@ -1,0 +1,403 @@
+package python
+
+// recoveryTemplate is the native Python parser's error recovery:
+// parse_<rule>_with_recovery parses as ANTLR 4.13.1's Python parser does with
+// its default error strategy, and returns the tree ANTLR's recovery builds and
+// every syntax error ANTLR reports.
+//
+// _Recovery carries errorsTemplate's replay past the first error, as the Go
+// target's recovering walk does: the same decisions, syncs and predictions,
+// and, where the replay stops, what ANTLR's Python runtime does next:
+//
+//   - a token match deletes one token or makes up the missing one
+//     (recoverInline); otherwise it raises, as does sync at a block start
+//     that cannot delete a token, a failed prediction and a failed
+//     precedence predicate;
+//   - a raised error ends the rule being parsed, as the generated code's
+//     except clause does: the error is reported, the input is skipped to
+//     what can follow a rule being parsed (recover), and the rule returns;
+//   - sync at a loop back reports the token and skips to what can follow;
+//   - errors are reported only outside error recovery mode, which a report
+//     starts and a matched token ends.
+//
+// The Python runtime differs from the Go one in four ways the walk follows:
+// an error raises at once, where Go's leaves some pending until an error
+// check; a labeled alternative's context keeps the error nodes of the
+// context it replaces (ParserRuleContext.copyFrom); reporting "no viable
+// alternative" reads the input's text with BufferedTokenStream.getText,
+// which lexes the whole input first, so every lexer error left is reported
+// before it (read is then the last token); and a sync at a loop back
+// adds its recovery set to the ATN's cached nextTokens set of that state
+// when the set does not reach the rule's end (getExpectedTokens returns the
+// cached set and IntervalSet.addSet changes it), so later syncs and messages
+// at that state in the same parse see it (polluted). The leak outlives the
+// parse in ANTLR's process; the walk keeps it for one parse.
+//
+// The tree is built as the runtime builds its contexts: a rule's node starts
+// at the current token, tokens consumed in error recovery mode are error
+// nodes, a token single-token insertion makes up ("<missing ')'>") is an error
+// node of the rule whose match made it up, and a left-recursive rule's loop
+// makes the node so far the first child of the next one. Labels record what
+// the native parse records: each labeled token and rule node, leaving out
+// made-up tokens.
+val recoveryTemplate = `
+class _Recovery(_Replay):
+    """A parse that recovers from syntax errors as ANTLR's Python runtime does;
+    see recoveryTemplate in galop's python/recover_runtime.gala."""
+
+    __slots__ = ("state", "recovering", "last_index", "last_states", "frames", "kids",
+                 "kid_err", "labs", "errs", "node_of", "root", "rule", "alt", "start",
+                 "stop", "node_kids", "node_label", "token_labels", "error_kids",
+                 "conjured", "last")
+
+    def __init__(self, ts):
+        super().__init__(ts)
+        self.state = -1
+        self.recovering = False
+        self.last_index = -1
+        self.last_states = []
+        # frames are the rules being parsed, innermost last: [rule, invoking
+        # state, first token, start of its kids, of its labels, serial, alt].
+        self.frames = []
+        self.kids = []
+        self.kid_err = []
+        self.labs = []
+        self.errs = []
+        self.node_of = []
+        self.root = -1
+        self.rule = []
+        self.alt = []
+        self.start = []
+        self.stop = []
+        self.node_kids = []
+        self.node_label = []
+        self.token_labels = []
+        self.error_kids = set()
+        self.conjured = []
+        # last is the last real token added, -1 for none.
+        self.last = -1
+
+    def _la(self, i):
+        j = self.pos + i - 1
+        if j > self.peek:
+            self.peek = j
+        types = self.types
+        return types[j] if j < len(types) else types[-1]
+
+    def read(self):
+        """How far ANTLR's token stream has read: the current token, or one
+        prediction or single-token deletion looked ahead to."""
+        return min(max(self.pos, self.peek), len(self.types) - 1)
+
+    def _report_match(self):
+        self.recovering = False
+        self.last_index = -1
+        self.last_states = []
+
+    def _take(self, is_err):
+        """Adds the current token to the rule being parsed (an error node when
+        is_err) and moves past it, not past EOF; returns its index."""
+        i = self.pos
+        self.kids.append(-1 - i)
+        self.kid_err.append(is_err)
+        self.last = i
+        if self.types[i] != EOF:
+            self.pos = i + 1
+        return i
+
+    def _report_err(self, err):
+        """Reports err unless in error recovery mode, which it starts."""
+        if self.recovering:
+            return
+        self.recovering = True
+        if err.fills:
+            self.peek = len(self.types) - 1
+        f = self.frames[-1]
+        self.errs.append((err.at, err.msg, f[5], len(self.kids) - f[3], self.read(),
+                          sorted(self._expected(self.state))))
+
+    def _conjure(self, exp):
+        """Adds the token ANTLR's getMissingSymbol makes up, the first type of
+        exp, as an error node, and returns its index."""
+        typ = min(exp) if exp else 0
+        if typ == EOF:
+            text = "<missing EOF>"
+        else:
+            text = "<missing " + (_MISSING_NAME[typ] if 0 <= typ < len(_MISSING_NAME) else "None") + ">"
+        ts = self.ts
+        at = self.pos
+        if ts.types[at] == EOF and at > 0:
+            at -= 1
+        self.conjured.append((typ, text, ts.lines[at], ts.columns[at]))
+        ref = len(ts.types) + len(self.conjured) - 1
+        self.kids.append(-1 - ref)
+        self.kid_err.append(True)
+        return ref
+
+    def _recover_inline(self, s, nxt, add):
+        """recoverInline at match state s, whose transition leads to nxt: the
+        token single-token deletion consumes, or the made-up one (added when
+        add), or a raised mismatch. Returns the token's index, -1 for none."""
+        exp = self._expected(s)
+        if self._la(2) in exp:
+            self._report_err(self._report("extraneous", exp))
+            self._take(True)
+            self._report_match()
+            return self._take(False)
+        if self.types[self.pos] in self._expected(nxt, False):
+            self._report_err(_Report(self.pos, "missing %s at %s" % (_set_str(exp), _quote(self.ts.text(self.pos)))))
+            return self._conjure(exp) if add else -1
+        raise self._report("mismatched", exp)
+
+    def _sync(self, s, block_start):
+        """sync at s, a block start or a loop back."""
+        if self.recovering:
+            return
+        t = self.types[self.pos]
+        pol = self.polluted.get(s)
+        if _S_END[s] or t in _ESETS[_S_NEXT[s]] or (pol is not None and t in pol):
+            return
+        exp = self._expected(s)
+        if block_start:
+            if self._la(2) not in exp:
+                raise self._report("mismatched", exp)
+            self._report_err(self._report("extraneous", exp))
+            self._take(True)
+            self._report_match()
+            return
+        self._report_err(self._report("extraneous", exp))
+        rec = self._recovery_set()
+        # The runtime's addSet changes the cached set (see recoveryTemplate).
+        self.polluted[s] = (pol or frozenset()) | rec
+        self._consume_until(exp | rec)
+
+    def _recovery_set(self):
+        """getErrorRecoverySet: what can follow each rule being parsed but the
+        entry rule."""
+        x = set()
+        for f in self.stack:
+            x |= _ESETS[_S_NEXT[f]]
+        return x
+
+    def _consume_until(self, stop):
+        types = self.types
+        while types[self.pos] != EOF and types[self.pos] not in stop:
+            self._take(self.recovering)
+
+    def _decide(self, d, s, from_back):
+        kind = _DEC_KIND[d]
+        # A star loop's next iteration decides at its loop back's state.
+        if not (kind == 2 and from_back):
+            self.state = s
+        return _Replay._decide(self, d, s, from_back)
+
+    def _enter(self, rule, invoking):
+        self.frames.append([rule, invoking, self.pos, len(self.kids), len(self.labs), len(self.node_of), _RULE_ALT[rule]])
+        self.node_of.append(-1)
+
+    def _finish(self, f):
+        """Adds the node of frame f, ending at the token before the current
+        one, with its children and labels; returns its index."""
+        node = len(self.rule)
+        mark = f[3]
+        kids = self.kids
+        self.rule.append(f[0])
+        self.alt.append(f[6])
+        self.start.append(f[2])
+        self.stop.append(self.pos - 1)
+        self.node_kids.append(kids[mark:])
+        for j, bad in enumerate(self.kid_err[mark:]):
+            if bad:
+                self.error_kids.add((node, j))
+        del kids[mark:]
+        del self.kid_err[mark:]
+        self.node_label.append(0)
+        n = len(self.ts.types)
+        for label, child, tok in self.labs[f[4]:]:
+            if child >= 0:
+                self.node_label[child] = label
+            elif 0 <= tok < n:
+                self.token_labels.append((node, tok, label))
+        del self.labs[f[4]:]
+        self.node_of[f[5]] = node
+        return node
+
+    def _exit(self):
+        """Ends the rule being parsed; returns the state its caller goes on at,
+        or -1 after the entry rule, whose node is root."""
+        f = self.frames.pop()
+        node = self._finish(f)
+        if not self.frames:
+            self.root = node
+            return -1
+        self.kids.append(node)
+        self.kid_err.append(False)
+        label = _S_LABEL[f[1]]
+        if label:
+            self.labs.append((label, node, -1))
+        self.state = f[1]
+        self.precs.pop()
+        return self.stack.pop()
+
+    def _error_exit(self, err):
+        """The generated code's except clause: reportError, then recover."""
+        self._report_err(err)
+        if self.last_index == self.pos and self.state in self.last_states:
+            self._take(self.recovering)
+        self.last_index = self.pos
+        self.last_states.append(self.state)
+        self._consume_until(self._recovery_set())
+
+    def _context_step(self, step):
+        push, alt, left = step
+        f = self.frames[-1]
+        if not push:
+            # copyFrom keeps the error nodes, the only children the rule has yet.
+            f[6] = alt
+            return
+        # pushNewRecursionContext: the node so far is the new one's first child.
+        node = self._finish(f)
+        self.kids.append(node)
+        self.kid_err.append(False)
+        if left:
+            self.labs.append((left, node, -1))
+        f[5] = len(self.node_of)
+        self.node_of.append(-1)
+        f[6] = alt
+
+    def recover(self, rule):
+        """Parses from the first token as rule; returns the root's index."""
+        self._enter(rule, -1)
+        s = _RULE_START[rule]
+        back = False
+        types = self.types
+        while True:
+            from_back = back
+            back = False
+            try:
+                if _S_STOP[s]:
+                    s = self._exit()
+                    if s < 0:
+                        return self.root
+                    continue
+                d = _S_DEC[s]
+                if d >= 0:
+                    after = _DEC_SET_AFTER[d]
+                    if after >= 0:
+                        self.state = s
+                        if self._ll1_alt(d):
+                            self._report_match()
+                            self._take(False)
+                        else:
+                            self._recover_inline(s, after, False)
+                        s = after
+                        continue
+                    alt = self._decide(d, s, from_back)
+                    outer = _DEC_OUTER[d]
+                    if outer:
+                        self.frames[-1][6] = outer[alt - 1]
+                    back = _DEC_KIND[d] == 3 and alt == _DEC_LOOP_ALT[d]
+                    s = _TRANS[s][alt - 1][1]
+                    continue
+                sync = _S_SYNC[s]
+                if sync == 2:
+                    self.state = s
+                    self._sync(s, False)
+                    back = True
+                elif sync == 1 and not from_back:
+                    self.state = s
+                    self._sync(s, True)
+                step = _S_CONTEXT.get(s)
+                if step is not None:
+                    self._context_step(step)
+                kind, target, arg = _TRANS[s][0]
+                if kind == 1:
+                    self.state = s
+                    self.stack.append(arg)
+                    self.precs.append(_S_CALL_PREC[s])
+                    self._enter(_S_RULE[target], s)
+                elif kind == 4:
+                    if arg < self._prec():
+                        self.state = s
+                        raise _Report(self.pos, "rule %s failed predicate: {self.precpred(self._ctx, %d)}?" % (RULE_NAMES[_S_RULE[s]], arg))
+                elif kind == 2 or kind == 3:
+                    self.state = s
+                    t = types[self.pos]
+                    wildcard = _S_WILDCARD[s]
+                    if t != EOF if wildcard else (t == arg if kind == 2 else t in _TSETS[arg]):
+                        self._report_match()
+                        tok = self._take(False)
+                    else:
+                        # Match and matchWildcard add the token they make up; a
+                        # set match does not.
+                        tok = self._recover_inline(s, target, kind == 2 or wildcard)
+                    label = _S_LABEL[s]
+                    if label and tok >= 0:
+                        self.labs.append((label, -1, tok))
+                s = target
+            except _Report as err:
+                self._error_exit(err)
+                s = self._exit()
+                if s < 0:
+                    return self.root
+
+    def tree(self):
+        tree = Tree(self.ts)
+        tree.rule = self.rule
+        tree.alt = self.alt
+        tree.start = self.start
+        tree.stop = self.stop
+        tree.kids = self.node_kids
+        tree.node_label = self.node_label
+        tree.token_labels = self.token_labels
+        tree.error_kids = self.error_kids
+        tree.conjured = self.conjured
+        tree.read = self.read()
+        return tree
+
+    def errors(self):
+        ts = self.ts
+        return [ParseError(ts.lines[at], ts.columns[at], msg, token=at, node=self.node_of[serial],
+                           kids=kids, read=read, expected=expected)
+                for at, msg, serial, kids, read, expected in self.errs]
+
+
+def _parse_with_recovery(tokens, rule):
+    if isinstance(tokens, str):
+        tokens = lex(tokens)
+    if not tokens.types or tokens.types[-1] != EOF:
+        raise ParseError(1, 0, "the tokens do not end with EOF")
+    p = _Parser(tokens)
+    try:
+        root = _RULE_FUNCS[rule](p)
+    except _Stop:
+        r = _Recovery(tokens)
+        root = r.recover(rule)
+        return Node(r.tree(), root), r.errors()
+    tree = p._tree()
+    if tokens.errors:
+        if tokens.error_at[-1] <= p.pos:
+            # ANTLR reads at least the token after the parse.
+            tree.read = p.pos
+        else:
+            # How far ANTLR's parse reads decides which lexer errors it reports.
+            r = _Recovery(tokens)
+            r.recover(rule)
+            tree.read = r.read()
+    return Node(tree, root), []
+
+`
+
+// recoveryEntryTemplate is one rule's recovering entry function.
+val recoveryEntryTemplate = `
+def parse_@RULE@_with_recovery(tokens):
+    """Parses tokens (a Tokens, or a string to lex first) as @RULE@ and
+    recovers from syntax errors as ANTLR's default error strategy does. It
+    returns the rule's Node, of the tree ANTLR's parser builds while it
+    recovers (its error tokens' is_error is set), and every syntax error ANTLR
+    reports, in order, as ParseErrors; no errors and the parse_@RULE@ tree
+    without a syntax error. ANTLR reports the lexer's errors (tokens.errors)
+    among them: one before the first syntax error whose read reaches its
+    tokens.error_at, and none past the tree's read (see merge_errors)."""
+    return _parse_with_recovery(tokens, @INDEX@)
+`
