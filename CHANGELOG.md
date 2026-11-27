@@ -3,7 +3,7 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
-## Unreleased
+## 0.9.0
 
 - **Fixed:** the Go `antlr` flavor reported every token recognition error
   before parsing, because its parser reads all the tokens first. ANTLR's
