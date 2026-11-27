@@ -180,15 +180,45 @@ type PARSER struct {
 	// number of errors reported (see recoverParse).
 	expected     *antlr.IntervalSet
 	syntaxErrors int
+	// lexErrs are the token recognition errors not reported yet (see
+	// NewPARSER).
+	lexErrs []PFXLexError
+}
+
+// PFXLexError is a token recognition error held back from the error
+// listeners: its report, which ANTLR's parse runs when it first reads token
+// at (an index into the parser's tokens), the first on-channel token lexed
+// after the error.
+type PFXLexError struct {
+	at     int
+	report func()
 }
 
 // NewPARSER reads the on-channel tokens of input for parsing.
+//
+// ANTLR's token stream lexes as its parser reads, so a token recognition
+// error reaches the error listeners when the parse first reads past it, and
+// not at all past where the parse stops. This parser reads all the tokens
+// first: with galop's antlr flavor lexer under a CommonTokenStream it holds
+// those errors back and reports each when ANTLR's would be (see
+// flushLexErrors). Any other token source reports them as it lexes, here.
 func NewPARSER(input antlr.TokenStream) *PARSER {
+	// ANTLR's parser reads the first token as it starts.
 	p := &PARSER{ANTLRPARSER: NewANTLRPARSER(input), input: input}
 	if cts, ok := input.(*antlr.CommonTokenStream); ok {
+		src, deferring := cts.GetTokenSource().(interface{ galopDeferErrors(func(func())) })
+		if deferring {
+			// The error arises while the stream's next token is lexed.
+			src.galopDeferErrors(func(report func()) {
+				p.lexErrs = append(p.lexErrs, PFXLexError{cts.Size(), report})
+			})
+		}
 		// Buffer the whole input first: its size bounds the on-channel tokens,
 		// so the slices below are allocated once instead of grown.
 		cts.Fill()
+		if deferring {
+			src.galopDeferErrors(nil)
+		}
 		p.toks = make([]antlr.Token, 0, cts.Size())
 		p.types = make([]int32, 0, cts.Size())
 	}
@@ -201,7 +231,39 @@ func NewPARSER(input antlr.TokenStream) *PARSER {
 		}
 		input.Consume()
 	}
+	// From the stream's token index to the first on-channel token at or after it.
+	j := 0
+	for i := range p.lexErrs {
+		for j < len(p.toks)-1 && p.toks[j].GetTokenIndex() < p.lexErrs[i].at {
+			j++
+		}
+		p.lexErrs[i].at = j
+	}
 	return p
+}
+
+// flushLexErrors reports the held-back token recognition errors that
+// ANTLR's parse has lexed once it has read token read, in input order.
+func (p *PARSER) flushLexErrors(read int) {
+	n := 0
+	for n < len(p.lexErrs) && p.lexErrs[n].at <= read {
+		p.lexErrs[n].report()
+		n++
+	}
+	p.lexErrs = p.lexErrs[n:]
+}
+
+// lexErrorsRead reports the held-back token recognition errors after a parse
+// without syntax errors, if ANTLR's parse surely lexed them all: they come
+// before the token after the parse, which every parse reads. It returns
+// false, reporting none, when some come later: how far ANTLR's parse read
+// then decides (see recoverParse).
+func (p *PARSER) lexErrorsRead() bool {
+	if len(p.lexErrs) > 0 && p.lexErrs[len(p.lexErrs)-1].at > p.pos {
+		return false
+	}
+	p.flushLexErrors(p.pos)
+	return true
 }
 
 // PFXSyntaxError is where the parser gave up: the input is not in the language,
@@ -308,15 +370,19 @@ func entryMethod(e env, r atn.RuleIR) string {
 // listeners, and returns the context ANTLR's default error strategy builds.
 func (p *PARSER) METHOD() IFACE {
 	ctx, err := p.parse(RULEREF, START, REPAIR)
-	if err != nil {
+	// Token recognition errors past the parse's end are reported where
+	// ANTLR's parse reads them, which its recovering replay finds.
+	if err != nil || !p.lexErrorsRead() {
 		ctx, _ = p.recoverParse(INDEX)
 	}
 	return ctx.(IFACE)
 }
 
 // ParseMETHOD parses the input as RULE. On a syntax error it returns the first
-// error ANTLR reports and no tree, and reports nothing to the error listeners.
+// error ANTLR reports and no tree, and reports nothing to the error listeners
+// but the lexer's token recognition errors, all of them, first.
 func (p *PARSER) ParseMETHOD() (IFACE, error) {
+	p.flushLexErrors(len(p.toks))
 	ctx, err := p.parse(RULEREF, START, REPAIR)
 	if err != nil {
 		return nil, err

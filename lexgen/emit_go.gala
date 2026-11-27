@@ -256,9 +256,20 @@ type @T@ struct {
 	// lastIndex and lastOff are a code-point index and its byte offset in data.
 	lastIndex, lastOff int
 	hitEOF             bool
+	// deferErr, when set, takes each token recognition error's report
+	// instead of the error listeners, to be run later (see galopDeferErrors).
+	deferErr func(report func())
 }
 
 var _ antlr.Lexer = (*@T@)(nil)
+
+// galopDeferErrors makes the lexer hand each token recognition error's report
+// to f instead of calling the error listeners (nil restores that). galop's
+// antlr flavor parser reads all the tokens before it parses, where ANTLR's
+// token stream lexes as its parser reads; it runs each report when ANTLR's
+// parse would have lexed that far, so the errors reach the listeners when,
+// and only if, ANTLR's reach them.
+func (l *@T@) galopDeferErrors(f func(report func())) { l.deferErr = f }
 
 // New@T@ returns a lexer reading input.
 func New@T@(input antlr.CharStream) *@T@ {
@@ -392,8 +403,15 @@ func (l *@T@) recognitionError(start, stop @P@Pos) {
 	input := l.GetInputStream()
 	text := input.GetTextFromInterval(antlr.NewInterval(start.index, stop.index))
 	e := antlr.NewLexerNoViableAltException(l, input, start.index, nil)
-	l.GetErrorListenerDispatch().SyntaxError(l.BaseLexer, nil, start.line, start.column(),
-		"token recognition error at: '"+text+"'", e)
+	line, column := start.line, start.column()
+	report := func() {
+		l.GetErrorListenerDispatch().SyntaxError(l.BaseLexer, nil, line, column, "token recognition error at: '"+text+"'", e)
+	}
+	if l.deferErr != nil {
+		l.deferErr(report)
+		return
+	}
+	report()
 }
 
 `
