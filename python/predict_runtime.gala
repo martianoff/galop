@@ -372,7 +372,9 @@ _DFAS = [_DFA() for _ in _DEC_STATE]
 
 class _Predictor:
     """Runtime prediction for a parser: the methods _Parser gets when the
-    grammar has decisions the analysis leaves to it."""
+    grammar has decisions the analysis leaves to it. dfas are the decisions'
+    SLL DFAs it predicts over: _DFAS, shared by every parse, or a set of its
+    own (see _Replay)."""
 
     __slots__ = ()
 
@@ -386,7 +388,7 @@ class _Predictor:
         """ANTLR's adaptivePredict in LL mode for decision d, whose rule was
         called with precedence prec."""
         pr = _Prediction(d, prec)
-        dfa = _DFAS[d]
+        dfa = self.dfas[d]
         s = dfa.starts.get(prec)
         if s is None:
             # A start state only gives the configurations to move from: as in
@@ -402,6 +404,8 @@ class _Predictor:
                 reach = _reach(pr, s.configs, t, False)
                 nxt = _ERROR if reach is None else dfa.state(reach)
                 s.edges[t] = nxt
+            if i > self.peek:
+                self.peek = i
             if nxt is _ERROR:
                 alt = _finished_entry_rule(s.configs.items)
                 return alt if alt else self._dead_end(d, i)
@@ -421,6 +425,8 @@ class _Predictor:
         while True:
             t = types[i]
             reach = _reach(pr, prev, t, True)
+            if i > self.peek:
+                self.peek = i
             if reach is None:
                 alt = _finished_entry_rule(prev.items)
                 return alt if alt else self._dead_end(pr.decision, i)

@@ -114,6 +114,18 @@ func TestNativeParserErrors(t T) T {
     IsTrue(t2, strings.Contains(code, "_DISPLAY = (\n    \"<INVALID>\", \"'='\", \"ID\",\n)\n"))
 }
 
+// TestNativeParserRecovery checks the recovering entry function and the
+// table naming the tokens recovery makes up: the literal names up to the
+// last type with one ("<INVALID>" where a type has none), the symbolic names
+// past it, as ANTLR's Python parser's literalNames and symbolicNames give them.
+func TestNativeParserRecovery(t T) T {
+    val files = nativeFiles("grammar E;\ns : ID '=' INT ';' EOF ;\nID : [a-z]+ ;\nINT : [0-9]+ ;\n")
+    val code = files.Find(_.Name == "e_parser.py").Map(_.Content).GetOrElse("")
+    val t1 = IsTrue(t, strings.Contains(code, "def parse_s_with_recovery(tokens):"))
+    val t2 = IsTrue(t1, strings.Contains(code, "class _Recovery(_Replay):"))
+    IsTrue(t2, strings.Contains(code, "_MISSING_NAME = (\n    \"<INVALID>\", \"'='\", \"';'\", \"ID\", \"INT\",\n)\n"))
+}
+
 // TestNativeParserNotSupported checks that a grammar with actions still gets
 // its lexer, and a parser module that says why it has no parser.
 func TestNativeParserNotSupported(t T) T {

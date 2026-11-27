@@ -225,7 +225,7 @@ flowchart LR
    failure) over tables in the generated file for the rest. Valid input gives
    ANTLR's tree.
 3. **First syntax error** (done): ANTLR's message, line and column for invalid input.
-4. **Error recovery**: ANTLR's recovered tree and every error it reports.
+4. **Error recovery** (done): ANTLR's recovered tree and every error it reports.
 5. **The Go target's prediction speedups** (guessing first pass, bracket
    abstraction, repair, the full-context cache), each where it pays in Python.
 

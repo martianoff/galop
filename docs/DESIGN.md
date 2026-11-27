@@ -1102,7 +1102,7 @@ about a sixth of ANTLR's time.
 For a combined grammar the native flavor also writes `<base>_parser.py`
 (`python/parser_emit.gala`). It is built in the steps of the
 [roadmap](ROADMAP.md#the-python-parser); it reports ANTLR's first syntax
-error, and does not recover from errors yet. A grammar with an action or a predicate (code in another language) gets a
+error, and recovers from errors as ANTLR does. A grammar with an action or a predicate (code in another language) gets a
 module that raises `NotImplementedError`, with the reasons, when imported, so
 that its lexer module is still written.
 
@@ -1152,6 +1152,30 @@ that its lexer module is still written.
   at once, where the Go runtime leaves some pending until its next error
   check, so the replay stops at the first one it meets. A valid parse never
   runs it.
+- `parse_<rule>_with_recovery(tokens)` recovers from syntax errors as ANTLR's
+  Python runtime does with its default error strategy
+  (`recover_runtime.gala`): `_Recovery` carries the replay past the first
+  error, as the Go target's recovering walk does, and builds the tree as the
+  runtime builds its contexts (error tokens, tokens single-token insertion
+  makes up, named as the runtime's `getMissingSymbol` names them from the
+  parser's `literalNames` and `symbolicNames`). It follows four ways the
+  Python runtime differs from the Go one: an error raises and ends the rule
+  at once (reportError, recover, return), where Go's may stay pending; a
+  labeled alternative's context keeps the error nodes of the one it replaces
+  (`copyFrom`); reporting "no viable alternative" builds its message with
+  `BufferedTokenStream.getText`, which lexes the whole input, so every lexer
+  error left comes before it; and the `nextTokens` leak below, which within
+  one parse changes later syncs and messages, is followed for that parse.
+  ANTLR's prediction falls back on an alternative by flags its cached DFA
+  states keep from when they were built, so what it reports can depend on
+  what the same process parsed before. The first-error replay and the
+  recovering parse predict over DFAs of their own, built from the one parse,
+  so they report what ANTLR reports for the tokens in a fresh process, as the
+  Go target's errors do; the differential test compares them with ANTLR
+  parsing the input again with its DFAs and caches emptied.
+  Each `ParseError` records how far ANTLR's token stream had read (`read`),
+  and the tree how far the whole parse read, so `merge_errors` puts the
+  lexer's errors (`Tokens.errors` with `error_at`) where ANTLR reports them.
 - **Difference:** ANTLR's Python runtime (4.13.1) carries a change from a
   parse with a syntax error into later parses. Its sync at a loop back adds
   the error-recovery set to `getExpectedTokens`' result, which for a state
@@ -1159,10 +1183,11 @@ that its lexer module is still written.
   `nextTokens` set itself (`IntervalSet.addSet` changes it in place and
   ignores `readonly`; Java's `or` returns a new set). Later syncs at that
   state then let more tokens pass, and later messages list them. It cannot
-  change a parse's first error, only those of later parses in the same
-  process; galop reports what ANTLR reports without it, as a fresh process
-  does. The differential test clears that cache after each input ANTLR
-  reports an error on.
+  change a parse's first error, only its later errors (which the recovering
+  parse follows) and those of later parses in the same process; galop
+  reports what ANTLR reports without it from one parse to the next, as a
+  fresh process does. The differential test clears that cache after each
+  input ANTLR reports an error on.
 
 `//differential/python` runs ANTLR's Python parser (LL prediction, default
 error strategy) and the native parser on galop-sample sentences, mutants of
@@ -1171,7 +1196,10 @@ tests
 has (the test grammars, the corpus grammars, and `gala.g4` on the GALA
 corpus too): where ANTLR reports no syntax error the trees must be equal, and
 where it reports one the native parser must raise `ParseError` with ANTLR's
-first error, at the same line and column.
+first error, at the same line and column. Where ANTLR reports any error, the
+recovering parse must build ANTLR's recovered tree, and its errors merged with
+the lexer's must be every error a listener on ANTLR's lexer and parser gets,
+in order.
 
 ## Code generation (`codegen`, `golang`)
 

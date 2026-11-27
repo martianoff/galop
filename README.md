@@ -192,10 +192,12 @@ galop options:
   `parse_<rule>(tokens)` builds ANTLR's tree with no runtime, left-recursive
   rules and ANTLR's runtime prediction included, several times faster than
   ANTLR's Python parser. A syntax error raises `ParseError` with the first
-  error ANTLR reports: same line, column and message. It does not read
-  grammars with actions or predicates, and does not recover from errors yet
-  (see the [roadmap](docs/ROADMAP.md#the-python-parser)). Python 3.10 or
-  later.
+  error ANTLR reports: same line, column and message.
+  `parse_<rule>_with_recovery(tokens)` recovers as ANTLR's default error
+  strategy does: it returns ANTLR's error-recovered tree and every error ANTLR
+  reports, in order (`merge_errors` adds the lexer's where ANTLR reports
+  them). It does not read grammars with actions or predicates (see the
+  [roadmap](docs/ROADMAP.md#the-python-parser)). Python 3.10 or later.
 - **Output layout** follows ANTLR: files go next to the grammar; with `-o dir`
   they go to `dir` plus the grammar's relative directory (`-o gen sub/T.g4`
   writes to `gen/sub/`), unless `-Xexact-output-dir` is given.

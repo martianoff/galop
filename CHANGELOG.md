@@ -3,6 +3,17 @@
 Changes that affect galop's users, newest first. Each release on GitHub also
 lists every merged pull request.
 
+## Unreleased
+
+- **Added:** error recovery in the native Python parser.
+  `parse_<rule>_with_recovery(tokens)` returns the tree ANTLR's Python parser
+  builds while it recovers from syntax errors (error tokens and the tokens it
+  makes up, such as `<missing ')'>`, included) and every syntax error it
+  reports, in order, as `ParseError`s with the offending token, the node
+  being parsed, the expected tokens and how far the parse had read.
+  `merge_errors` places the lexer's errors among them where ANTLR reports
+  them. `ParseError` also gets `token` from `parse_<rule>`.
+
 ## 0.9.0
 
 - **Fixed:** the Go `antlr` flavor reported every token recognition error
